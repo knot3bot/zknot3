@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**zknot3** is a Zig re-implementation of the Sui blockchain, guided by the "三源合恰" (Three Source Integration) philosophical framework: Form (形), Property (性), and Metric (数).
+**zknot3** is a Zig re-implementation of the Sui blockchain, guided by the "三源合恰" (物象性三源) philosophical framework.
 
 **Current Status**: Production-ready implementation with all core components complete and tested.
 
@@ -11,9 +11,9 @@
 ### Three-Source Framework (三源合恰)
 
 ```
-形 (Form)     →  Spatial topology, computational state  →  storage/, network/, consensus/
-性 (Property)  →  Intrinsic attributes, relation contracts →  move_vm/, access/, crypto/
-数 (Metric)   →  Quantitative measures, ordinal evolution →  Epoch, Stake, Metrics
+形         →  Spatial topology, computational state  →  storage/, network/, consensus/
+性         →  Intrinsic attributes, relation contracts →  move_vm/, access/, crypto/
+数         →  Quantitative measures, ordinal evolution →  Epoch, Stake, Metrics
 ```
 
 ### Directory Structure

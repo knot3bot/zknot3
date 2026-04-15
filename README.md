@@ -1,6 +1,6 @@
 # zknot3 - Zig Blockchain Reference Implementation
 
-> A production-grade blockchain node implementation in Zig, following the "三源合恰" (Three Source Integration) philosophical framework: Form (形), Property (性), and Metric (数).
+> A production-grade blockchain node implementation in Zig, following the "三源合恰" (物象性三源) philosophical framework.
 
 ## Status
 
@@ -53,7 +53,7 @@ zig build test
 ┌─────────────────────────────────────────────────────────────┐
 │                      三源合恰 (Three Source Integration)   │
 ├─────────────┬─────────────┬─────────────────────────────────┤
-│  形 (Form)  │ 性 (Property)│  数 (Metric)                    │
+│  形         │ 性           │  数                             │
 ├─────────────┼─────────────┼─────────────────────────────────┤
 │ storage/    │ move_vm/    │  Epoch.zig                      │
 │ - LSMTree   │ - Interpreter│  Stake.zig                      │

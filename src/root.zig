@@ -1,9 +1,9 @@
 //! zknot3 - A Zig re-implementation of the Sui blockchain
 //!
 //! This module implements the "三源合恰" (Three Source Integration) framework:
-//! - 形 (Form): Spatial topology and computational state
-//! - 性 (Property): Intrinsic attributes and relation contracts
-//! - 数 (Metric): Quantitative measures and ordinal evolution
+//! - 形: Spatial topology and computational state
+//! - 性: Intrinsic attributes and relation contracts
+//! - 数: Quantitative measures and ordinal evolution
 
 pub const core = @import("core.zig");
 pub const form = @import("form.zig");
