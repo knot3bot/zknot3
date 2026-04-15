@@ -8,11 +8,16 @@ const Log = @import("Log.zig");
 const Indexer = @import("Indexer.zig").Indexer;
 const CheckpointSequence = @import("../form/storage/Checkpoint.zig").CheckpointSequence;
 const EpochConsensusBridge = @import("../metric/EpochConsensusBridge.zig").EpochConsensusBridge;
+const ConsensusEpochInfo = @import("../metric/EpochConsensusBridge.zig").ConsensusEpochInfo;
 const Mysticeti = @import("../form/consensus/Mysticeti.zig");
 const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
 const P2PServer_module = @import("../form/network/P2PServer.zig");
 const P2PServer = P2PServer_module.P2PServer;
 
+const RuntimeMetrics = @import("../metric/RuntimeMetrics.zig");
+const builtin = @import("builtin");
+
+extern "c" fn sysctl(name: [*]const c_int, namelen: c_uint, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*anyopaque, newlen: usize) c_int;
 /// Node state
 pub const NodeState = enum {
     initializing,
@@ -68,6 +73,7 @@ pub const Node = struct {
     consensus_round: u64 = 0,
     txn_pool: *pipeline.TxnPool,
     executor: *pipeline.Executor,
+    runtime_metrics: ?*RuntimeMetrics.RuntimeMetricsCollector = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -99,6 +105,11 @@ pub const Node = struct {
         self_ptr.consensus_round = 0;
         self_ptr.txn_pool = txn_pool;
         self_ptr.executor = exec;
+        self_ptr.runtime_metrics = try RuntimeMetrics.RuntimeMetricsCollector.init(allocator, 100);
+        errdefer {
+            self_ptr.runtime_metrics.?.deinit();
+            self_ptr.runtime_metrics.?.allocator.destroy(self_ptr.runtime_metrics.?);
+        }
 
         errdefer self_ptr.deinit();
 
@@ -140,6 +151,10 @@ pub const Node = struct {
         self.checkpoint_store.deinit();
         self.txn_pool.deinit();
         self.executor.deinit();
+        if (self.runtime_metrics) |rm| {
+            rm.deinit();
+            self.allocator.destroy(rm);
+        }
         self.state = .stopped;
         self.allocator.destroy(self);
     }
@@ -226,6 +241,136 @@ pub const Node = struct {
         consensus_round: u64,
         blocks_committed_total: u64,
     };
+
+    pub const ValidatorInfo = struct {
+        id: [32]u8,
+        stake: u128,
+        voting_power: u128,
+        is_active: bool,
+    };
+
+    pub fn getTriSourceMetrics(self: *Self) RuntimeMetrics.TriSourceMetrics {
+        const peer_count = if (self.p2p_server) |p2p| p2p.peerCount() else 0;
+        const max_peers = self.config.network.max_connections;
+        const network_util = if (max_peers > 0)
+            @min(1.0, @as(f64, @floatFromInt(peer_count)) / @as(f64, @floatFromInt(max_peers)))
+        else
+            0.0;
+        const storage_util = @min(1.0, @as(f64, @floatFromInt(self.execution_results.count())) / 10000.0);
+
+        const resource = RuntimeMetrics.ResourceMetrics{
+            .cpu_util = 0.5,
+            .mem_util = 0.5,
+            .storage_util = storage_util,
+            .network_util = network_util,
+        };
+
+        const knowledge = RuntimeMetrics.KnowledgeMetrics{
+            .unique_types = self.execution_results.count(),
+            .total_objects = self.execution_results.count() * 2,
+            .unique_tx_types = @min(100, self.txn_history.count()),
+            .total_transactions = self.stats.transactions_executed,
+            .ownership_entropy = 2.0,
+        };
+
+        var successful: u64 = 0;
+        var total_checked: u64 = 0;
+        var it = self.execution_results.iterator();
+        while (it.next()) |entry| {
+            total_checked += 1;
+            if (entry.value_ptr.status == .success) successful += 1;
+        }
+        const error_rate = if (total_checked > 0)
+            1.0 - (@as(f64, @floatFromInt(successful)) / @as(f64, @floatFromInt(total_checked)))
+        else
+            0.0;
+
+        const tps = if (self.stats.transactions_executed > 0 and self.stats.blocks_committed > 0)
+            @as(f64, @floatFromInt(self.stats.transactions_executed)) / @as(f64, @floatFromInt(self.stats.blocks_committed))
+        else
+            0.0;
+
+        const user = RuntimeMetrics.UserMetrics{
+            .latency_p50 = 20.0,
+            .latency_p99 = 50.0,
+            .tps = tps,
+            .target_tps = 10000.0,
+            .error_rate = error_rate,
+            .user_satisfaction = 1.0 - error_rate,
+        };
+
+        return .{
+            .wu_feng = resource.computeWuFeng(),
+            .xiang_da = knowledge.computeXiangDa(),
+            .zi_zai = user.computeZiZai(),
+        };
+    }
+
+    pub fn getValidatorList(self: *Self, allocator: std.mem.Allocator) ![]ValidatorInfo {
+        if (self.deps.epoch_bridge) |bridge| {
+            const quorum = bridge.quorum;
+            var list = try std.ArrayList(ValidatorInfo).initCapacity(allocator, quorum.members.items.len);
+            errdefer list.deinit(allocator);
+            for (quorum.members.items) |member| {
+                const power = bridge.getValidatorVotingPower(member.id);
+                try list.append(allocator, .{
+                    .id = member.id,
+                    .stake = member.stake,
+                    .voting_power = power,
+                    .is_active = member.is_active,
+                });
+            }
+            return try list.toOwnedSlice(allocator);
+        }
+        return &[_]ValidatorInfo{};
+    }
+
+    pub fn getSystemInfo(self: *Self) SystemInfo {
+        _ = self;
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        return .{
+            .cpu_count = cpu_count,
+            .total_memory_bytes = getTotalSystemMemory(),
+            .cpu_usage_percent = 0.0,
+        };
+    }
+
+    pub const SystemInfo = struct {
+        cpu_count: usize,
+        total_memory_bytes: u64,
+        cpu_usage_percent: f64,
+    };
+
+    fn getTotalSystemMemory() u64 {
+        if (builtin.target.os.tag == .linux) {
+            var buf: [1024]u8 = undefined;
+            const file = std.fs.cwd().openFile("/proc/meminfo", .{}) catch return 0;
+            defer file.close();
+            const n = file.read(&buf) catch return 0;
+            const content = buf[0..n];
+            const prefix = "MemTotal:";
+            if (std.mem.indexOf(u8, content, prefix)) |idx| {
+                const line_start = idx + prefix.len;
+                const line_end = std.mem.indexOf(u8, content[line_start..], " kB") orelse return 0;
+                const num_str = std.mem.trim(u8, content[line_start..line_start + line_end], " ");
+                const kb = std.fmt.parseInt(u64, num_str, 10) catch return 0;
+                return kb * 1024;
+            }
+            return 0;
+        } else if (builtin.target.os.tag == .macos) {
+            const CTL_HW: c_int = 6;
+            const HW_MEMSIZE: c_int = 24;
+            const mib = &[_]c_int{ CTL_HW, HW_MEMSIZE };
+            var memsize: u64 = 0;
+            var len: usize = @sizeOf(u64);
+
+            if (sysctl(mib.ptr, mib.len, &memsize, &len, null, 0) == 0) {
+                return memsize;
+            }
+            return 0;
+        }
+        return 0;
+    }
 
     pub fn proposeBlock(self: *Self, payload: []const u8) !?*Mysticeti.Block {
         if (self.state != .running) return error.NotRunning;
@@ -412,7 +557,7 @@ pub const Node = struct {
         return summary;
     }
 
-    pub fn getEpochInfo(self: *Self) EpochConsensusBridge.ConsensusEpochInfo {
+    pub fn getEpochInfo(self: *Self) ConsensusEpochInfo {
         if (self.deps.epoch_bridge) |bridge| return bridge.getConsensusEpochInfo();
         return .{ .epoch_number = 0, .total_stake = 0, .validator_count = 0, .quorum_threshold = 0 };
     }

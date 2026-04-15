@@ -6,7 +6,7 @@
 //! - 性自在 (zi_zai): Latency, throughput from user perspective
 
 const std = @import("std");
-const TriSourceMetrics = TriSourceMetricsType;
+pub const TriSourceMetrics = TriSourceMetricsType;
 
 /// Re-export TriSourceMetrics from metrics.zig
 const TriSourceMetricsType = @import("Metrics.zig").TriSourceMetrics;

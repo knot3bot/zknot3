@@ -1,7 +1,6 @@
 //! Dashboard - Web UI dashboard with HTMX + Alpine.js
 
 const std = @import("std");
-const builtin = @import("builtin");
 const app = @import("../../app.zig");
 const Node = app.Node;
 
@@ -62,11 +61,19 @@ pub const ConsensusStatusResponse = struct {
 
     pub fn fromNode(node: *Node) @This() {
         const committed = node.stats.blocks_committed;
+        const has_quorum = if (node.committed_blocks.count() > 0) blk: {
+            const values = node.committed_blocks.values();
+            const latest = values[values.len - 1];
+            break :blk latest.votes.count() >= node.config.consensus.vote_quorum;
+        } else false;
         return .{
-            .current_round = if (committed > 0) committed else 42,
+            .current_round = node.stats.highest_round,
             .highest_committed_block = committed,
-            .active_validators = 4,
-            .quorum_reached = true,
+            .active_validators = if (node.deps.epoch_bridge) |bridge|
+                @intCast(bridge.quorum.members.items.len)
+            else
+                @intCast(node.config.consensus.target_validators),
+            .quorum_reached = has_quorum,
         };
     }
 };
@@ -80,9 +87,9 @@ pub const TxnStatsResponse = struct {
         const pool_stats = node.getTxnPoolStats();
         const total = node.stats.transactions_executed;
         return .{
-            .pending = if (pool_stats.pending > 0) pool_stats.pending else 3,
+            .pending = pool_stats.pending,
             .executing = pool_stats.executing,
-            .total_executed = if (total > 0) total else 156,
+            .total_executed = total,
         };
     }
 };
@@ -93,12 +100,11 @@ pub const TriSourceMetricsResponse = struct {
     zi_zai: f64,
 
     pub fn fromNode(node: *Node) @This() {
-        const round_f = @as(f64, @floatFromInt(node.stats.highest_round));
-        const committed_f = @as(f64, @floatFromInt(node.stats.blocks_committed));
+        const m = node.getTriSourceMetrics();
         return .{
-            .wu_feng = 0.85 + @mod(round_f * 0.1, 0.1),
-            .xiang_da = 0.78 + @mod(committed_f * 0.2, 0.1),
-            .zi_zai = 0.92,
+            .wu_feng = m.wu_feng,
+            .xiang_da = m.xiang_da,
+            .zi_zai = m.zi_zai,
         };
     }
 };
@@ -108,11 +114,12 @@ pub const SystemInfoResponse = struct {
     total_memory_bytes: u64,
     cpu_usage_percent: f64,
 
-    pub fn create() @This() {
+    pub fn fromNode(node: *Node) @This() {
+        const s = node.getSystemInfo();
         return .{
-            .cpu_count = if (builtin.target.cpu.arch == .x86_64) 4 else 8,
-            .total_memory_bytes = 16 * 1024 * 1024 * 1024,
-            .cpu_usage_percent = 0.15,
+            .cpu_count = s.cpu_count,
+            .total_memory_bytes = s.total_memory_bytes,
+            .cpu_usage_percent = s.cpu_usage_percent,
         };
     }
 };
@@ -165,26 +172,18 @@ pub const DashboardHandler = struct {
         } else if (std.mem.eql(u8, path, "/api/transactions")) {
             return try self.handleTransactions();
         } else if (std.mem.eql(u8, path, "/api/epoch")) {
+            const epoch = node.getEpochInfo();
             return try toJSON(self.allocator, .{
-                .epoch_number = @as(u64, 1),
-                .total_stake = @as(u64, 4000000),
-                .validator_count = @as(u32, 4),
-                .quorum_threshold = @as(u64, 2666667),
-                .needs_reconfiguration = false,
+                .epoch_number = epoch.epoch_number,
+                .total_stake = epoch.total_stake,
+                .validator_count = @as(u32, @intCast(epoch.validator_count)),
+                .quorum_threshold = epoch.quorum_threshold,
+                .needs_reconfiguration = node.needsReconfiguration(),
             });
         } else if (std.mem.eql(u8, path, "/api/validators")) {
-            return try toJSON(self.allocator, .{
-                .validators = &[_]ValidatorInfo{
-                    .{ .id = "0x1a2b3c4d5e6f...", .stake = 1000000, .voting_power = 1000000, .is_active = true },
-                    .{ .id = "0x2b3c4d5e6f7a...", .stake = 1000000, .voting_power = 1000000, .is_active = true },
-                    .{ .id = "0x3c4d5e6f7a8b...", .stake = 1000000, .voting_power = 1000000, .is_active = true },
-                    .{ .id = "0x4d5e6f7a8b9c...", .stake = 1000000, .voting_power = 1000000, .is_active = true },
-                },
-                .total = @as(usize, 4),
-                .quorum_threshold = @as(u64, 2666667),
-            });
+            return try self.handleValidators();
         } else if (std.mem.eql(u8, path, "/api/system/info")) {
-            return try toJSON(self.allocator, SystemInfoResponse.create());
+            return try toJSON(self.allocator, SystemInfoResponse.fromNode(node));
         } else {
             return error.NotFound;
         }
@@ -262,6 +261,46 @@ pub const DashboardHandler = struct {
             .total = node.txn_history.count(),
         };
         defer txns.deinit(self.allocator);
+        const json = try toJSON(self.allocator, response);
+        return json;
+    }
+
+    fn handleValidators(self: *@This()) ![]u8 {
+        if (self.node == null) return error.NodeNotSet;
+        const node = self.node.?;
+
+        const validators = try node.getValidatorList(self.allocator);
+        defer self.allocator.free(validators);
+
+        var list = try std.ArrayList(ValidatorInfo).initCapacity(self.allocator, validators.len);
+        var hex_strings = std.ArrayList([]const u8).empty;
+        defer {
+            for (hex_strings.items) |s| self.allocator.free(s);
+            hex_strings.deinit(self.allocator);
+        }
+
+        for (validators) |v| {
+            const id_hex = try bytesToHex(self.allocator, &v.id);
+            try hex_strings.append(self.allocator, id_hex);
+            try list.append(self.allocator, .{
+                .id = id_hex,
+                .stake = @intCast(v.stake),
+                .voting_power = @intCast(v.voting_power),
+                .is_active = v.is_active,
+            });
+        }
+
+        const quorum_threshold = if (node.deps.epoch_bridge) |bridge|
+            bridge.stake_pool.quorumThreshold()
+        else
+            0;
+
+        const response = .{
+            .validators = list.items,
+            .total = list.items.len,
+            .quorum_threshold = quorum_threshold,
+        };
+        defer list.deinit(self.allocator);
         const json = try toJSON(self.allocator, response);
         return json;
     }

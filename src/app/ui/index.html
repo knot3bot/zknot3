@@ -9,24 +9,25 @@
             defer
             src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"
         ></script>
-        <link
-            rel="stylesheet"
-            href="https://unpkg.com/@unocss/reset/normalize.css"
-        />
         <style>
             @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
 
             :root {
-                --bg-primary: #0f172a;
-                --bg-secondary: #1e293b;
-                --bg-card: #334155;
-                --text-primary: #f1f5f9;
-                --text-secondary: #94a3b8;
+                --bg-primary: #0b0f19;
+                --bg-secondary: #111827;
+                --bg-tertiary: #1f2937;
+                --bg-hover: #374151;
+                --border: #2d3748;
+                --text-primary: #f9fafb;
+                --text-secondary: #9ca3af;
+                --text-muted: #6b7280;
                 --accent: #3b82f6;
                 --accent-hover: #2563eb;
                 --success: #22c55e;
                 --warning: #f59e0b;
                 --danger: #ef4444;
+                --sidebar-width: 240px;
+                --header-height: 64px;
             }
 
             * {
@@ -40,171 +41,302 @@
                 background: var(--bg-primary);
                 color: var(--text-primary);
                 min-height: 100vh;
-                line-height: 1.6;
+                line-height: 1.5;
             }
 
-            .container {
-                max-width: 1400px;
-                margin: 0 auto;
-                padding: 2rem;
-            }
-
-            header {
+            /* 厂字 Layout: Top Header + Left Sidebar */
+            .top-header {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: var(--header-height);
+                background: var(--bg-secondary);
+                border-bottom: 1px solid var(--border);
                 display: flex;
-                justify-content: space-between;
                 align-items: center;
-                margin-bottom: 2rem;
-                padding-bottom: 1rem;
-                border-bottom: 1px solid var(--bg-secondary);
+                justify-content: space-between;
+                padding: 0 1.5rem;
+                z-index: 100;
             }
 
-            h1 {
-                font-size: 1.75rem;
+            .top-header .brand {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
                 font-weight: 700;
-                background: linear-gradient(135deg, var(--accent), #8b5cf6);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-                background-clip: text;
+                font-size: 1.25rem;
+                color: var(--text-primary);
+                margin-left: var(--sidebar-width);
             }
 
-            .status-badge {
+            .top-header .brand-icon {
+                width: 32px;
+                height: 32px;
+                background: linear-gradient(135deg, var(--accent), #8b5cf6);
+                border-radius: 8px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1rem;
+            }
+
+            .search-bar {
+                flex: 1;
+                max-width: 600px;
+                margin: 0 2rem;
+                position: relative;
+            }
+
+            .search-bar input {
+                width: 100%;
+                padding: 0.6rem 1rem 0.6rem 2.5rem;
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                color: var(--text-primary);
+                font-size: 0.875rem;
+                outline: none;
+            }
+
+            .search-bar input::placeholder {
+                color: var(--text-muted);
+            }
+
+            .search-bar input:focus {
+                border-color: var(--accent);
+            }
+
+            .search-bar::before {
+                content: "🔍";
+                position: absolute;
+                left: 0.75rem;
+                top: 50%;
+                transform: translateY(-50%);
+                opacity: 0.6;
+                font-size: 0.875rem;
+            }
+
+            .header-right {
+                display: flex;
+                align-items: center;
+                gap: 1rem;
+            }
+
+            .network-badge {
                 display: inline-flex;
                 align-items: center;
                 gap: 0.5rem;
-                padding: 0.5rem 1rem;
+                padding: 0.35rem 0.75rem;
+                background: rgba(34, 197, 94, 0.1);
+                border: 1px solid rgba(34, 197, 94, 0.2);
                 border-radius: 9999px;
-                font-size: 0.875rem;
+                font-size: 0.75rem;
                 font-weight: 500;
-            }
-
-            .status-badge.running {
-                background: rgba(34, 197, 94, 0.15);
                 color: var(--success);
             }
 
-            .status-badge.stopped {
-                background: rgba(239, 68, 68, 0.15);
-                color: var(--danger);
-            }
-
-            .status-dot {
-                width: 8px;
-                height: 8px;
+            .network-badge::before {
+                content: "";
+                width: 6px;
+                height: 6px;
+                background: var(--success);
                 border-radius: 50%;
-                background: currentColor;
                 animation: pulse 2s infinite;
             }
 
             @keyframes pulse {
-                0%,
-                100% {
-                    opacity: 1;
-                }
-                50% {
-                    opacity: 0.5;
-                }
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
             }
 
-            .grid {
+            /* Sidebar */
+            .sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: var(--sidebar-width);
+                height: 100vh;
+                background: var(--bg-secondary);
+                border-right: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                z-index: 101;
+            }
+
+            .sidebar-brand {
+                height: var(--header-height);
+                display: flex;
+                align-items: center;
+                padding: 0 1.25rem;
+                border-bottom: 1px solid var(--border);
+                font-weight: 700;
+                font-size: 1.25rem;
+                gap: 0.5rem;
+            }
+
+            .sidebar-brand .logo {
+                width: 28px;
+                height: 28px;
+                background: linear-gradient(135deg, var(--accent), #8b5cf6);
+                border-radius: 6px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.875rem;
+            }
+
+            .sidebar-nav {
+                flex: 1;
+                padding: 1rem 0.75rem;
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+                overflow-y: auto;
+            }
+
+            .nav-item {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                padding: 0.65rem 0.875rem;
+                border-radius: 8px;
+                color: var(--text-secondary);
+                font-size: 0.875rem;
+                font-weight: 500;
+                cursor: pointer;
+                transition: all 0.15s;
+                text-decoration: none;
+            }
+
+            .nav-item:hover {
+                background: var(--bg-hover);
+                color: var(--text-primary);
+            }
+
+            .nav-item.active {
+                background: rgba(59, 130, 246, 0.15);
+                color: var(--accent);
+            }
+
+            .nav-icon {
+                width: 20px;
+                text-align: center;
+                font-size: 1rem;
+            }
+
+            /* Main Content */
+            .main-content {
+                margin-left: var(--sidebar-width);
+                margin-top: var(--header-height);
+                padding: 1.5rem;
+                min-height: calc(100vh - var(--header-height));
+            }
+
+            .page-header {
+                margin-bottom: 1.5rem;
+            }
+
+            .page-header h1 {
+                font-size: 1.5rem;
+                font-weight: 700;
+                color: var(--text-primary);
+            }
+
+            .page-header p {
+                color: var(--text-secondary);
+                font-size: 0.875rem;
+                margin-top: 0.25rem;
+            }
+
+            /* Cards */
+            .card-grid {
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 1.5rem;
-                margin-bottom: 2rem;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 1rem;
+                margin-bottom: 1.5rem;
             }
 
             .card {
                 background: var(--bg-secondary);
-                border-radius: 1rem;
-                padding: 1.5rem;
-                border: 1px solid rgba(255, 255, 255, 0.05);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 1.25rem;
             }
 
             .card-header {
                 display: flex;
-                justify-content: space-between;
                 align-items: center;
-                margin-bottom: 1rem;
+                justify-content: space-between;
+                margin-bottom: 0.75rem;
             }
 
             .card-title {
-                font-size: 1rem;
+                font-size: 0.75rem;
                 font-weight: 600;
                 color: var(--text-secondary);
                 text-transform: uppercase;
                 letter-spacing: 0.05em;
             }
 
-            .metric-value {
-                font-size: 2.5rem;
+            .card-value {
+                font-size: 1.75rem;
                 font-weight: 700;
                 color: var(--text-primary);
-                line-height: 1.2;
             }
 
-            .metric-sub {
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-                margin-top: 0.5rem;
-            }
-
-            .progress-bar {
-                height: 8px;
-                background: var(--bg-primary);
-                border-radius: 4px;
-                overflow: hidden;
-                margin-top: 0.75rem;
-            }
-
-            .progress-fill {
-                height: 100%;
-                border-radius: 4px;
-                transition: width 0.5s ease;
-            }
-
-            .progress-fill.wu_feng {
-                background: linear-gradient(90deg, #22c55e, #16a34a);
-            }
-            .progress-fill.xiang_da {
-                background: linear-gradient(90deg, #3b82f6, #2563eb);
-            }
-            .progress-fill.zi_zai {
-                background: linear-gradient(90deg, #8b5cf6, #7c3aed);
-            }
-
-            .activity-list {
-                list-style: none;
-                max-height: 300px;
-                overflow-y: auto;
-            }
-
-            .activity-item {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 0.75rem 0;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-                font-size: 0.875rem;
-            }
-
-            .activity-item:last-child {
-                border-bottom: none;
-            }
-
-            .activity-hash {
-                font-family: monospace;
-                color: var(--accent);
-            }
-
-            .activity-time {
-                color: var(--text-secondary);
+            .card-sub {
                 font-size: 0.75rem;
+                color: var(--text-muted);
+                margin-top: 0.25rem;
+            }
+
+            .card-delta {
+                font-size: 0.75rem;
+                font-weight: 600;
+                padding: 0.2rem 0.5rem;
+                border-radius: 9999px;
+                background: rgba(34, 197, 94, 0.1);
+                color: var(--success);
+            }
+
+            /* Panels Grid */
+            .panels-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 1.5rem;
+                margin-bottom: 1.5rem;
+            }
+
+            @media (max-width: 1024px) {
+                .panels-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+
+            .panel {
+                background: var(--bg-secondary);
+                border: 1px solid var(--border);
+                border-radius: 12px;
+                padding: 1.25rem;
+            }
+
+            .panel-title {
+                font-size: 0.875rem;
+                font-weight: 600;
+                color: var(--text-primary);
+                margin-bottom: 1rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
             }
 
             .stat-row {
                 display: flex;
                 justify-content: space-between;
-                padding: 0.5rem 0;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                align-items: center;
+                padding: 0.6rem 0;
+                border-bottom: 1px solid var(--border);
             }
 
             .stat-row:last-child {
@@ -212,501 +344,578 @@
             }
 
             .stat-label {
+                font-size: 0.875rem;
                 color: var(--text-secondary);
             }
 
             .stat-value {
+                font-size: 0.875rem;
+                font-weight: 600;
+                color: var(--text-primary);
+            }
+
+            .stat-value.success { color: var(--success); }
+            .stat-value.warning { color: var(--warning); }
+            .stat-value.danger { color: var(--danger); }
+
+            /* Progress Bars */
+            .metric-bar {
+                margin-bottom: 1rem;
+            }
+
+            .metric-bar-header {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 0.5rem;
+                font-size: 0.875rem;
+            }
+
+            .metric-bar-label {
+                color: var(--text-secondary);
+            }
+
+            .metric-bar-value {
                 font-weight: 600;
             }
 
-            .btn {
-                padding: 0.5rem 1rem;
-                border-radius: 0.5rem;
+            .metric-bar-track {
+                height: 8px;
+                background: var(--bg-tertiary);
+                border-radius: 4px;
+                overflow: hidden;
+            }
+
+            .metric-bar-fill {
+                height: 100%;
+                border-radius: 4px;
+                transition: width 0.5s ease;
+            }
+
+            .fill-wu { background: linear-gradient(90deg, #22c55e, #16a34a); }
+            .fill-xiang { background: linear-gradient(90deg, #3b82f6, #2563eb); }
+            .fill-zi { background: linear-gradient(90deg, #8b5cf6, #7c3aed); }
+
+            /* Tables */
+            .table-container {
+                overflow-x: auto;
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.875rem;
+            }
+
+            th {
+                text-align: left;
+                padding: 0.75rem;
+                color: var(--text-secondary);
                 font-weight: 500;
-                cursor: pointer;
-                border: none;
-                transition: all 0.2s;
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
             }
 
-            .btn-primary {
-                background: var(--accent);
-                color: white;
+            td {
+                padding: 0.75rem;
+                border-bottom: 1px solid var(--border);
+                color: var(--text-primary);
+                white-space: nowrap;
             }
 
-            .btn-primary:hover {
-                background: var(--accent-hover);
+            tr:last-child td {
+                border-bottom: none;
             }
 
-            .fade-in {
-                animation: fadeIn 0.3s ease;
+            tr:hover td {
+                background: rgba(255, 255, 255, 0.02);
+            }
+
+            .mono {
+                font-family: "SF Mono", Monaco, monospace;
+                color: var(--accent);
+            }
+
+            .badge {
+                display: inline-block;
+                padding: 0.2rem 0.5rem;
+                border-radius: 4px;
+                font-size: 0.75rem;
+                font-weight: 500;
+            }
+
+            .badge-success {
+                background: rgba(34, 197, 94, 0.1);
+                color: var(--success);
+            }
+
+            .badge-muted {
+                background: var(--bg-tertiary);
+                color: var(--text-secondary);
+            }
+
+            /* Empty state */
+            .empty-state {
+                text-align: center;
+                padding: 2rem;
+                color: var(--text-muted);
+                font-size: 0.875rem;
+            }
+
+            /* Section visibility */
+            .section {
+                display: none;
+            }
+
+            .section.active {
+                display: block;
+                animation: fadeIn 0.2s ease;
             }
 
             @keyframes fadeIn {
-                from {
-                    opacity: 0;
-                    transform: translateY(10px);
-                }
-                to {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
+                from { opacity: 0; transform: translateY(4px); }
+                to { opacity: 1; transform: translateY(0); }
             }
 
-            ::-webkit-scrollbar {
-                width: 6px;
-            }
-
-            ::-webkit-scrollbar-track {
-                background: var(--bg-primary);
-            }
-
-            ::-webkit-scrollbar-thumb {
-                background: var(--bg-card);
-                border-radius: 3px;
-            }
-
-            .metrics-grid {
-                display: grid;
-                grid-template-columns: repeat(3, 1fr);
-                gap: 1rem;
-            }
-
+            /* Mobile */
             @media (max-width: 768px) {
-                .metrics-grid {
-                    grid-template-columns: 1fr;
-                }
+                :root { --sidebar-width: 0px; }
+                .sidebar { display: none; }
+                .top-header .brand { margin-left: 0; }
+                .search-bar { display: none; }
+                .card-grid { grid-template-columns: 1fr; }
             }
         </style>
     </head>
-    <body x-data="dashboard()">
-        <div class="container">
-            <header>
-                <h1>⚡ zknot3 Dashboard</h1>
-                <div
-                    class="status-badge"
-                    :class="nodeInfo?.state === 'running' ? 'running' : 'stopped'"
-                >
-                    <span class="status-dot"></span>
-                    <span x-text="nodeInfo?.state || 'loading'"
-                        >Loading...</span
-                    >
-                </div>
-            </header>
-
-            <!-- System Overview -->
-            <div class="grid">
-                <div class="card fade-in">
-                    <div class="card-header">
-                        <span class="card-title">Uptime</span>
-                    </div>
-                    <div class="metric-value">
-                        <span
-                            x-text="formatUptime(nodeInfo?.uptime_seconds || 0)"
-                            >--</span
-                        >
-                    </div>
-                    <div class="metric-sub">
-                        Version:
-                        <span x-text="nodeInfo?.version || '--'">--</span>
-                    </div>
-                </div>
-
-                <div class="card fade-in">
-                    <div class="card-header">
-                        <span class="card-title">Committed Blocks</span>
-                    </div>
-                    <div class="metric-value">
-                        <span x-text="nodeInfo?.committed_blocks || 0">0</span>
-                    </div>
-                    <div class="metric-sub">
-                        Checkpoint: #<span
-                            x-text="nodeInfo?.checkpoint_sequence || 0"
-                            >0</span
-                        >
-                    </div>
-                </div>
-
-                <div class="card fade-in">
-                    <div class="card-header">
-                        <span class="card-title">Transactions</span>
-                    </div>
-                    <div class="metric-value">
-                        <span x-text="txnStats?.total_executed || 0">0</span>
-                    </div>
-                    <div class="metric-sub">
-                        Pending: <span x-text="txnStats?.pending || 0">0</span>
-                    </div>
+    <body x-data="dashboard()" x-init="init()">
+        <!-- Top Header -->
+        <header class="top-header">
+            <div class="brand">
+                <div class="brand-icon">⚡</div>
+                <span>zknot3 Explorer</span>
+            </div>
+            <div class="search-bar">
+                <input type="text" placeholder="Search by block, tx, or address..." />
+            </div>
+            <div class="header-right">
+                <div class="network-badge">
+                    <span x-text="nodeInfo?.state === 'running' ? 'Live' : 'Offline'"></span>
                 </div>
             </div>
+        </header>
 
-            <!-- Consensus Panel -->
-            <div class="grid">
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">🔗 Consensus</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Current Round</span>
-                        <span
-                            class="stat-value"
-                            x-text="consensus?.current_round || 0"
-                            >0</span
-                        >
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Highest Block</span>
-                        <span
-                            class="stat-value"
-                            x-text="consensus?.highest_committed_block || 0"
-                            >0</span
-                        >
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Active Validators</span>
-                        <span
-                            class="stat-value"
-                            x-text="consensus?.active_validators || 0"
-                            >0</span
-                        >
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Quorum</span>
-                        <span
-                            class="stat-value"
-                            :class="consensus?.quorum_reached ? 'text-success' : 'text-warning'"
-                            x-text="consensus?.quorum_reached ? '✓ Reached' : '⟳ Forming'"
-                            >--</span
-                        >
-                    </div>
-                </div>
-
-                <!-- Transaction Pool -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">📦 Transaction Pool</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Pending</span>
-                        <span class="stat-value" x-text="txnStats?.pending || 0"
-                            >0</span
-                        >
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Executing</span>
-                        <span
-                            class="stat-value"
-                            x-text="txnStats?.executing || 0"
-                            >0</span
-                        >
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Total Executed</span>
-                        <span
-                            class="stat-value"
-                            x-text="txnStats?.total_executed || 0"
-                            >0</span
-                        >
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Objects</span>
-                        <span
-                            class="stat-value"
-                            x-text="nodeInfo?.object_store_count || 0"
-                            >0</span
-                        >
-                    </div>
-                </div>
+        <!-- Left Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="logo">⚡</div>
+                <span>zknot3</span>
             </div>
+            <nav class="sidebar-nav">
+                <a class="nav-item" :class="tab === 'dashboard' ? 'active' : ''" @click.prevent="tab = 'dashboard'">
+                    <span class="nav-icon">🏠</span>
+                    <span>Dashboard</span>
+                </a>
+                <a class="nav-item" :class="tab === 'blocks' ? 'active' : ''" @click.prevent="tab = 'blocks'; fetchBlocks()">
+                    <span class="nav-icon">📦</span>
+                    <span>Blocks</span>
+                </a>
+                <a class="nav-item" :class="tab === 'transactions' ? 'active' : ''" @click.prevent="tab = 'transactions'; fetchTransactions()">
+                    <span class="nav-icon">⚡</span>
+                    <span>Transactions</span>
+                </a>
+                <a class="nav-item" :class="tab === 'validators' ? 'active' : ''" @click.prevent="tab = 'validators'; fetchValidators()">
+                    <span class="nav-icon">👥</span>
+                    <span>Validators</span>
+                </a>
+                <a class="nav-item" :class="tab === 'epoch' ? 'active' : ''" @click.prevent="tab = 'epoch'; fetchEpoch()">
+                    <span class="nav-icon">🗳️</span>
+                    <span>Epoch</span>
+                </a>
+                <a class="nav-item" :class="tab === 'metrics' ? 'active' : ''" @click.prevent="tab = 'metrics'">
+                    <span class="nav-icon">📊</span>
+                    <span>Metrics</span>
+                </a>
+            </nav>
+        </aside>
 
-            <!-- 三源指标 -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title"
-                        >📊 三源指标 (Tri-Source Metrics)</span
-                    >
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard Tab -->
+            <div class="section" :class="tab === 'dashboard' ? 'active' : ''">
+                <div class="page-header">
+                    <h1>Dashboard</h1>
+                    <p>Real-time overview of the zknot3 network</p>
                 </div>
-                <div class="metrics-grid">
-                    <div>
-                        <div
-                            style="
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            <span>物丰 (Wu Feng)</span>
-                            <span
-                                style="color: var(--success); font-weight: 600"
-                                x-text="((metrics?.wu_feng || 0) * 100).toFixed(1) + '%'"
-                                >--</span
-                            >
+
+                <!-- Overview Cards -->
+                <div class="card-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Committed Blocks</span>
+                            <span class="card-delta">Live</span>
                         </div>
-                        <div
-                            style="
-                                color: var(--text-secondary);
-                                font-size: 0.75rem;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            Resource Efficiency
+                        <div class="card-value" x-text="formatNumber(nodeInfo?.committed_blocks || 0)">0</div>
+                        <div class="card-sub">Round #<span x-text="consensus?.current_round || 0">0</span></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Total Transactions</span>
                         </div>
-                        <div class="progress-bar">
-                            <div
-                                class="progress-fill wu_feng"
-                                :style="'width:' + ((metrics?.wu_feng || 0) * 100) + '%'"
-                            ></div>
+                        <div class="card-value" x-text="formatNumber(txnStats?.total_executed || 0)">0</div>
+                        <div class="card-sub"><span x-text="txnStats?.pending || 0">0</span> pending</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Validators</span>
+                        </div>
+                        <div class="card-value" x-text="consensus?.active_validators || 0">0</div>
+                        <div class="card-sub" x-text="consensus?.quorum_reached ? 'Quorum reached' : 'Quorum forming'">--</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title">Uptime</span>
+                        </div>
+                        <div class="card-value" x-text="formatUptime(nodeInfo?.uptime_seconds || 0)">--</div>
+                        <div class="card-sub">v<span x-text="nodeInfo?.version || '--'">--</span></div>
+                    </div>
+                </div>
+
+                <div class="panels-grid">
+                    <!-- Consensus Panel -->
+                    <div class="panel">
+                        <div class="panel-title">🔗 Consensus Status</div>
+                        <div class="stat-row">
+                            <span class="stat-label">Current Round</span>
+                            <span class="stat-value" x-text="consensus?.current_round || 0">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Highest Block</span>
+                            <span class="stat-value" x-text="consensus?.highest_committed_block || 0">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Active Validators</span>
+                            <span class="stat-value" x-text="consensus?.active_validators || 0">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Quorum</span>
+                            <span class="stat-value" :class="consensus?.quorum_reached ? 'success' : 'warning'"
+                                x-text="consensus?.quorum_reached ? 'Reached' : 'Forming'">--</span>
                         </div>
                     </div>
-                    <div>
-                        <div
-                            style="
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            <span>象大 (Xiang Da)</span>
-                            <span
-                                style="color: var(--accent); font-weight: 600"
-                                x-text="((metrics?.xiang_da || 0) * 100).toFixed(1) + '%'"
-                                >--</span
-                            >
+
+                    <!-- Transaction Pool -->
+                    <div class="panel">
+                        <div class="panel-title">📦 Transaction Pool</div>
+                        <div class="stat-row">
+                            <span class="stat-label">Pending</span>
+                            <span class="stat-value" x-text="txnStats?.pending || 0">0</span>
                         </div>
-                        <div
-                            style="
-                                color: var(--text-secondary);
-                                font-size: 0.75rem;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            Knowledge Coverage
+                        <div class="stat-row">
+                            <span class="stat-label">Executing</span>
+                            <span class="stat-value" x-text="txnStats?.executing || 0">0</span>
                         </div>
-                        <div class="progress-bar">
-                            <div
-                                class="progress-fill xiang_da"
-                                :style="'width:' + ((metrics?.xiang_da || 0) * 100) + '%'"
-                            ></div>
+                        <div class="stat-row">
+                            <span class="stat-label">Total Executed</span>
+                            <span class="stat-value" x-text="txnStats?.total_executed || 0">0</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Objects</span>
+                            <span class="stat-value" x-text="nodeInfo?.object_store_count || 0">0</span>
                         </div>
                     </div>
-                    <div>
-                        <div
-                            style="
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            <span>性自在 (Zi Zai)</span>
-                            <span
-                                style="color: #8b5cf6; font-weight: 600"
-                                x-text="((metrics?.zi_zai || 0) * 100).toFixed(1) + '%'"
-                                >--</span
-                            >
+                </div>
+
+                <!-- Tri-Source Metrics -->
+                <div class="panel" style="margin-bottom: 1.5rem;">
+                    <div class="panel-title">📊 三源指标 (Tri-Source Metrics)</div>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem;">
+                        <div class="metric-bar">
+                            <div class="metric-bar-header">
+                                <span class="metric-bar-label">物丰 Wu Feng</span>
+                                <span class="metric-bar-value" style="color: var(--success);"
+                                    x-text="formatPercent(metrics?.wu_feng || 0)">0%</span>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill fill-wu" :style="'width:' + ((metrics?.wu_feng || 0) * 100) + '%'"></div>
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Resource Efficiency</div>
                         </div>
-                        <div
-                            style="
-                                color: var(--text-secondary);
-                                font-size: 0.75rem;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            User Satisfaction
+                        <div class="metric-bar">
+                            <div class="metric-bar-header">
+                                <span class="metric-bar-label">象大 Xiang Da</span>
+                                <span class="metric-bar-value" style="color: var(--accent);"
+                                    x-text="formatPercent(metrics?.xiang_da || 0)">0%</span>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill fill-xiang" :style="'width:' + ((metrics?.xiang_da || 0) * 100) + '%'"></div>
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Knowledge Coverage</div>
                         </div>
-                        <div class="progress-bar">
-                            <div
-                                class="progress-fill zi_zai"
-                                :style="'width:' + ((metrics?.zi_zai || 0) * 100) + '%'"
-                            ></div>
+                        <div class="metric-bar">
+                            <div class="metric-bar-header">
+                                <span class="metric-bar-label">性自在 Zi Zai</span>
+                                <span class="metric-bar-value" style="color: #8b5cf6;"
+                                    x-text="formatPercent(metrics?.zi_zai || 0)">0%</span>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill fill-zi" :style="'width:' + ((metrics?.zi_zai || 0) * 100) + '%'"></div>
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">User Satisfaction</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Activity -->
+                <div class="panels-grid">
+                    <div class="panel">
+                        <div class="panel-title">📜 Recent Blocks</div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr><th>Block</th><th>Txs</th><th>Time</th></tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="block in recentBlocks.slice(0, 5)" :key="block.hash">
+                                        <tr>
+                                            <td class="mono" x-text="'#' + block.round">--</td>
+                                            <td x-text="block.tx_count">0</td>
+                                            <td x-text="formatTime(block.timestamp)">--</td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="recentBlocks.length === 0">
+                                        <td colspan="3" class="empty-state">No recent blocks</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-title">⚡ Recent Transactions</div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr><th>Hash</th><th>Status</th><th>Gas</th></tr>
+                                </thead>
+                                <tbody>
+                                    <template x-for="txn in recentTxns.slice(0, 5)" :key="txn.hash">
+                                        <tr>
+                                            <td class="mono" x-text="txn.hash.substring(0, 10) + '...'">--</td>
+                                            <td><span class="badge" :class="txn.status === 'executed' || txn.status === 'success' ? 'badge-success' : 'badge-muted'" x-text="txn.status">--</span></td>
+                                            <td x-text="txn.gas_used">0</td>
+                                        </tr>
+                                    </template>
+                                    <tr x-show="recentTxns.length === 0">
+                                        <td colspan="3" class="empty-state">No recent transactions</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- System Info -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title">💻 System Info</span>
+            <!-- Blocks Tab -->
+            <div class="section" :class="tab === 'blocks' ? 'active' : ''">
+                <div class="page-header">
+                    <h1>Blocks</h1>
+                    <p>All committed blocks</p>
                 </div>
-                <div class="metrics-grid">
-                    <div>
-                        <div
-                            style="
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            <span>CPU Cores</span>
-                            <span
-                                style="color: var(--accent); font-weight: 600"
-                                x-text="systemInfo?.cpu_count || '--'"
-                                >--</span
-                            >
-                        </div>
-                        <div
-                            style="
-                                color: var(--text-secondary);
-                                font-size: 0.75rem;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            Physical cores
-                        </div>
-                    </div>
-                    <div>
-                        <div
-                            style="
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            <span>Memory</span>
-                            <span
-                                style="color: var(--accent); font-weight: 600"
-                                x-text="systemInfo ? formatBytes(systemInfo.total_memory_bytes) : '--'"
-                                >--</span
-                            >
-                        </div>
-                        <div
-                            style="
-                                color: var(--text-secondary);
-                                font-size: 0.75rem;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            Total system memory
-                        </div>
-                    </div>
-                    <div>
-                        <div
-                            style="
-                                display: flex;
-                                justify-content: space-between;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            <span>CPU Usage</span>
-                            <span
-                                style="color: #8b5cf6; font-weight: 600"
-                                x-text="((systemInfo?.cpu_usage_percent || 0) * 100).toFixed(1) + '%'"
-                                >--</span
-                            >
-                        </div>
-                        <div
-                            style="
-                                color: var(--text-secondary);
-                                font-size: 0.75rem;
-                                margin-bottom: 0.5rem;
-                            "
-                        >
-                            Process CPU
-                        </div>
+                <div class="panel">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr><th>Round</th><th>Hash</th><th>Author</th><th>Txs</th><th>Time</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="block in recentBlocks" :key="block.hash">
+                                    <tr>
+                                        <td x-text="'#' + block.round">--</td>
+                                        <td class="mono" x-text="block.hash.substring(0, 16) + '...'">--</td>
+                                        <td class="mono" x-text="block.author.substring(0, 12) + '...'">--</td>
+                                        <td x-text="block.tx_count">0</td>
+                                        <td x-text="formatTime(block.timestamp)">--</td>
+                                    </tr>
+                                </template>
+                                <tr x-show="recentBlocks.length === 0">
+                                    <td colspan="5" class="empty-state">No blocks found</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
 
-            <!-- Recent Activity -->
-            <div class="grid">
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">📜 Recent Blocks</span>
-                        <button class="btn btn-primary" @click="fetchBlocks()">
-                            Refresh
-                        </button>
-                    </div>
-                    <ul class="activity-list" id="blocks-list">
-                        <template
-                            x-for="block in recentBlocks"
-                            :key="block.hash"
-                        >
-                            <li class="activity-item">
-                                <span
-                                    class="activity-hash"
-                                    x-text="'Block #' + block.round"
-                                ></span>
-                                <span
-                                    class="activity-time"
-                                    x-text="block.timestamp ? formatTime(block.timestamp) : '--'"
-                                ></span>
-                            </li>
-                        </template>
-                        <li
-                            x-show="recentBlocks.length === 0"
-                            class="activity-item"
-                            style="
-                                justify-content: center;
-                                color: var(--text-secondary);
-                            "
-                        >
-                            No recent blocks
-                        </li>
-                    </ul>
+            <!-- Transactions Tab -->
+            <div class="section" :class="tab === 'transactions' ? 'active' : ''">
+                <div class="page-header">
+                    <h1>Transactions</h1>
+                    <p>Transaction history</p>
                 </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-title">⚡ Recent Transactions</span>
-                        <button
-                            class="btn btn-primary"
-                            @click="fetchTransactions()"
-                        >
-                            Refresh
-                        </button>
+                <div class="panel">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr><th>Hash</th><th>Status</th><th>Gas Used</th><th>Sender</th><th>Time</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="txn in recentTxns" :key="txn.hash">
+                                    <tr>
+                                        <td class="mono" x-text="txn.hash.substring(0, 16) + '...'">--</td>
+                                        <td><span class="badge" :class="txn.status === 'executed' || txn.status === 'success' ? 'badge-success' : 'badge-muted'" x-text="txn.status">--</span></td>
+                                        <td x-text="txn.gas_used">0</td>
+                                        <td class="mono" x-text="txn.sender.substring(0, 12) + '...'">--</td>
+                                        <td x-text="formatTime(txn.timestamp)">--</td>
+                                    </tr>
+                                </template>
+                                <tr x-show="recentTxns.length === 0">
+                                    <td colspan="5" class="empty-state">No transactions found</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
-                    <ul class="activity-list" id="txns-list">
-                        <template x-for="txn in recentTxns" :key="txn.hash">
-                            <li class="activity-item">
-                                <span
-                                    class="activity-hash"
-                                    x-text="txn.hash.substring(0, 8) + '...'"
-                                ></span>
-                                <span
-                                    class="activity-time"
-                                    x-text="txn.timestamp ? formatTime(txn.timestamp) : '--'"
-                                ></span>
-                            </li>
-                        </template>
-                        <li
-                            x-show="recentTxns.length === 0"
-                            class="activity-item"
-                            style="
-                                justify-content: center;
-                                color: var(--text-secondary);
-                            "
-                        >
-                            No recent transactions
-                        </li>
-                    </ul>
                 </div>
             </div>
-        </div>
+
+            <!-- Validators Tab -->
+            <div class="section" :class="tab === 'validators' ? 'active' : ''">
+                <div class="page-header">
+                    <h1>Validators</h1>
+                    <p>Active validator set and stake distribution</p>
+                </div>
+                <div class="panel">
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr><th>ID</th><th>Stake</th><th>Voting Power</th><th>Status</th></tr>
+                            </thead>
+                            <tbody>
+                                <template x-for="v in validators" :key="v.id">
+                                    <tr>
+                                        <td class="mono" x-text="v.id.substring(0, 16) + '...'">--</td>
+                                        <td x-text="formatNumber(v.stake)">0</td>
+                                        <td x-text="formatNumber(v.voting_power)">0</td>
+                                        <td><span class="badge badge-success" x-text="v.is_active ? 'Active' : 'Inactive'">--</span></td>
+                                    </tr>
+                                </template>
+                                <tr x-show="validators.length === 0">
+                                    <td colspan="4" class="empty-state">No validators configured</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Epoch Tab -->
+            <div class="section" :class="tab === 'epoch' ? 'active' : ''">
+                <div class="page-header">
+                    <h1>Epoch</h1>
+                    <p>Current epoch information</p>
+                </div>
+                <div class="card-grid">
+                    <div class="card">
+                        <div class="card-title">Epoch Number</div>
+                        <div class="card-value" x-text="epoch?.epoch_number ?? 0">0</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Total Stake</div>
+                        <div class="card-value" x-text="formatNumber(epoch?.total_stake || 0)">0</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Validators</div>
+                        <div class="card-value" x-text="epoch?.validator_count || 0">0</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Quorum Threshold</div>
+                        <div class="card-value" x-text="formatNumber(epoch?.quorum_threshold || 0)">0</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="stat-row">
+                        <span class="stat-label">Needs Reconfiguration</span>
+                        <span class="stat-value" :class="epoch?.needs_reconfiguration ? 'warning' : 'success'"
+                            x-text="epoch?.needs_reconfiguration ? 'Yes' : 'No'">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metrics Tab -->
+            <div class="section" :class="tab === 'metrics' ? 'active' : ''">
+                <div class="page-header">
+                    <h1>System Metrics</h1>
+                    <p>Node performance and system information</p>
+                </div>
+                <div class="panels-grid">
+                    <div class="panel">
+                        <div class="panel-title">🖥️ System Info</div>
+                        <div class="stat-row">
+                            <span class="stat-label">CPU Cores</span>
+                            <span class="stat-value" x-text="systemInfo?.cpu_count || '--'">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Total Memory</span>
+                            <span class="stat-value" x-text="systemInfo ? formatBytes(systemInfo.total_memory_bytes) : '--'">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">CPU Usage</span>
+                            <span class="stat-value" x-text="(systemInfo?.cpu_usage_percent || 0).toFixed(1) + '%'">0%</span>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-title">📈 Tri-Source Metrics</div>
+                        <div class="metric-bar">
+                            <div class="metric-bar-header">
+                                <span class="metric-bar-label">物丰 Wu Feng</span>
+                                <span class="metric-bar-value" style="color: var(--success);" x-text="formatPercent(metrics?.wu_feng || 0)">0%</span>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill fill-wu" :style="'width:' + ((metrics?.wu_feng || 0) * 100) + '%'"></div>
+                            </div>
+                        </div>
+                        <div class="metric-bar">
+                            <div class="metric-bar-header">
+                                <span class="metric-bar-label">象大 Xiang Da</span>
+                                <span class="metric-bar-value" style="color: var(--accent);" x-text="formatPercent(metrics?.xiang_da || 0)">0%</span>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill fill-xiang" :style="'width:' + ((metrics?.xiang_da || 0) * 100) + '%'"></div>
+                            </div>
+                        </div>
+                        <div class="metric-bar">
+                            <div class="metric-bar-header">
+                                <span class="metric-bar-label">性自在 Zi Zai</span>
+                                <span class="metric-bar-value" style="color: #8b5cf6;" x-text="formatPercent(metrics?.zi_zai || 0)">0%</span>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill fill-zi" :style="'width:' + ((metrics?.zi_zai || 0) * 100) + '%'"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
 
         <script>
             function dashboard() {
                 return {
+                    tab: 'dashboard',
                     nodeInfo: null,
                     consensus: null,
                     txnStats: null,
                     metrics: null,
                     systemInfo: null,
+                    epoch: null,
+                    validators: [],
                     recentBlocks: [],
                     recentTxns: [],
 
                     async fetchData() {
                         try {
-                            const [
-                                nodeRes,
-                                consensusRes,
-                                txnRes,
-                                metricsRes,
-                                systemRes,
-                            ] = await Promise.all([
-                                fetch("/api/node/info").then((r) => r.json()).catch(() => null),
-                                fetch("/api/consensus/status").then((r) => r.json()).catch(() => null),
-                                fetch("/api/txn/stats").then((r) => r.json()).catch(() => null),
-                                fetch("/api/metrics").then((r) => r.json()).catch(() => null),
-                                fetch("/api/system/info").then((r) => r.json()).catch(() => null),
+                            const [nodeRes, consensusRes, txnRes, metricsRes, systemRes] = await Promise.all([
+                                fetch("/api/node/info").then(r => r.json()).catch(() => null),
+                                fetch("/api/consensus/status").then(r => r.json()).catch(() => null),
+                                fetch("/api/txn/stats").then(r => r.json()).catch(() => null),
+                                fetch("/api/metrics").then(r => r.json()).catch(() => null),
+                                fetch("/api/system/info").then(r => r.json()).catch(() => null),
                             ]);
                             this.nodeInfo = nodeRes;
                             this.consensus = consensusRes;
@@ -720,13 +929,8 @@
 
                     async fetchBlocks() {
                         try {
-                            const res = await fetch("/api/blocks")
-                                .then((r) => r.json())
-                                .catch(() => null);
-                            if (res && res.blocks) {
-                                this.recentBlocks = res.blocks;
-                                this.scheduleNextBlockRefresh();
-                            }
+                            const res = await fetch("/api/blocks").then(r => r.json()).catch(() => null);
+                            if (res && res.blocks) this.recentBlocks = res.blocks;
                         } catch (e) {
                             console.error("Failed to fetch blocks:", e);
                         }
@@ -734,20 +938,33 @@
 
                     async fetchTransactions() {
                         try {
-                            const res = await fetch("/api/transactions")
-                                .then((r) => r.json())
-                                .catch(() => null);
-                            if (res && res.transactions) {
-                                this.recentTxns = res.transactions;
-                                this.scheduleNextTxnRefresh();
-                            }
+                            const res = await fetch("/api/transactions").then(r => r.json()).catch(() => null);
+                            if (res && res.transactions) this.recentTxns = res.transactions;
                         } catch (e) {
                             console.error("Failed to fetch transactions:", e);
                         }
                     },
 
+                    async fetchValidators() {
+                        try {
+                            const res = await fetch("/api/validators").then(r => r.json()).catch(() => null);
+                            if (res && res.validators) this.validators = res.validators;
+                        } catch (e) {
+                            console.error("Failed to fetch validators:", e);
+                        }
+                    },
+
+                    async fetchEpoch() {
+                        try {
+                            const res = await fetch("/api/epoch").then(r => r.json()).catch(() => null);
+                            if (res) this.epoch = res;
+                        } catch (e) {
+                            console.error("Failed to fetch epoch:", e);
+                        }
+                    },
+
                     formatUptime(seconds) {
-                        if (!seconds) return "--";
+                        if (!seconds) return "0m";
                         const days = Math.floor(seconds / 86400);
                         const hours = Math.floor((seconds % 86400) / 3600);
                         const mins = Math.floor((seconds % 3600) / 60);
@@ -763,7 +980,7 @@
                     },
 
                     formatBytes(bytes) {
-                        if (!bytes) return "--";
+                        if (!bytes) return "0 B";
                         const units = ["B", "KB", "MB", "GB", "TB"];
                         let i = 0;
                         while (bytes >= 1024 && i < units.length - 1) {
@@ -773,41 +990,21 @@
                         return bytes.toFixed(1) + " " + units[i];
                     },
 
-                    // Auto-refresh blocks based on oldest block timestamp
-                    scheduleNextBlockRefresh() {
-                        if (this.recentBlocks.length > 0) {
-                            const oldest = this.recentBlocks[this.recentBlocks.length - 1];
-                            if (oldest && oldest.timestamp) {
-                                const now = Math.floor(Date.now() / 1000);
-                                const nextUpdate = oldest.timestamp + 5;
-                                const delay = Math.max(1000, (nextUpdate - now) * 1000);
-                                setTimeout(() => {
-                                    this.fetchBlocks();
-                                }, delay);
-                            }
-                        }
+                    formatNumber(num) {
+                        if (num === undefined || num === null) return "0";
+                        return num.toLocaleString();
                     },
 
-                    // Auto-refresh transactions based on oldest txn timestamp
-                    scheduleNextTxnRefresh() {
-                        if (this.recentTxns.length > 0) {
-                            const oldest = this.recentTxns[this.recentTxns.length - 1];
-                            if (oldest && oldest.timestamp) {
-                                const now = Math.floor(Date.now() / 1000);
-                                const nextUpdate = oldest.timestamp + 5;
-                                const delay = Math.max(1000, (nextUpdate - now) * 1000);
-                                setTimeout(() => {
-                                    this.fetchTransactions();
-                                }, delay);
-                            }
-                        }
+                    formatPercent(val) {
+                        return (val * 100).toFixed(1) + "%";
                     },
 
                     init() {
                         this.fetchData();
                         this.fetchBlocks();
                         this.fetchTransactions();
-                        // Refresh main data every 5s
+                        this.fetchValidators();
+                        this.fetchEpoch();
                         setInterval(() => this.fetchData(), 5000);
                     },
                 };
