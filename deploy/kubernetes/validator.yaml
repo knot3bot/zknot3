@@ -1,0 +1,182 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zknot3-config
+  namespace: zknot3
+data:
+  config.toml: |
+    [network]
+    bind_address = "0.0.0.0"
+    rpc_port = 9000
+    p2p_enabled = true
+    p2p_port = 8080
+    max_connections = 1024
+
+    [consensus]
+    validator_enabled = true
+    min_validator_stake = 1000000000
+    min_validators = 4
+    epoch_duration_secs = 86400
+
+    [storage]
+    data_dir = "/var/lib/zknot3"
+    cache_size = 10737418240
+    enable_compaction = true
+
+    [vm]
+    max_gas_budget = 10000000
+    min_gas_price = 1000
+
+    [metrics]
+    enabled = true
+    scrape_interval_secs = 15
+
+    [logging]
+    level = 2
+    enable_file = true
+    file_path = "/var/log/zknot3/zknot3.log"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zknot3-validator-keys
+  namespace: zknot3
+type: Opaque
+stringData:
+  signing_key: "YOUR_BASE64_ENCODED_32_BYTE_KEY"
+  network_key: "YOUR_BASE64_ENCODED_32_BYTE_KEY"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zknot3-validator
+  namespace: zknot3
+  labels:
+    app: zknot3
+    component: validator
+spec:
+  serviceName: zknot3-validator
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zknot3
+      component: validator
+  template:
+    metadata:
+      labels:
+        app: zknot3
+        component: validator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: zknot3
+        image: zknot3:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9000
+          name: rpc
+        - containerPort: 8080
+          name: p2p
+        - containerPort: 8081
+          name: metrics
+        volumeMounts:
+        - name: config
+          mountPath: /etc/zknot3
+          readOnly: true
+        - name: data
+          mountPath: /var/lib/zknot3
+        - name: logs
+          mountPath: /var/log/zknot3
+        - name: keys
+          mountPath: /etc/zknot3/keys
+          readOnly: true
+        env:
+        - name: RUST_LOG
+          value: "info"
+        - name: ZKNOT3_STAKE
+          valueFrom:
+            configMapKeyRef:
+              name: zknot3-config
+              key: stake
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: zknot3-config
+      - name: keys
+        secret:
+          secretName: zknot3-validator-keys
+      - name: data
+        persistentVolumeClaim:
+          claimName: zknot3-data
+      - name: logs
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: zknot3-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard-ssd
+      resources:
+        requests:
+          storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zknot3-validator
+  namespace: zknot3
+spec:
+  clusterIP: None
+  selector:
+    app: zknot3
+    component: validator
+  ports:
+  - name: rpc
+    port: 9000
+    targetPort: 9000
+  - name: p2p
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 8081
+    targetPort: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zknot3-validator-lb
+  namespace: zknot3
+spec:
+  type: LoadBalancer
+  selector:
+    app: zknot3
+    component: validator
+  ports:
+  - name: rpc
+    port: 9000
+    targetPort: 9000
+  - name: p2p
+    port: 8080
+    targetPort: 8080

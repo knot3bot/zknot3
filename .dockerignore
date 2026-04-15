@@ -1,0 +1,10 @@
+zig-out/
+.vscode/
+.idea/
+*.o
+*.a
+*.obj
+*.exe
+.DS_Store
+
+.zig-cache/

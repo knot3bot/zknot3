@@ -1,0 +1,45 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+build/
+
+# macOS
+.DS_Store
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+
+# Python caches (for any tooling)
+__pycache__/
+*.pyc
+.ruff_cache/
+.mypy_cache/
+
+# Test artifacts
+*.log
+crash-*.txt
+/tmp/
+
+# Local data directories
+data/
+*.db
+*.sst
+*.wal
+
+# Dependency artifacts (if vendored)
+vendor/
+
+
+
+# Formal verification artifacts
+*.vo
+*.vos
+*.vok
+*.glob
+*.aux
+*.olean

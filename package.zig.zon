@@ -1,0 +1,27 @@
+// package.zig.zon - zknot3 Dependencies
+//
+// Dependencies managed via zig package manager
+// Build with: zig build -Doptimize=ReleaseSafe
+
+.{
+    .name = "zknot3",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.0",
+
+    // External dependencies (using zig package manager)
+    // Note: Most functionality uses std library which is already included
+
+    // Optional: WebSocket support for subscriptions
+    // Uncomment when websocket.zig adds package.zig.zon support:
+    // .dependencies = .{
+    //     .websocket = .{
+    //         .url = "https://github.com/karlseguin/websocket.zig/archive/{COMMIT}.tar.gz",
+    //         .hash = "...",
+    //     },
+    // },
+
+    // Build configuration
+    .build_config = .{
+        .skip_pack = false,
+    },
+}

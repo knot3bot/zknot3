@@ -1,0 +1,163 @@
+# Multi-Node Integration Test Environment
+# 
+# This docker-compose file sets up a test network with:
+# - 4 validator nodes (forming a quorum)
+# - 1 full node (for RPC queries)
+# - Shared network for P2P communication
+
+services:
+  # ============================================
+  # Validator Nodes (4 nodes = minimum quorum)
+  # ============================================
+  
+  zknot3-validator-1:
+    image: zknot3:latest
+    container_name: zknot3-validator-1
+    hostname: validator-1
+    restart: unless-stopped
+    ports:
+      - "19001:9000"   # RPC
+      - "18081:8080"   # P2P
+      - "18011:8081"   # Metrics
+    volumes:
+      - validator1-data:/var/lib/zknot3
+      - ./configs/validator-1.json:/etc/zknot3/config.json:ro
+    environment:
+      - ZKNOT3_VALIDATOR_NAME=validator-1
+      - ZKNOT3_VALIDATOR_PORT=18081
+      - ZKNOT3_PEER_ID=validator-1
+      - RUST_LOG=info
+    command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
+    networks:
+      - zknot3-testnet
+
+  zknot3-validator-2:
+    image: zknot3:latest
+    container_name: zknot3-validator-2
+    hostname: validator-2
+    restart: unless-stopped
+    ports:
+      - "19002:9000"   # RPC
+      - "18082:8080"   # P2P
+      - "18012:8081"   # Metrics
+    volumes:
+      - validator2-data:/var/lib/zknot3
+      - ./configs/validator-2.json:/etc/zknot3/config.json:ro
+    environment:
+      - ZKNOT3_VALIDATOR_NAME=validator-2
+      - ZKNOT3_VALIDATOR_PORT=18082
+      - ZKNOT3_PEER_ID=validator-2
+      - RUST_LOG=info
+    command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
+    networks:
+      - zknot3-testnet
+
+  zknot3-validator-3:
+    image: zknot3:latest
+    container_name: zknot3-validator-3
+    hostname: validator-3
+    restart: unless-stopped
+    ports:
+      - "19003:9000"   # RPC
+      - "18083:8080"   # P2P
+      - "18013:8081"   # Metrics
+    volumes:
+      - validator3-data:/var/lib/zknot3
+      - ./configs/validator-3.json:/etc/zknot3/config.json:ro
+    environment:
+      - ZKNOT3_VALIDATOR_NAME=validator-3
+      - ZKNOT3_VALIDATOR_PORT=18083
+      - ZKNOT3_PEER_ID=validator-3
+      - RUST_LOG=info
+    command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
+    networks:
+      - zknot3-testnet
+
+  zknot3-validator-4:
+    image: zknot3:latest
+    container_name: zknot3-validator-4
+    hostname: validator-4
+    restart: unless-stopped
+    ports:
+      - "19004:9000"   # RPC
+      - "18084:8080"   # P2P
+      - "18014:8081"   # Metrics
+    volumes:
+      - validator4-data:/var/lib/zknot3
+      - ./configs/validator-4.json:/etc/zknot3/config.json:ro
+    environment:
+      - ZKNOT3_VALIDATOR_NAME=validator-4
+      - ZKNOT3_VALIDATOR_PORT=18084
+      - ZKNOT3_PEER_ID=validator-4
+      - RUST_LOG=info
+    command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
+    networks:
+      - zknot3-testnet
+
+  # ============================================
+  # Full Node (for RPC queries)
+  # ============================================
+  
+  zknot3-fullnode:
+    image: zknot3:latest
+    container_name: zknot3-fullnode
+    hostname: fullnode
+    restart: unless-stopped
+    ports:
+      - "19005:9000"   # RPC
+      - "18085:8080"   # P2P
+      - "18015:8081"   # Metrics
+    volumes:
+      - fullnode-data:/var/lib/zknot3
+      - ./configs/fullnode.json:/etc/zknot3/config.json:ro
+    environment:
+      - ZKNOT3_PEER_ID=fullnode
+      - RUST_LOG=info
+    command: ["-c", "/etc/zknot3/config.json", "--dev"]
+    networks:
+      - zknot3-testnet
+    depends_on:
+      zknot3-validator-1:
+        condition: service_started
+      zknot3-validator-2:
+        condition: service_started
+      zknot3-validator-3:
+        condition: service_started
+      zknot3-validator-4:
+        condition: service_started
+
+  # ============================================
+  # Test Orchestrator
+  # ============================================
+  
+  zknot3-test-runner:
+    image: zknot3:latest
+    container_name: zknot3-test-runner
+    restart: "no"
+    command: ["sleep", "infinity"]  # Keep running for manual testing
+    environment:
+      - VALIDATOR1_RPC=http://zknot3-validator-1:9000
+      - VALIDATOR2_RPC=http://zknot3-validator-2:9000
+      - VALIDATOR3_RPC=http://zknot3-validator-3:9000
+      - VALIDATOR4_RPC=http://zknot3-validator-4:9000
+      - FULLNODE_RPC=http://zknot3-fullnode:9000
+    networks:
+      - zknot3-testnet
+    depends_on:
+      zknot3-fullnode:
+        condition: service_started
+
+volumes:
+  validator1-data:
+  validator2-data:
+  validator3-data:
+  validator4-data:
+  fullnode-data:
+
+networks:
+  zknot3-testnet:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16

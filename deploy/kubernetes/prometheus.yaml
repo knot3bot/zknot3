@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+- job_name: 'zknot3-validator'
+  kubernetes_sd_configs:
+  - role: pod
+  namespaces:
+    names:
+    - zknot3
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_label_app]
+    action: keep
+    regex: zknot3
+  - source_labels: [__meta_kubernetes_pod_label_component]
+    action: keep
+    regex: validator
+  - source_labels: [__meta_kubernetes_pod_container_port_number]
+    action: keep
+    regex: "8081"
+  - action: labelmap
+    regex: __meta_kubernetes_pod_label_(.+)
+  - target_label: __address__
+    replacement: kubernetes.default.svc:8081

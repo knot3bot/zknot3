@@ -1,0 +1,32 @@
+# Full Node Configuration (Testnet)
+
+[network]
+bind_address = "0.0.0.0"
+rpc_port = 9000
+p2p_enabled = true
+p2p_address = "0.0.0.0"
+p2p_port = 8080
+local_peer_id = "fullnode"
+bootstrap_peers = ["validator-1:8080", "validator-2:8080", "validator-3:8080", "validator-4:8080"]
+max_connections = 256
+
+[consensus]
+validator_enabled = false
+epoch_duration_secs = 60
+
+[storage]
+data_dir = "/var/lib/zknot3"
+object_store_path = "objects"
+checkpoint_store_path = "checkpoints"
+cache_size = 536870912
+enable_compaction = false
+
+[vm]
+max_gas_budget = 10000000
+min_gas_price = 100
+max_bytecode_size = 65536
+
+[logging]
+level = 2
+enable_file = false
+enable_stderr = true

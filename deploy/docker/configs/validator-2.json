@@ -1,0 +1,50 @@
+{
+  "network": {
+    "bind_address": "0.0.0.0",
+    "rpc_port": 9000,
+    "p2p_enabled": true,
+    "p2p_address": "0.0.0.0",
+    "p2p_port": 8080,
+    "local_peer_id": "validator-2",
+    "bootstrap_peers": [
+      "validator-1:8080",
+      "validator-3:8080",
+      "validator-4:8080"
+    ],
+    "max_connections": 256
+  },
+  "consensus": {
+    "validator_enabled": true,
+    "min_validator_stake": 1000000000,
+    "min_validators": 4,
+    "target_validators": 4,
+    "max_validators": 4,
+    "epoch_duration_secs": 60,
+    "quorum_threshold": 200,
+    "vote_quorum": 1
+  },
+  "storage": {
+    "data_dir": "/var/lib/zknot3",
+    "object_store_path": "objects",
+    "checkpoint_store_path": "checkpoints",
+    "cache_size": 536870912,
+    "enable_compaction": false
+  },
+  "vm": {
+    "max_gas_budget": 10000000,
+    "min_gas_price": 100,
+    "max_bytecode_size": 65536
+  },
+  "authority": {
+    "address": "zknot3-validator-2",
+    "port": 8080,
+    "stake": 1000000000000,
+    "name": "Validator 2",
+    "validator_index": 1
+  },
+  "logging": {
+    "level": 2,
+    "enable_file": false,
+    "enable_stderr": true
+  }
+}

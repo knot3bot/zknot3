@@ -1,0 +1,41 @@
+# Full Node Configuration (non-validator)
+
+[network]
+bind_address = "0.0.0.0"
+rpc_port = 9000
+p2p_enabled = true
+p2p_address = "0.0.0.0"
+p2p_port = 8080
+max_connections = 256
+connection_timeout = 30
+
+[consensus]
+validator_enabled = false
+epoch_duration_secs = 86400
+
+[storage]
+data_dir = "/var/lib/zknot3"
+object_store_path = "objects"
+checkpoint_store_path = "checkpoints"
+cache_size = 5368709120             # 5GB for full node
+enable_compaction = true
+compaction_interval_secs = 7200     # 2 hours for full node
+
+[vm]
+max_gas_budget = 10000000
+min_gas_price = 1000
+max_bytecode_size = 65536
+base_instruction_gas = 1
+storage_gas_per_byte = 10
+
+[metrics]
+enabled = true
+scrape_interval_secs = 30
+
+[logging]
+level = 2
+enable_file = true
+file_path = "/var/log/zknot3/fullnode.log"
+enable_stderr = true
+structured = false
+ansi_colors = false
