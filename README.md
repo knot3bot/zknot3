@@ -112,7 +112,7 @@ max_connections = 1024
 
 [consensus]
 validator_enabled = true
-min_validator_stake = 1000000000  # 1 SUI
+min_validator_stake = 1000000000  # 1 KNOT3
 min_validators = 4
 epoch_duration_secs = 86400
 
@@ -133,7 +133,7 @@ max_bytecode_size = 65536
 address = "your-validator-address"
 port = 8080
 signing_key = "your-32-byte-key"
-stake = 1000000000000  # 1000 SUI
+stake = 1000000000000  # 1000 KNOT3
 ```
 
 ## Production Deployment
@@ -176,18 +176,18 @@ See [deploy/kubernetes/](deploy/kubernetes/) for full manifests.
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "sui_getObject",
+  "method": "knot3_getObject",
   "params": {"id": "0x..."},
   "id": 1
 }
 ```
 
 **Supported Methods**:
-- `sui_getObject` - Get object by ID
-- `sui_getTransaction` - Get transaction receipt
-- `sui_submitTransaction` - Submit a transaction
-- `sui_getCheckpoint` - Get checkpoint by sequence
-- `sui_getEpochInfo` - Get current epoch information
+- `knot3_getObject` - Get object by ID
+- `knot3_getTransaction` - Get transaction receipt
+- `knot3_submitTransaction` - Submit a transaction
+- `knot3_getCheckpoint` - Get checkpoint by sequence
+- `knot3_getEpochInfo` - Get current epoch information
 
 #### GET /health
 

@@ -1,6 +1,6 @@
 //! ClientSDK - Multi-language bindings generator for zknot3
 //!
-//! Generates SDK bindings for multiple languages based on the Sui RPC API.
+//! Generates SDK bindings for multiple languages based on the Knot3 RPC API.
 //! Supports TypeScript, Python, Go, and Rust.
 
 const std = @import("std");
@@ -22,7 +22,7 @@ pub const SDKConfig = struct {
     rpc_url: []const u8 = "http://localhost:9000",
 };
 
-/// Sui RPC method definitions
+/// Knot3 RPC method definitions
 pub const RPCMethod = struct {
     name: []const u8,
     params: []const []const u8,
@@ -31,10 +31,10 @@ pub const RPCMethod = struct {
 
 /// Supported RPC methods
 pub const SUi_RPC_METHODS = &[_]RPCMethod{
-    .{ .name = "sui_getObject", .params = &.{"id"}, .return_type = "SuiObject" },
-    .{ .name = "sui_getCheckpoint", .params = &.{"id"}, .return_type = "Checkpoint" },
-    .{ .name = "sui_getCoins", .params = &.{ "owner", "coinType" }, .return_type = "Coin[]" },
-    .{ .name = "sui_getTransactionBlock", .params = &.{"digest"}, .return_type = "TransactionBlock" },
+    .{ .name = "knot3_getObject", .params = &.{"id"}, .return_type = "SuiObject" },
+    .{ .name = "knot3_getCheckpoint", .params = &.{"id"}, .return_type = "Checkpoint" },
+    .{ .name = "knot3_getCoins", .params = &.{ "owner", "coinType" }, .return_type = "Coin[]" },
+    .{ .name = "knot3_getTransactionBlock", .params = &.{"digest"}, .return_type = "TransactionBlock" },
     .{ .name = "sui_getLatestCheckpointSequenceNumber", .params = &.{}, .return_type = "number" },
     .{ .name = "sui_queryEvents", .params = &.{"query"}, .return_type = "Event[]" },
     .{ .name = "sui_dryRunTransactionBlock", .params = &.{"txBytes"}, .return_type = "DryRunResult" },
@@ -449,7 +449,7 @@ test "ClientSDK TypeScript generation" {
 
     const code = try sdk.generateCode();
     try std.testing.expect(code.len > 0);
-    try std.testing.expect(std.mem.indexOf(u8, code, "sui_getObject") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "knot3_getObject") != null);
 }
 
 test "ClientSDK methods count" {

@@ -11,7 +11,7 @@ connection_timeout = 30
 
 [consensus]
 validator_enabled = true
-min_validator_stake = 1000000000    # 1 SUI
+min_validator_stake = 1000000000    # 1 KNOT3
 min_validators = 4
 target_validators = 100
 max_validators = 500

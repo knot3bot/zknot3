@@ -49,7 +49,7 @@ fn createValidatorConfig(
         },
         .authority = .{
             .name = name,
-            .stake = 1000000000000000, // 1M SUI in MIST
+            .stake = 1000000000000000, // 1M KNOT3 in MIST
             .signing_key = null,
         },
     };

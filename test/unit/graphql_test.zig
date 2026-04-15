@@ -214,8 +214,8 @@ test "GraphQL field resolver registry" {
     try std.testing.expect(registry.resolvers.count() == 0);
 }
 
-/// Test GraphQL schema has required Sui types
-test "GraphQL schema has Sui types" {
+/// Test GraphQL schema has required Knot3 types
+test "GraphQL schema has Knot3 types" {
     const allocator = std.testing.allocator;
     var schema = try GraphQL.Schema.init(allocator);
     defer schema.deinit();
@@ -324,7 +324,7 @@ test "GraphQL compiler executes query with field resolution" {
     };
 
     // Execute a simple query that should resolve fields
-    const query = "{ sui_getCheckpoint(id: 1) { sequence digest } }";
+    const query = "{ knot3_getCheckpoint(id: 1) { sequence digest } }";
     const resp = try compiler.execute(query, &ctx);
 
     try std.testing.expect(resp.data != null);
@@ -347,7 +347,7 @@ test "GraphQL compiler resolves multiple fields" {
     };
 
     // Execute query with multiple fields
-    const query = "{ sui_getCoins(owner: \"0x1\", coinType: \"SUI\") { coinObjectId balance } }";
+    const query = "{ knot3_getCoins(owner: \"0x1\", coinType: \"KNOT3\") { coinObjectId balance } }";
     const resp = try compiler.execute(query, &ctx);
 
     try std.testing.expect(resp.data != null);

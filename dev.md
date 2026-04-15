@@ -1,4 +1,4 @@
-# Zig重构Sui公链：三源合恰视角下的架构方案
+# zknot3：三源合恰视角下的公链架构方案
 
 > **方法论声明**：本方案基于「物丰/象大/性自在」生命蓝图模型，以属性数学（形-性-数三元统一）与范畴论（商集逻辑）为理论基底，对分布式账本系统进行跨范式重构。
 
@@ -274,7 +274,7 @@ pub fn runtime_invariants(state: SystemState) void {
 ## 一、工程目录结构（属性分层映射）
 
 ```
-sui-zig/
+zknot3/
 ├── build.zig                    # 构建系统：编译时属性验证入口
 ├── src/
 │   ├── core/                    # 【太极层】核心抽象
@@ -644,7 +644,7 @@ pub fn build(b: *std.Build) void {
     
     // 主模块：启用所有编译时验证
     const lib = b.addStaticLibrary(.{
-        .name = "sui-zig",
+        .name = "zknot3",
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -766,7 +766,7 @@ $ zig build test -- tri_source.zi_zai
 $ zig build export-coq -- --output specs/consensus.v
 
 # 5. 本地开发网启动
-$ ./build/sui-zig-node --network local --validators 4
+$ ./build/zknot3-node --network local --validators 4
 
 # 6. 性能剖析（三源指标实时采集）
 $ ./tools/profiler --metrics wu_feng,xiang_da,zi_zai --interval 5s
@@ -801,11 +801,11 @@ KB|> Last updated: 2026-04-11
 | **Property Layer - Crypto** | ✅ Complete | Signature, Merkle, VRF |
 | **Metric Layer** | ✅ Complete | Stake, Epoch, EpochConsensusBridge, Metrics |
 | **Pipeline Layer** | ✅ Complete | Ingress, Executor, Egress, TxnPool |
-QB|| **App Layer** | ✅ Complete | GraphQL, Indexer, ClientSDK, LightClient, Dashboard |
-VK|| **UI Dashboard** | ✅ Complete | HTMX + Alpine.js + UNOCSS, real-time tri-source metrics |
-KK|| **Formal Verification** | ✅ Complete | Coq/Lean spec export with proof templates |
-YQ|| **Profiler Tool** | ✅ Complete | Benchmark suite for core operations |
-KK|| **CLI Interface** | ✅ Complete | Help, version, dev mode, port config |
+| **App Layer** | ✅ Complete | GraphQL, Indexer, ClientSDK, LightClient, Dashboard |
+| **UI Dashboard** | ✅ Complete | HTMX + Alpine.js + UNOCSS, real-time tri-source metrics |
+| **Formal Verification** | ✅ Complete | Coq/Lean spec export with proof templates |
+| **Profiler Tool** | ✅ Complete | Benchmark suite for core operations |
+| **CLI Interface** | ✅ Complete | Help, version, dev mode, port config |
 
 ### 6.2 Test Coverage
 
@@ -953,10 +953,10 @@ const agent = Agent.AgentId.create(owner, .Autonomous, public_key);
 
 // Create agent wallet
 var wallet = AgentWallet.create(agent.id, owner);
-try wallet.deposit(.SUI, 1000);
+try wallet.deposit(.KNOT3, 1000);
 
 // Register tool for AI agents
-var tool = Tool.register("transfer", "sui", "Transfer tokens", .Financial, owner);
+var tool = Tool.register("transfer", "knot3", "Transfer tokens", .Financial, owner);
 try registry.registerTool(tool);
 
 // Create MCP session

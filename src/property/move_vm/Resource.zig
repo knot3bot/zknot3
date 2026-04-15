@@ -58,7 +58,7 @@ pub const Resource = struct {
     pub fn init(
         id: core.ObjectID,
         tag: ResourceTag,
-        data: []u8,
+        data: []const u8,
         owner: ?[32]u8,
         allocator: std.mem.Allocator,
     ) !*Self {
@@ -66,7 +66,7 @@ pub const Resource = struct {
         self.* = .{
             .id = id,
             .tag = tag,
-            .data = (try allocator.alignedAlloc(u8, 16, data.len)).ptr,
+            .data = (try allocator.alignedAlloc(u8, .@"16", data.len)).ptr,
             .data_len = data.len,
             .owner = owner,
             ._state = .active,
@@ -75,10 +75,9 @@ pub const Resource = struct {
         return self;
     }
 
-    /// Deinitialize and free resources
+    /// Deinitialize internal resources (does NOT destroy the object itself)
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         allocator.free(self.data[0..self.data_len]);
-        allocator.destroy(self);
     }
 
     /// Move resource to another location (linear semantics)
@@ -90,7 +89,7 @@ pub const Resource = struct {
             .data = self.data,
             .data_len = self.data_len,
             .owner = self.owner,
-            ._state = .moved,
+            ._state = .active,
         };
         self.data_len = 0;
         self._state = .moved;
@@ -158,6 +157,7 @@ pub const ResourceTracker = struct {
         var it = self.active_resources.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(entry.value_ptr.*);
         }
         self.active_resources.deinit();
         self.moved_resources.deinit();
@@ -184,13 +184,14 @@ pub const ResourceTracker = struct {
         try self.consumed_resources.put(resource_id, {});
     }
 
-    pub fn getCreated(self: Self) []const core.ObjectID {
+    pub fn getCreated(self: Self) ![]const core.ObjectID {
         var result = std.ArrayList(core.ObjectID).init(self.allocator);
+        errdefer result.deinit(self.allocator);
         var it = self.active_resources.iterator();
         while (it.next()) |entry| {
             try result.append(entry.key_ptr.*);
         }
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     pub fn validate(self: Self) !void {
@@ -239,11 +240,14 @@ test "Resource lifecycle" {
     var resource = try Resource.init(
         core.ObjectID.hash("test"),
         .Coin,
-        try allocator.dupe(u8, "1000"),
+        "1000",
         null,
         allocator,
     );
-    defer resource.deinit(allocator);
+    defer {
+        resource.deinit(allocator);
+        allocator.destroy(resource);
+    }
 
     try std.testing.expect(resource.isValid());
     try std.testing.expect(resource.tag == .Coin);
@@ -254,14 +258,18 @@ test "Resource move semantics" {
     var src = try Resource.init(
         core.ObjectID.hash("test"),
         .Coin,
-        try allocator.dupe(u8, "1000"),
+        "1000",
         null,
         allocator,
     );
-    defer src.deinit(allocator);
+    defer {
+        src.deinit(allocator);
+        allocator.destroy(src);
+    }
 
     var dst: Resource = undefined;
     src.move(&dst);
+    defer dst.deinit(allocator);
 
     try std.testing.expect(!src.isValid());
     try std.testing.expect(dst.isValid());
@@ -272,14 +280,14 @@ test "ResourceTracker leak detection" {
     var tracker = ResourceTracker.init(allocator);
     defer tracker.deinit();
 
-    var resource = try Resource.init(
+    const resource = try Resource.init(
         core.ObjectID.hash("leak_test"),
         .Coin,
-        try allocator.dupe(u8, "1000"),
+        "1000",
         null,
         allocator,
     );
-    defer resource.deinit(allocator);
+    // tracker takes ownership, will free in tracker.deinit()
 
     try tracker.track(resource);
     try std.testing.expectError(error.ResourceLeak, tracker.checkLeaks());
@@ -294,12 +302,13 @@ test "ResourceTracker move tracking" {
     var resource = try Resource.init(
         id,
         .Coin,
-        try allocator.dupe(u8, "1000"),
+        "1000",
         null,
         allocator,
     );
     defer {
-        if (tracker.isTracked(id)) resource.deinit(allocator);
+        resource.deinit(allocator);
+        allocator.destroy(resource);
     }
 
     try tracker.track(resource);
@@ -319,12 +328,13 @@ test "ResourceTracker consume tracking" {
     var resource = try Resource.init(
         id,
         .Coin,
-        try allocator.dupe(u8, "1000"),
+        "1000",
         null,
         allocator,
     );
     defer {
-        if (tracker.isTracked(id)) resource.deinit(allocator);
+        resource.deinit(allocator);
+        allocator.destroy(resource);
     }
 
     try tracker.track(resource);

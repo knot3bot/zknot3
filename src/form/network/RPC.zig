@@ -1,6 +1,6 @@
-//! RPC - JSON-RPC 2.0 interface with Sui-compatible methods
+//! RPC - JSON-RPC 2.0 interface with Knot3-compatible methods
 //!
-//! Implements the core RPC methods needed for a Sui-like blockchain.
+//! Implements the core RPC methods needed for a Knot3-like blockchain.
 //! Uses std.json for JSON parsing and std.http for HTTP server.
 //!
 //! Architecture: Handlers access node capabilities via RPCContext.user_data
@@ -19,7 +19,7 @@ pub const ErrorCode = enum(i32) {
     invalid_params = -32602,
     internal_error = -32603,
 
-    // Sui-specific codes
+    // Knot3-specific codes
     sui_object_not_found = -32001,
     sui_object_not_deliverable = -32002,
     sui_move_abort = -32003,
@@ -203,16 +203,16 @@ pub const RPCServer = struct {
 
     /// Route request to appropriate handler
     fn routeRequest(self: *@This(), method: []const u8, params: ?std.json.Value, _: ?std.json.Value) !RPCResponse {
-        // Sui-compatible RPC methods
-        if (std.mem.eql(u8, method, "sui_getObject")) {
+        // Knot3-compatible RPC methods
+        if (std.mem.eql(u8, method, "knot3_getObject")) {
             return try self.handleGetObject(params);
-        } else if (std.mem.eql(u8, method, "sui_getCheckpoint")) {
+        } else if (std.mem.eql(u8, method, "knot3_getCheckpoint")) {
             return try self.handleGetCheckpoint(params);
-        } else if (std.mem.eql(u8, method, "sui_getCoins")) {
+        } else if (std.mem.eql(u8, method, "knot3_getCoins")) {
             return try self.handleGetCoins(params);
         } else if (std.mem.eql(u8, method, "sui_getLatestCheckpointSequenceNumber")) {
             return try self.handleGetLatestCheckpointSequence(params);
-        } else if (std.mem.eql(u8, method, "sui_getTransactionBlock")) {
+        } else if (std.mem.eql(u8, method, "knot3_getTransactionBlock")) {
             return try self.handleGetTransactionBlock(params);
         } else if (std.mem.eql(u8, method, "sui_executeTransactionBlock")) {
             return try self.handleExecuteTransaction(params);
@@ -274,7 +274,7 @@ fn handleGetObject(_ctx: *RPCContext, _: []const u8) !RPCResponse {
             .object_id = "0x123",
             .version = 1,
             .owner = "0x0",
-            .type = "0x2::coin::Coin<0x1::sui::SUI>",
+            .type = "0x2::coin::Coin<0x1::knot3::KNOT3>",
             .data = "{}",
         },
     };

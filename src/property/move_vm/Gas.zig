@@ -75,28 +75,31 @@ pub const GasFunctor = struct {
     /// Base cost per instruction type
     allocator: std.mem.Allocator,
     base_costs: std.AutoArrayHashMap(u8, u64),
+
+    pub const CostInstruction = struct { opcode: u8, complexity: u32 };
+
     /// Initialize with default costs
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator) !Self {
         var costs = std.AutoArrayHashMap(u8, u64).init(allocator);
 
         // Default costs
-        costs.put(0x00, 1); // nop
-        costs.put(0x01, 1); // ret
-        costs.put(0x02, 2); // branch
-        costs.put(0x10, 1); // pop
-        costs.put(0x11, 1); // dup
-        costs.put(0x20, 1); // ld_loc
-        costs.put(0x21, 1); // st_loc
-        costs.put(0x30, 2); // ld_const
-        costs.put(0x40, 1); // add
-        costs.put(0x80, 10); // move_resource
-        costs.put(0x90, 5); // call
+        try costs.put(0x00, 1); // nop
+        try costs.put(0x01, 1); // ret
+        try costs.put(0x02, 2); // branch
+        try costs.put(0x10, 1); // pop
+        try costs.put(0x11, 1); // dup
+        try costs.put(0x20, 1); // ld_loc
+        try costs.put(0x21, 1); // st_loc
+        try costs.put(0x30, 2); // ld_const
+        try costs.put(0x40, 1); // add
+        try costs.put(0x80, 10); // move_resource
+        try costs.put(0x90, 5); // call
 
-        return .{ .base_costs = costs };
+        return .{ .allocator = allocator, .base_costs = costs };
     }
 
     pub fn deinit(self: *Self) void {
-        self.base_costs.deinit(self.allocator);
+        self.base_costs.deinit();
     }
 
     /// Calculate cost for an instruction (monotone functor)
@@ -107,7 +110,7 @@ pub const GasFunctor = struct {
     }
 
     /// Estimate cost for bytecode (gas preview)
-    pub fn estimateCost(self: Self, instructions: []const struct { opcode: u8, complexity: u32 }) u64 {
+    pub fn estimateCost(self: Self, instructions: []const CostInstruction) u64 {
         var total: u64 = 0;
         for (instructions) |instr| {
             total += self.cost(instr.opcode, instr.complexity);
@@ -146,27 +149,27 @@ test "Gas meter out of gas" {
 
 test "Gas functor cost calculation" {
     const allocator = std.testing.allocator;
-    var functor = GasFunctor{};
-    defer functor.deinit(allocator);
+    var functor = try GasFunctor.init(allocator);
+    defer functor.deinit();
 
     const cost = functor.cost(0x80, 10); // move_resource
-    try std.testing.expect(cost == 10); // base 1 * complexity 10
+    try std.testing.expect(cost == 100); // base 10 * complexity 10
 }
 
 test "Gas estimation" {
     const allocator = std.testing.allocator;
-    var functor = GasFunctor{};
-    defer functor.deinit(allocator);
+    var functor = try GasFunctor.init(allocator);
+    defer functor.deinit();
 
-    const instructions = &[_]struct { opcode: u8, complexity: u32 }{
+    const instructions = &[_]GasFunctor.CostInstruction{
         .{ .opcode = 0x80, .complexity = 10 },
         .{ .opcode = 0x40, .complexity = 1 },
         .{ .opcode = 0x90, .complexity = 5 },
     };
 
     const estimate = functor.estimateCost(instructions);
-    // move_resource: 1*10=10, add: 1*1=1, call: 1*5=5 = 16
-    try std.testing.expect(estimate == 16);
+    // move_resource: 10*10=100, add: 1*1=1, call: 5*5=25 = 126
+    try std.testing.expect(estimate == 126);
 }
 
 // Comptime assertion: gas is monotone

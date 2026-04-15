@@ -1,6 +1,6 @@
 //! ObjectID - BLAKE3(256-bit) cryptographic identifier
 //!
-//! Represents the fundamental identity primitive in the Sui/Zig object model.
+//! Represents the fundamental identity primitive in the Knot3/Zig object model.
 //! Modeled as a commutative group element for algebraic verification.
 
 const std = @import("std");

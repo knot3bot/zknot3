@@ -13,7 +13,7 @@ const ObjectID = core.ObjectID;
 /// Token type
 pub const TokenType = enum(u8) {
     Native = 0,
-    SUI = 1,
+    KNOT3 = 1,
     USDC = 2,
     Custom = 3,
 };
@@ -318,11 +318,11 @@ test "AgentWallet deposit and withdraw" {
     
     var wallet = AgentWallet.create(agent_id, owner);
     
-    try wallet.deposit(.SUI, 1000);
-    try std.testing.expect((try wallet.getBalance(.SUI)) == 1000);
+    try wallet.deposit(.KNOT3, 1000);
+    try std.testing.expect((try wallet.getBalance(.KNOT3)) == 1000);
     
-    try wallet.withdraw(.SUI, 500);
-    try std.testing.expect((try wallet.getBalance(.SUI)) == 500);
+    try wallet.withdraw(.KNOT3, 500);
+    try std.testing.expect((try wallet.getBalance(.KNOT3)) == 500);
 }
 
 test "AgentWallet freeze" {
@@ -331,7 +331,7 @@ test "AgentWallet freeze" {
     
     var wallet = AgentWallet.create(agent_id, owner);
     
-    try wallet.deposit(.SUI, 1000);
+    try wallet.deposit(.KNOT3, 1000);
     wallet.freeze();
     
     try std.testing.expect(!wallet.canTransact());

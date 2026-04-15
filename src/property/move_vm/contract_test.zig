@@ -3,14 +3,15 @@
 //! Tests the Move VM interpreter with Knot3 Move contracts.
 
 const std = @import("std");
-const core = @import("../../src/core.zig");
-const move_vm = @import("../../src/property/move_vm/index.zig");
+const core = @import("../../core.zig");
+const move_vm = @import("index.zig");
 const Bytecode = move_vm.Bytecode;
 const BytecodeVerifier = Bytecode.BytecodeVerifier;
 const Interpreter = move_vm.Interpreter.Interpreter;
 const Gas = move_vm.Gas;
-const Resource = move_vm.Resource;
-const ResourceTracker = move_vm.Resource.ResourceTracker;
+const ResourceModule = move_vm.Resource;
+const Resource = ResourceModule.Resource;
+const ResourceTracker = ResourceModule.ResourceTracker;
 
 /// Simple arithmetic contract: add two constants and return
 /// Bytecode: ld_const(7); ld_const(3); add; ret
@@ -143,7 +144,8 @@ test "Move VM: resource tracking in contract execution" {
     const allocator = std.testing.allocator;
 
     const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
-    var gas = Gas.GasMeter.init(gas_config);
+    const gas = Gas.GasMeter.init(gas_config);
+    _ = gas;
     var tracker = ResourceTracker.init(allocator);
     defer tracker.deinit();
 

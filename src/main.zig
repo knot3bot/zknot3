@@ -62,7 +62,7 @@ fn printVersion() void {
     std.debug.print(
         \\zknot3 Blockchain Node
         \\Version: 0.1.0
-        \\Protocol: Sui-compatible
+        \\Protocol: Knot3-compatible
         \\VM: Move VM (Zig interpreter)
         \\Consensus: Mysticeti (DAG-based BFT)
         \\

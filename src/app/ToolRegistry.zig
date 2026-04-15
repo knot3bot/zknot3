@@ -353,7 +353,7 @@ test "Tool registration" {
     const owner = [_]u8{0x42} ** 32;
     var tool = Tool.register(
         "transfer",
-        "sui",
+        "knot3",
         "Transfer tokens",
         .Financial,
         owner,
@@ -361,7 +361,7 @@ test "Tool registration" {
     
     try registry.registerTool(tool);
     
-    const found = registry.findTool("sui", "transfer");
+    const found = registry.findTool("knot3", "transfer");
     try std.testing.expect(found != null);
     try std.testing.expect(found.?.category == .Financial);
 }

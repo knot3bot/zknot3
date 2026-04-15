@@ -1,6 +1,6 @@
 //! VersionLattice - Version ordering with sequence and causal relationships
 //!
-//! Implements partial order comparison for object versions in the Sui object model.
+//! Implements partial order comparison for object versions in the Knot3 object model.
 //! Combines sequence numbers with causal hashes for DAG-based ordering.
 
 const std = @import("std");

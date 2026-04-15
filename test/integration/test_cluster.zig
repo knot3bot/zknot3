@@ -31,7 +31,7 @@ pub const TestNodeConfig = struct {
     port: u16 = 9000 + @as(u16, std.crypto.randomInt(u16) % 1000),
     p2p_port: u16 = 9000 + @as(u16, std.crypto.randomInt(u16) % 1000),
     is_validator: bool = true,
-    stake: u64 = 1000000000, // 1 SUI worth in MIST
+    stake: u64 = 1000000000, // 1 KNOT3 worth in MIST
     name: []const u8 = "test-validator",
 };
 
@@ -200,7 +200,7 @@ pub const TestTransaction = struct {
         return &.{ 0x31, 0x01 }; // ld_true; ret
     }
 
-    /// Build a SUI transfer bytecode
+    /// Build a KNOT3 transfer bytecode
     pub fn transfer(recipient: ObjectID, amount: u64) []const u8 {
         _ = recipient;
         _ = amount;

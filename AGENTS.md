@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**zknot3** is a Zig re-implementation of the Sui blockchain, guided by the "三源合恰" (物象性三源) philosophical framework. This repository contains both the design specification in `dev.md` and a full production-ready implementation under `src/`.
+**zknot3** is a Zig re-implementation of the Knot3 blockchain, guided by the "三源合恰" (物象性三源) philosophical framework. This repository contains both the design specification in `dev.md` and a full production-ready implementation under `src/`.
 
 **Reference**: Full technical specification in `dev.md`
 
@@ -11,7 +11,7 @@
 ## Technology Stack
 
 - **Language**: Zig 0.15+ (required)
-- **Blockchain**: Sui (re-implementation target)
+- **Blockchain**: Knot3 (re-implementation target)
 - **VM**: Move VM (Zig interpreter)
 - **Consensus**: Mysticeti (DAG-based BFT)
 - **Storage**: RocksDB + io_uring (custom LSM-Tree in Zig)
@@ -23,7 +23,7 @@
 ## Project Structure (Proposed)
 
 ```
-sui-zig/
+zknot3/
 ├── build.zig                 # Build system entry
 ├── src/
 │   ├── core/                  # [Taiji Layer] ObjectID, VersionLattice, Ownership
@@ -55,7 +55,7 @@ zig build test -- tri_source.zi_zai    # 性自在: user satisfaction
 zig build export-coq -- --output specs/consensus.v
 
 # Local devnet (4 validators + 1 fullnode)
-./build/sui-zig-node --network local --validators 4
+./build/zknot3-node --network local --validators 4
 
 # Profiler
 ./tools/profiler --metrics wu_feng,xiang_da,zi_zai --interval 5s

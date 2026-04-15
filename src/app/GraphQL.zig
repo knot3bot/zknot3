@@ -1,6 +1,6 @@
 //! GraphQL - GraphQL interface with compile-time schema verification
 //!
-//! Implements a Sui-compatible GraphQL API with:
+//! Implements a Knot3-compatible GraphQL API with:
 //! - Schema definition with type system
 //! - Query parsing and validation
 //! - Field resolution with object store integration
@@ -91,7 +91,7 @@ pub const Schema = struct {
         interfaces: []const []const u8,
     };
 
-    /// Initialize schema with Sui types
+    /// Initialize schema with Knot3 types
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
@@ -101,13 +101,13 @@ pub const Schema = struct {
             .types = std.StringArrayHashMap(*const TypeDefinition){},
         };
 
-        // Build Sui-compatible schema
+        // Build Knot3-compatible schema
         try self.buildSuiSchema();
 
         return self;
     }
 
-    /// Build Sui-compatible GraphQL schema
+    /// Build Knot3-compatible GraphQL schema
     fn buildSuiSchema(self: *Self) !void {
         // Register SuiObject type
         try self.registerObject("SuiObject", &.{
@@ -148,19 +148,19 @@ pub const Schema = struct {
 
         // Build query type with root fields
         try self.registerObject("Query", &.{
-            .{ .name = "sui_getObject", .type = &.{ .kind = .Object, .named_type = "SuiObject", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getObject", .type = &.{ .kind = .Object, .named_type = "SuiObject", .of_type = null }, .args = &.{
                 .{ .name = "id", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetObject },
-            .{ .name = "sui_getCheckpoint", .type = &.{ .kind = .Object, .named_type = "Checkpoint", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getCheckpoint", .type = &.{ .kind = .Object, .named_type = "Checkpoint", .of_type = null }, .args = &.{
                 .{ .name = "id", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetCheckpoint },
-            .{ .name = "sui_getCoins", .type = &.{ .kind = .List, .named_type = "Coin", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getCoins", .type = &.{ .kind = .List, .named_type = "Coin", .of_type = null }, .args = &.{
                 .{
                     .name = "owner", .type = &.{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .default_value = null,
                 },
                 .{ .name = "coinType", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetCoins },
-            .{ .name = "sui_getTransactionBlock", .type = &.{ .kind = .Object, .named_type = "SuiTransaction", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getTransactionBlock", .type = &.{ .kind = .Object, .named_type = "SuiTransaction", .of_type = null }, .args = &.{
                 .{ .name = "digest", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetTransaction },
             .{ .name = "sui_queryEvents", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{
@@ -278,7 +278,7 @@ fn resolveObjectOwner(ctx: *const ResolverContext, args: []const ArgValue) anyer
 fn resolveObjectType(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = ctx;
     _ = args;
-    return stringValue("0x2::coin::Coin<0x1::sui::SUI>");
+    return stringValue("0x2::coin::Coin<0x1::knot3::KNOT3>");
 }
 
 fn resolveObjectPrevTx(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
@@ -368,7 +368,7 @@ fn resolveCoinObjectId(ctx: *const ResolverContext, args: []const ArgValue) anye
 fn resolveCoinType(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = ctx;
     _ = args;
-    return stringValue("0x2::coin::Coin<0x1::sui::SUI>");
+    return stringValue("0x2::coin::Coin<0x1::knot3::KNOT3>");
 }
 
 fn resolveCoinBalance(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
@@ -696,7 +696,7 @@ test "GraphQL schema initialization" {
 
 test "GraphQL query parsing" {
     const allocator = std.testing.allocator;
-    const query_str = "{ sui_getObject(id: \"0x1\") { id version } }";
+    const query_str = "{ knot3_getObject(id: \"0x1\") { id version } }";
 
     var query = try Query.parse(allocator, query_str);
     defer query.deinit();
@@ -731,7 +731,7 @@ test "GraphQL compiler executes query" {
         .checkpoint_store = null,
     };
 
-    const query = "{ sui_getCheckpoint(id: 1) { sequence digest } }";
+    const query = "{ knot3_getCheckpoint(id: 1) { sequence digest } }";
     const resp = try compiler.execute(query, &ctx);
 
     try std.testing.expect(resp.data != null);

@@ -139,6 +139,7 @@ pub const Interpreter = struct {
         self.stack.deinit(self.allocator);
         self.output_objects.deinit(self.allocator);
         self.call_stack.deinit();
+        self.allocator.destroy(self);
     }
 
     fn collectOutputObjects(self: *Self) !void {

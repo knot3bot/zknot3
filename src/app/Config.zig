@@ -55,7 +55,7 @@ pub const ConsensusConfig = struct {
     /// Enable validator mode
     validator_enabled: bool = false,
     /// Minimum stake to become validator
-    min_validator_stake: u64 = 1_000_000_000, // 1 SUI
+    min_validator_stake: u64 = 1_000_000_000, // 1 KNOT3
     /// Minimum number of validators
     min_validators: usize = 4,
     /// Target number of validators

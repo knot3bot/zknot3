@@ -187,7 +187,7 @@ pub const BytecodeVerifier = struct {
 
 test "Bytecode verification" {
     const allocator = std.testing.allocator;
-    var verifier = BytecodeVerifier{};
+    var verifier = BytecodeVerifier.init(allocator);
 
     // Simple bytecode: ld_true; ld_false; add; ret
     const bytecode = [_]u8{
@@ -197,7 +197,7 @@ test "Bytecode verification" {
         0x01, // ret
     };
 
-    const module = try verifier.verify(&bytecode);
+    var module = try verifier.verify(&bytecode);
     defer module.deinit(allocator);
 
     try std.testing.expect(module.instructions.len == 4);

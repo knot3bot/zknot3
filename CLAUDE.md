@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**zknot3** is a Zig re-implementation of the Sui blockchain, guided by the "三源合恰" (物象性三源) philosophical framework.
+**zknot3** is a Zig re-implementation of the Knot3 blockchain, guided by the "三源合恰" (物象性三源) philosophical framework.
 
 **Current Status**: Production-ready implementation with all core components complete and tested.
 
