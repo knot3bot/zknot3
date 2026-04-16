@@ -145,7 +145,7 @@ pub const FuzzRunner = struct {
     /// Run fuzzing with a typed oracle
     pub fn fuzz(self: *Self, comptime T: type, oracle: *const fn (T) void) FuzzResult {
         var result = FuzzResult.init();
-        var rng = std.rand.DefaultPrng.init(self.seed.value);
+        var rng = std.Random.DefaultPrng.init(self.seed.value);
 
         // Fuzz with corpus first
         for (self.corpus.items) |seed| {
@@ -216,8 +216,8 @@ pub const FuzzRunner = struct {
         return array.toOwnedSlice();
     }
 
-    fn generateRandomInput(self: *Self, rng: *std.rand.DefaultPrng, size: usize) []u8 {
-        var data = self.allocator.alloc(u8, size) catch return &.{};
+    fn generateRandomInput(self: *Self, rng: *std.Random.DefaultPrng, size: usize) []u8 {
+        const data = self.allocator.alloc(u8, size) catch return &[_]u8{};
         for (data) |*byte| {
             byte.* = rng.random().uintAtMost(u8, 255);
         }
@@ -237,7 +237,7 @@ pub const ObjectIDFuzzer = struct {
     pub fn fuzzHashConsistency(input: []const u8) void {
         if (input.len < 32) return;
 
-        const root = @import("root.zig");
+        const root = @import("../../src/root.zig");
         const ObjectID = root.core.ObjectID;
 
         // Hash the input
@@ -254,7 +254,7 @@ pub const ObjectIDFuzzer = struct {
     pub fn fuzzEquality(input: []const u8) void {
         if (input.len < 64) return;
 
-        const root = @import("root.zig");
+        const root = @import("../../src/root.zig");
         const ObjectID = root.core.ObjectID;
 
         const id1 = ObjectID.hash(input[0..32]);
@@ -279,7 +279,7 @@ pub const LSMTreeFuzzer = struct {
     /// Fuzz LSMTree put/get consistency
     pub fn fuzzPutGet(input: []const u8) void {
         const allocator = std.testing.allocator;
-        const LSMTree = @import("../src/form/storage/LSMTree.zig");
+        const LSMTree = @import("../../src/form/storage/LSMTree.zig");
 
         var tree = LSMTree.init(allocator, .{}) catch return;
         defer tree.deinit();
@@ -313,7 +313,7 @@ pub const SignatureFuzzer = struct {
     pub fn fuzzDeterministicSign(input: []const u8) void {
         if (input.len < 64) return;
 
-        const Signature = @import("../src/property/crypto/Signature.zig");
+        const Signature = @import("../../src/property/crypto/Signature.zig");
 
         const message = input[0..32];
         const seed = input[32..64];
@@ -341,11 +341,11 @@ pub const SignatureFuzzer = struct {
 // =============================================================================
 
 /// Define a fuzz test
-pub macro fuzztest(comptime name: []const u8, comptime T: type, comptime oracle: *const fn (T) void) {
+pub fn fuzztest(comptime name: []const u8, comptime T: type, comptime oracle: *const fn (T) void) void {
     const test_name = "fuzz_" ++ name;
     const test_func = struct {
         fn run() void {
-            var rng = std.rand.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
+            var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
             const size = rng.random().uintAtMost(usize, 4096);
             var data: [4096]u8 = undefined;
             for (data[0..size]) |*byte| {

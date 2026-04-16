@@ -716,13 +716,9 @@ test "P2PServer with QUIC transport" {
 }
 
 test "PeerConnection struct layout" {
-    // Verify struct layout
     _ = @sizeOf(PeerConnection);
-    try std.testing.expect(true); // Placeholder
 }
 
 test "QUICPeerConnection struct layout" {
-    // Verify struct layout
     _ = @sizeOf(QUICPeerConnection);
-    try std.testing.expect(true); // Placeholder
 }

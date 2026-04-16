@@ -110,8 +110,8 @@ pub const Ingress = struct {
             .verified = std.ArrayList(Transaction){},
         };
         // Pre-allocate based on max_pending to avoid reallocations
-        try self.pending.ensureTotalCapacity(config.max_pending);
-        try self.verified.ensureTotalCapacity(config.max_pending / 2);
+        try self.pending.ensureTotalCapacity(allocator, config.max_pending);
+        try self.verified.ensureTotalCapacity(allocator, config.max_pending / 2);
         return self;
     }
 
@@ -138,7 +138,8 @@ pub const Ingress = struct {
     /// Verify pending transactions with full signature verification
     pub fn verify(self: *Self) !void {
         // Move transactions from pending to verified after verification
-        while (self.pending.popOrNull()) |tx| {
+        while (self.pending.items.len > 0) {
+            const tx = self.pending.pop().?;
             // 1. Check minimum gas budget
             if (tx.gas_budget < self.config.min_gas_budget) {
                 continue;
@@ -238,8 +239,8 @@ test "Transaction signature verification" {
 
     // Sign the transaction
     const digest = tx.digest();
-    const sig = try Signature.sign(digest, keypair.secret_key, .ed25519);
-    tx.signature = sig;
+    const sig = try Signature.sign(&digest, keypair.secret_key, .ed25519);
+    tx.signature = sig.bytes;
     tx.public_key = keypair.public_key.bytes;
 
     // Verify signature

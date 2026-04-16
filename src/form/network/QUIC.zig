@@ -81,7 +81,7 @@ pub const QUICStream = struct {
             .remote_window = 1024 * 1024,
             .bytes_sent = 0,
             .bytes_received = 0,
-            .data = std.ArrayList(u8).init(std.heap.page_allocator),
+            .data = std.ArrayList(u8){},
         };
         errdefer self.data.deinit(std.heap.page_allocator);
         return self;
@@ -96,7 +96,7 @@ pub const QUICStream = struct {
         if (self.state == .closed or self.state == .half_closed_local) {
             return error.StreamClosed;
         }
-        try self.data.appendSlice(data);
+        try self.data.appendSlice(std.heap.page_allocator, data);
         self.bytes_sent += data.len;
     }
 
@@ -105,7 +105,7 @@ pub const QUICStream = struct {
         const len = @min(buf.len, self.data.items.len);
         @memcpy(buf[0..len], self.data.items[0..len]);
         if (len > 0) {
-            self.data.items = self.data.subscriber(.{ .start = len, .len = self.data.items.len - len });
+            self.data.items = self.data.items[len..];
             self.bytes_received += len;
         }
         return len;
@@ -383,7 +383,7 @@ test "QUICConnection init" {
     defer conn.deinit();
 
     try std.testing.expect(conn.state == .dialing);
-    try std.testing.expect(conn.connection_id.bytes == cid.bytes);
+    try std.testing.expect(std.mem.eql(u8, &conn.connection_id.bytes, &cid.bytes));
 }
 
 test "QUICStream write and read" {

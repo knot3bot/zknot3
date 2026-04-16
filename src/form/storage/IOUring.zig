@@ -230,9 +230,7 @@ pub fn getRecommendedConfig() Config {
 }
 
 test "io_uring availability" {
-    const supported = isSupported();
-    _ = supported;
-    try std.testing.expect(true);
+    _ = isSupported();
 }
 
 test "AsyncIO backend detection" {

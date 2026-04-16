@@ -10,6 +10,7 @@ const core = @import("../core.zig");
 const property = @import("../property.zig");
 const Gas = property.move_vm.Gas;
 const Resource = property.move_vm.Resource;
+const ResourceTracker = property.move_vm.ResourceTracker;
 const Interpreter = property.move_vm.Interpreter;
 const Bytecode = property.move_vm.Bytecode;
 const Ingress = @import("Ingress.zig");
@@ -40,14 +41,14 @@ pub const ExecutorConfig = struct {
 /// Executor with transaction execution support
 pub const Executor = struct {
     const Self = @This();
-
     allocator: std.mem.Allocator,
     config: ExecutorConfig,
-    resource_tracker: *Resource.ResourceTracker,
+    resource_tracker: *ResourceTracker,
 
     pub fn init(allocator: std.mem.Allocator, config: ExecutorConfig) !*Self {
-        const tracker = try allocator.create(Resource.ResourceTracker);
-        tracker.* = Resource.ResourceTracker.init(allocator);
+        const tracker = try allocator.create(ResourceTracker);
+        tracker.* = ResourceTracker.init(allocator);
+        tracker.* = ResourceTracker.init(allocator);
         errdefer {
             tracker.deinit();
             allocator.destroy(tracker);
@@ -78,7 +79,7 @@ pub const Executor = struct {
         var gas = Gas.GasMeter.init(gas_config);
 
         // Initialize interpreter
-        var interpreter = try Interpreter.Interpreter.init(
+        var interpreter = try Interpreter.init(
             self.allocator,
             &gas,
             self.resource_tracker,

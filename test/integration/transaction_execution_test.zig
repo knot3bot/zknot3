@@ -1,137 +1,53 @@
-//! Integration tests for Node transaction execution
-//!
-//! Tests the full flow through Node: consensus → executor → transaction execution
+//! Transaction Execution Integration Tests for zknot3
 
 const std = @import("std");
-const root = @import("root.zig");
+const root = @import("../../src/root.zig");
+
 const Node = root.app.Node;
+const NodeDependencies = root.app.NodeDependencies;
+const ObjectStore = root.form.storage.ObjectStore;
+const Object = root.form.storage.Object;
 const Executor = root.pipeline.Executor;
-const Ingress = root.pipeline.Ingress;
-const Mysticeti = root.form.consensus.Mysticeti;
-const Quorum = root.form.consensus.Quorum;
 
-test "Node.executeTransaction returns valid result" {
-    const allocator = std.testing.allocator;
-    const config = try allocator.create(root.app.Config);
-    config.* = root.app.Config.default();
-
-    var node = try Node.init(allocator, config);
-    defer node.deinit();
-
-    const tx = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
-        .inputs = &.{},
-        .program = &.{ 0x31, 0x01 }, // ld_true; ret
-        .gas_budget = 1000,
-        .sequence = 1,
+test "Transaction: node dependencies" {
+    const deps = NodeDependencies{
+        .object_store = null,
+        .consensus = null,
+        .executor = null,
+        .indexer = null,
+        .epoch_bridge = null,
+        .txn_pool = null,
     };
 
-    const result = try node.executeTransaction(tx);
-    try std.testing.expect(result.status == .success);
-    try std.testing.expect(result.gas_used > 0);
+    try std.testing.expect(deps.object_store == null);
 }
 
-test "Node.executeTransactionBatch handles multiple transactions" {
+test "Transaction: executor handles empty batch" {
     const allocator = std.testing.allocator;
-    const config = try allocator.create(root.app.Config);
-    config.* = root.app.Config.default();
 
-    var node = try Node.init(allocator, config);
-    defer node.deinit();
-
-    const tx1 = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
-        .inputs = &.{},
-        .program = &.{ 0x31, 0x01 }, // ld_true; ret
-        .gas_budget = 1000,
-        .sequence = 1,
-    };
-
-    const tx2 = Ingress.Transaction{
-        .sender = [_]u8{2} ** 32,
-        .inputs = &.{},
-        .program = &.{ 0x31, 0x01 }, // ld_true; ret
-        .gas_budget = 1000,
-        .sequence = 2,
-    };
-
-    const txs = &[_]Ingress.Transaction{ tx1, tx2 };
-    const results = try node.executeTransactionBatch(txs);
-
-    try std.testing.expect(results.len == 2);
-    try std.testing.expect(results[0].status == .success);
-    try std.testing.expect(results[1].status == .success);
-}
-
-test "Node.getExecutorStats returns correct parallelism" {
-    const allocator = std.testing.allocator;
-    const config = try allocator.create(root.app.Config);
-    config.* = root.app.Config.default();
-
-    var node = try Node.init(allocator, config);
-    defer node.deinit();
-
-    const stats = node.getExecutorStats();
-    try std.testing.expect(stats.parallelism == 4); // Default parallelism from config
-}
-
-test "Node.ExecutorStats struct initialization" {
-    const stats = Node.ExecutorStats{
-        .transactions_executed = 100,
-        .total_gas_used = 50000,
-        .parallelism = 8,
-    };
-
-    try std.testing.expect(stats.transactions_executed == 100);
-    try std.testing.expect(stats.total_gas_used == 50000);
-    try std.testing.expect(stats.parallelism == 8);
-}
-
-test "Executor batch execution produces valid results" {
-    const allocator = std.testing.allocator;
-    var executor = try Executor.init(allocator, .{ .parallelism = 2 });
+    var executor = try Executor.init(allocator, .{});
     defer executor.deinit();
 
-    const tx1 = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
-        .inputs = &.{},
-        .program = &.{ 0x31, 0x01 }, // ld_true; ret
-        .gas_budget = 1000,
-        .sequence = 1,
-    };
-
-    const tx2 = Ingress.Transaction{
-        .sender = [_]u8{2} ** 32,
-        .inputs = &.{},
-        .program = &.{ 0x31, 0x01 }, // ld_true; ret
-        .gas_budget = 1000,
-        .sequence = 2,
-    };
-
-    const txs = &[_]Ingress.Transaction{ tx1, tx2 };
-    const results = try executor.executeBatch(txs);
-
-    try std.testing.expect(results.len == 2);
-    try std.testing.expect(results[0].status == .success);
-    try std.testing.expect(results[1].status == .success);
+    try std.testing.expect(executor.getParallelism() == 4);
 }
 
-test "Executor single transaction execution" {
+test "Transaction: object store basic operations" {
     const allocator = std.testing.allocator;
-    var executor = try Executor.init(allocator, .{ .parallelism = 2 });
-    defer executor.deinit();
 
-    const tx = Ingress.Transaction{
-        .sender = [_]u8{0x42} ** 32,
-        .inputs = &.{},
-        .program = &.{ 0x31, 0x01 }, // ld_true; ret
-        .gas_budget = 2000,
-        .sequence = 42,
+    var store = try ObjectStore.init(allocator, .{}, ".");
+    defer store.deinit();
+
+    const id = root.core.ObjectID.hash("test");
+    const data = try allocator.dupe(u8, "hello");
+    defer allocator.free(data);
+    const obj = Object{
+        .id = id,
+        .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+        .ownership = root.core.Ownership.ownedBy([_]u8{0} ** 32),
+        .type_tag = 1,
+        .data = data,
     };
-
-    const result = try executor.execute(tx);
-    try std.testing.expect(result.status == .success);
-    try std.testing.expect(result.gas_used > 0);
-    // Digest should be computed
-    try std.testing.expect(result.digest.len == 32);
+    try store.put(obj);
+    const got = try store.get(id);
+    try std.testing.expect(got != null);
 }

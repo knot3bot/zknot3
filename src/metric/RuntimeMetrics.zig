@@ -231,13 +231,12 @@ pub const RuntimeMetricsCollector = struct {
 pub const MetricsSimulator = struct {
     const Self = @This();
 
-    rng: std.rand.DefaultPrng,
+    rng: std.Random.DefaultPrng,
 
     pub fn init(seed: u64) Self {
-        return .{ .rng = std.rand.DefaultPrng.init(seed) };
+        return .{ .rng = std.Random.DefaultPrng.init(seed) };
     }
 
-    /// Generate random resource metrics
     pub fn randomResource(self: *Self) ResourceMetrics {
         return .{
             .cpu_util = self.rng.random().float(f64) * 0.8 + 0.1,
@@ -318,7 +317,7 @@ test "UserMetrics: computeZiZai" {
 test "RuntimeMetricsCollector: getTriSource" {
     const allocator = std.testing.allocator;
     var collector = try RuntimeMetricsCollector.init(allocator, 100);
-    defer collector.deinit(allocator);
+    defer collector.deinit();
 
     try collector.updateResource(.{ .cpu_util = 0.8, .mem_util = 0.7, .storage_util = 0.6, .network_util = 0.5 });
     try collector.updateKnowledge(.{ .unique_types = 100, .total_objects = 1000, .unique_tx_types = 20, .total_transactions = 50000, .ownership_entropy = 2.5 });

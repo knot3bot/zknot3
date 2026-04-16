@@ -8,8 +8,8 @@
 
 const std = @import("std");
 const core = @import("../core.zig");
-const ObjectStore = @import("form/storage/ObjectStore");
-const Checkpoint = @import("form/storage/Checkpoint");
+const ObjectStore = @import("../form/storage/ObjectStore.zig");
+const Checkpoint = @import("../form/storage/Checkpoint.zig");
 const ObjectID = core.ObjectID;
 const Version = core.Version;
 
@@ -47,7 +47,7 @@ pub const Schema = struct {
     pub const TypeDefinition = struct {
         name: []const u8,
         kind: TypeKind,
-        fields: []const *const FieldDefinition,
+    fields: []const FieldDefinition,
         enum_values: ?[]const []const u8,
         implements: ?[]const []const u8,
     };
@@ -55,15 +55,15 @@ pub const Schema = struct {
     /// Field definition
     pub const FieldDefinition = struct {
         name: []const u8,
-        type: *const TypeRef,
-        args: []const *const InputValue,
+        type: TypeRef,
+        args: []const InputValue,
         resolve: ?*const fn (*const ResolverContext, []const ArgValue) anyerror!Value,
     };
 
     /// Input value definition
     pub const InputValue = struct {
         name: []const u8,
-        type: *const TypeRef,
+        type: TypeRef,
         default_value: ?[]const u8,
     };
 
@@ -87,7 +87,7 @@ pub const Schema = struct {
     /// Object type with fields
     pub const ObjectType = struct {
         name: []const u8,
-        fields: std.StringArrayHashMap(*const FieldDefinition),
+    fields: std.StringArrayHashMap(FieldDefinition),
         interfaces: []const []const u8,
     };
 
@@ -98,7 +98,7 @@ pub const Schema = struct {
             .allocator = allocator,
             .query_type = null,
             .mutation_type = null,
-            .types = std.StringArrayHashMap(*const TypeDefinition){},
+            .types = std.StringArrayHashMap(*const TypeDefinition).init(allocator),
         };
 
         // Build Knot3-compatible schema
@@ -111,70 +111,70 @@ pub const Schema = struct {
     fn buildSuiSchema(self: *Self) !void {
         // Register SuiObject type
         try self.registerObject("SuiObject", &.{
-            .{ .name = "id", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveObjectId },
-            .{ .name = "version", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectVersion },
-            .{ .name = "owner", .type = &.{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveObjectOwner },
-            .{ .name = "type", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveObjectType },
-            .{ .name = "previousTransaction", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveObjectPrevTx },
-            .{ .name = "storageRebate", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectStorageRebase },
-            .{ .name = "balance", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectBalance },
+            .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveObjectId },
+            .{ .name = "version", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectVersion },
+            .{ .name = "owner", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveObjectOwner },
+            .{ .name = "type", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveObjectType },
+            .{ .name = "previousTransaction", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveObjectPrevTx },
+            .{ .name = "storageRebate", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectStorageRebase },
+            .{ .name = "balance", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectBalance },
         }, &.{});
 
         // Register SuiCheckpoint type
         try self.registerObject("Checkpoint", &.{
-            .{ .name = "sequence", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointSequence },
-            .{ .name = "digest", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointDigest },
-            .{ .name = "timestamp", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointTimestamp },
-            .{ .name = "transactions", .type = &.{ .kind = .List, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointTxs },
+            .{ .name = "sequence", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointSequence },
+            .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointDigest },
+            .{ .name = "timestamp", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointTimestamp },
+            .{ .name = "transactions", .type = .{ .kind = .List, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointTxs },
         }, &.{});
 
         // Register SuiTransaction type
         try self.registerObject("SuiTransaction", &.{
-            .{ .name = "digest", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveTxDigest },
-            .{ .name = "sender", .type = &.{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveTxSender },
-            .{ .name = "gasBudget", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxGasBudget },
-            .{ .name = "gasPrice", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxGasPrice },
-            .{ .name = "executedEpoch", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxEpoch },
-            .{ .name = "status", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveTxStatus },
+            .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveTxDigest },
+            .{ .name = "sender", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveTxSender },
+            .{ .name = "gasBudget", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxGasBudget },
+            .{ .name = "gasPrice", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxGasPrice },
+            .{ .name = "executedEpoch", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxEpoch },
+            .{ .name = "status", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveTxStatus },
         }, &.{});
 
         // Register Coin type
         try self.registerObject("Coin", &.{
-            .{ .name = "coinObjectId", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCoinObjectId },
-            .{ .name = "coinType", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCoinType },
-            .{ .name = "balance", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCoinBalance },
-            .{ .name = "previousTransaction", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCoinPrevTx },
+            .{ .name = "coinObjectId", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCoinObjectId },
+            .{ .name = "coinType", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCoinType },
+            .{ .name = "balance", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCoinBalance },
+            .{ .name = "previousTransaction", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCoinPrevTx },
         }, &.{});
 
         // Build query type with root fields
         try self.registerObject("Query", &.{
-            .{ .name = "knot3_getObject", .type = &.{ .kind = .Object, .named_type = "SuiObject", .of_type = null }, .args = &.{
-                .{ .name = "id", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
+            .{ .name = "knot3_getObject", .type = .{ .kind = .Object, .named_type = "SuiObject", .of_type = null }, .args = &.{
+                .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetObject },
-            .{ .name = "knot3_getCheckpoint", .type = &.{ .kind = .Object, .named_type = "Checkpoint", .of_type = null }, .args = &.{
-                .{ .name = "id", .type = &.{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .default_value = null },
+            .{ .name = "knot3_getCheckpoint", .type = .{ .kind = .Object, .named_type = "Checkpoint", .of_type = null }, .args = &.{
+                .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetCheckpoint },
-            .{ .name = "knot3_getCoins", .type = &.{ .kind = .List, .named_type = "Coin", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getCoins", .type = .{ .kind = .List, .named_type = "Coin", .of_type = null }, .args = &.{
                 .{
-                    .name = "owner", .type = &.{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .default_value = null,
+                    .name = "owner", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .default_value = null,
                 },
-                .{ .name = "coinType", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
+                .{ .name = "coinType", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetCoins },
-            .{ .name = "knot3_getTransactionBlock", .type = &.{ .kind = .Object, .named_type = "SuiTransaction", .of_type = null }, .args = &.{
-                .{ .name = "digest", .type = &.{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
+            .{ .name = "knot3_getTransactionBlock", .type = .{ .kind = .Object, .named_type = "SuiTransaction", .of_type = null }, .args = &.{
+                .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetTransaction },
-            .{ .name = "sui_queryEvents", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{
-                .{ .name = "query", .type = &.{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
+            .{ .name = "sui_queryEvents", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{
+                .{ .name = "query", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
             }, .resolve = resolveQueryEvents },
         }, &.{});
     }
 
     /// Register an object type
-    fn registerObject(self: *Self, name: []const u8, fields: []const *const FieldDefinition, interfaces: []const []const u8) !void {
+    fn registerObject(self: *Self, name: []const u8, fields: []const FieldDefinition, interfaces: []const []const u8) !void {
         const obj = try self.allocator.create(ObjectType);
         obj.* = .{
             .name = name,
-            .fields = std.StringArrayHashMap(*const FieldDefinition){},
+            .fields = std.StringArrayHashMap(FieldDefinition).init(self.allocator),
             .interfaces = interfaces,
         };
 
@@ -385,19 +385,17 @@ fn resolveCoinPrevTx(ctx: *const ResolverContext, args: []const ArgValue) anyerr
 
 // Root field resolvers
 fn resolveGetObject(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
-    _ = ctx;
     _ = args;
     // Would look up object from object_store
-    const obj = std.StringArrayHashMap(Value){};
+    var obj = std.StringArrayHashMap(Value).init(ctx.allocator);
     try obj.put("id", stringValue("0x0"));
     try obj.put("version", intValue(1));
     return objectValue(obj);
 }
 
 fn resolveGetCheckpoint(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
-    _ = ctx;
     _ = args;
-    const obj = std.StringArrayHashMap(Value){};
+    var obj = std.StringArrayHashMap(Value).init(ctx.allocator);
     try obj.put("sequence", intValue(0));
     try obj.put("digest", stringValue("0xabc123"));
     return objectValue(obj);
@@ -411,9 +409,8 @@ fn resolveGetCoins(ctx: *const ResolverContext, args: []const ArgValue) anyerror
 }
 
 fn resolveGetTransaction(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
-    _ = ctx;
     _ = args;
-    const obj = std.StringArrayHashMap(Value){};
+    var obj = std.StringArrayHashMap(Value).init(ctx.allocator);
     try obj.put("digest", stringValue("0x0"));
     try obj.put("status", stringValue("Success"));
     return objectValue(obj);
@@ -471,7 +468,7 @@ pub const Query = struct {
                 .name = null,
                 .selections = try parseSelections(allocator, query_str),
             },
-            .variables = std.StringArrayHashMap(Value){},
+            .variables = std.StringArrayHashMap(Value).init(allocator),
         };
         return query;
     }
@@ -484,6 +481,7 @@ pub const Query = struct {
 /// Parse field selections from query
 fn parseSelections(allocator: std.mem.Allocator, query_str: []const u8) ![]const Query.Selection {
     var selections = std.ArrayList(Query.Selection){};
+    defer selections.deinit(allocator);
 
     // Simple parsing - extract field names between { and }
     var in_field = false;
@@ -513,7 +511,7 @@ fn parseSelections(allocator: std.mem.Allocator, query_str: []const u8) ![]const
         }
     }
 
-    return selections.toOwnedSlice();
+    return try selections.toOwnedSlice(allocator);
 }
 
 /// GraphQL response
@@ -547,36 +545,36 @@ pub const Response = struct {
     /// Serialize to JSON
     pub fn toJSON(self: Self, allocator: std.mem.Allocator) ![]u8 {
         var buf = std.ArrayList(u8){};
-        try buf.appendSlice("{\"data\":");
+        try buf.appendSlice(allocator, "{\"data\":");
 
         if (self.data) |d| {
             try serializeValue(allocator, &buf, d);
         } else {
-            try buf.appendSlice("null");
+            try buf.appendSlice(allocator, "null");
         }
 
         if (self.errors.len > 0) {
-            try buf.appendSlice(",\"errors\":[");
+            try buf.appendSlice(allocator, ",\"errors\":[");
             for (self.errors, 0..) |err, i| {
                 if (i > 0) try buf.append(allocator, ',');
-                try std.fmt.format(buf.writer(), "{{\"message\":\"{s}\"}}", .{err.message});
+                try std.fmt.format(buf.writer(allocator), "{{\"message\":\"{s}\"}}", .{err.message});
             }
             try buf.append(allocator, '}');
         }
 
         try buf.append(allocator, '}');
-        return buf.toOwnedSlice();
+        return buf.toOwnedSlice(allocator);
     }
 };
 
 /// Serialize Value to JSON
 fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: Value) !void {
     switch (value.kind) {
-        .Null => try buf.appendSlice("null"),
-        .String => try std.fmt.format(buf.writer(), "\"{s}\"", .{value.string.?},),
-        .Int => try std.fmt.format(buf.writer(), "{d}", .{value.int.?}),
-        .Float => try std.fmt.format(buf.writer(), "{d}", .{value.float.?}),
-        .Boolean => try buf.appendSlice(if (value.bool.?) "true" else "false"),
+        .Null => try buf.appendSlice(allocator, "null"),
+        .String => try std.fmt.format(buf.writer(allocator), "\"{s}\"", .{value.string.?},),
+        .Int => try std.fmt.format(buf.writer(allocator), "{d}", .{value.int.?}),
+        .Float => try std.fmt.format(buf.writer(allocator), "{d}", .{value.float.?}),
+        .Boolean => try buf.appendSlice(allocator, if (value.bool.?) "true" else "false"),
         .List => {
             try buf.append(allocator, '[');
             if (value.list) |list| {
@@ -595,7 +593,7 @@ fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: 
                 while (it.next()) |entry| {
                     if (!first) try buf.append(allocator, ',');
                     first = false;
-                    try std.fmt.format(buf.writer(), "\"{s}\":", .{entry.key_ptr.*});
+                    try std.fmt.format(buf.writer(allocator), "\"{s}\":", .{entry.key_ptr.*});
                     try serializeValue(allocator, buf, entry.value_ptr.*);
                 }
             }
@@ -638,7 +636,7 @@ pub const GraphQLCompiler = struct {
 
     /// Execute field selections
     fn executeSelections(self: *Self, selections: []const Query.Selection, ctx: *const ResolverContext) !Value {
-        var result = std.StringArrayHashMap(Value){};
+        var result = std.StringArrayHashMap(Value).init(self.allocator);
 
         for (selections) |sel| {
             switch (sel.kind) {
@@ -658,10 +656,10 @@ pub const GraphQLCompiler = struct {
     fn executeField(self: *Self, sel: Query.Selection, ctx: *const ResolverContext) !Value {
         // Build arguments from selection
         var args = std.ArrayList(ArgValue){};
-        defer args.deinit();
+        defer args.deinit(self.allocator);
 
         for (sel.arguments) |arg| {
-            try args.append(.{ .name = arg.name, .value = arg.value.string orelse "" });
+            try args.append(self.allocator, .{ .name = arg.name, .value = arg.value.string orelse "" });
         }
 
         // Look up field in schema and call resolver
@@ -708,7 +706,8 @@ test "GraphQL query parsing" {
 test "GraphQL response JSON serialization" {
     const allocator = std.testing.allocator;
 
-    const obj = std.StringArrayHashMap(Value){};
+    var obj = std.StringArrayHashMap(Value).init(allocator);
+    defer obj.deinit();
     const resp = Response.success(objectValue(obj));
 
     const json = try resp.toJSON(allocator);
@@ -740,9 +739,10 @@ test "GraphQL compiler executes query" {
 test "GraphQL serialize object value" {
     const allocator = std.testing.allocator;
     var buf = std.ArrayList(u8){};
-    defer buf.deinit();
+    defer buf.deinit(allocator);
 
-    const obj = std.StringArrayHashMap(Value){};
+    var obj = std.StringArrayHashMap(Value).init(allocator);
+    defer obj.deinit();
     try obj.put("id", stringValue("0x1"));
     try obj.put("count", intValue(42));
 

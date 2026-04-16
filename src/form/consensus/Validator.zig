@@ -73,7 +73,7 @@ pub const Validator = struct {
     end_epoch: u64,
 
     /// Create new validator
-    pub fn create(public_key: [32]u8, stake: u64, name: []u8, allocator: std.mem.Allocator) !Self {
+    pub fn create(public_key: [32]u8, stake: u64, name: []const u8, allocator: std.mem.Allocator) !Self {
         var id: [32]u8 = undefined;
         var ctx = std.crypto.hash.Blake3.init(.{});
         ctx.update(&public_key);
@@ -195,7 +195,7 @@ pub const ValidatorSet = struct {
 
         var it = self.validators.iterator();
         while (it.next()) |entry| {
-            try self.sorted_by_stake.append(self.allocator, entry.key);
+            try self.sorted_by_stake.append(self.allocator, entry.key_ptr.*);
         }
 
         // Sort by stake (bubble sort for simplicity)
@@ -240,8 +240,8 @@ test "Validator creation" {
 
 test "ValidatorSet operations" {
     const allocator = std.testing.allocator;
-    var set = try ValidatorSet{};
-    defer set.deinit(allocator);
+    var set = try ValidatorSet.init(allocator);
+    defer set.deinit();
 
     const pk1 = [_]u8{1} ** 32;
     const pk2 = [_]u8{2} ** 32;
@@ -258,8 +258,8 @@ test "ValidatorSet operations" {
 
 test "ValidatorSet top N" {
     const allocator = std.testing.allocator;
-    var set = try ValidatorSet{};
-    defer set.deinit(allocator);
+    var set = try ValidatorSet.init(allocator);
+    defer set.deinit();
 
     const pk1 = [_]u8{1} ** 32;
     const pk2 = [_]u8{2} ** 32;

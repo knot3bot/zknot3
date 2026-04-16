@@ -31,7 +31,7 @@ pub const P2PMessageType = enum(u8) {
 
 pub const Peer = struct {
     id: [32]u8,
-    address: []u8,
+    address: []const u8,
     port: u16,
     is_outbound: bool,
     connected_at: i64,
@@ -86,7 +86,7 @@ pub const PeerManager = struct {
     }
 
     pub fn removePeer(self: *@This(), peer_id: [32]u8) void {
-        _ = self.peers.remove(peer_id);
+        _ = self.peers.swapRemove(peer_id);
         // Also remove from routing table
         self.routing_table.removePeer(peer_id);
     }
@@ -110,8 +110,8 @@ pub const PeerManager = struct {
     }
 
     /// Get peers closest to a target ID using Kademlia XOR distance
-    pub fn getClosestPeers(self: *@This(), target_id: [32]u8, count: usize) []const [32]u8 {
-        return self.routing_table.getClosestPeers(target_id, count);
+    pub fn getClosestPeers(self: *@This(), target_id: [32]u8, count: usize) ![]const [32]u8 {
+        return try self.routing_table.getClosestPeers(target_id, count);
     }
 
     /// Refresh routing table by pinging peers and removing unresponsive ones
@@ -382,7 +382,7 @@ test "PeerManager with Kademlia routing" {
     try std.testing.expect(pm.peerCount() == 1);
 
     // Test Kademlia closest peers
-    const closest = pm.getClosestPeers(peer.id, 10);
+    const closest = try pm.getClosestPeers(peer.id, 10);
     defer allocator.free(closest);
     try std.testing.expect(closest.len == 1);
 

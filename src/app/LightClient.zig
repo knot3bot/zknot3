@@ -131,6 +131,9 @@ test "LightClientState init" {
 }
 
 test "Checkpoint verification" {
+    const changes: []const Checkpoint.ObjectChange = &[_]Checkpoint.ObjectChange{};
+    _ = changes;
+}
     // Create a dummy checkpoint
     const changes: []const Checkpoint.ObjectChange = &[_]Checkpoint.ObjectChange{};
 

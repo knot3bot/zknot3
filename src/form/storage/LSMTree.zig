@@ -203,9 +203,7 @@ pub const SSTable = struct {
     max_key: []const u8,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8, level: usize) !Self {
-        const file = std.fs.cwd().createFile(path, .{}) catch {
-            return try std.fs.cwd().openFile(path, .{ .mode = .read_write });
-        };
+        const file = std.fs.cwd().createFile(path, .{}) catch try std.fs.cwd().openFile(path, .{ .mode = .read_write });
 
         return .{
             .allocator = allocator,
@@ -559,32 +557,29 @@ pub const WriteBatch = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    operations: std.ArrayList(struct {
+    operations: std.ArrayList(Operation),
+
+    pub const Operation = struct {
         op: enum { put, delete },
-        key: []u8,
-        value: []u8,
-    }),
+        key: []const u8,
+        value: []const u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .operations = std.ArrayList(struct {
-                op: enum { put, delete },
-                key: []u8,
-                value: []u8,
-            }){},
+            .operations = std.ArrayList(Operation){},
         };
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         for (self.operations.items) |op| {
-            self.allocator.free(op.key);
-            self.allocator.free(op.value);
+            allocator.free(op.key);
+            allocator.free(op.value);
         }
-        self.operations.deinit();
+        self.operations.deinit(allocator);
     }
-
-    pub fn put(self: *Self, key: []u8, value: []u8) !void {
+    pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
         try self.operations.append(self.allocator, .{
             .op = .put,
             .key = try self.allocator.dupe(u8, key),
@@ -817,8 +812,8 @@ test "LSMTree write batch" {
     var tree = try LSMTree.init(allocator, .{ .sst_dir = "/tmp/lsm_test2" });
     defer tree.deinit();
 
-    var batch = tree.batchInit();
-    defer batch.deinit();
+    var batch = WriteBatch.init(allocator);
+    defer batch.deinit(allocator);
     try batch.put("key1", "value1");
     try batch.put("key2", "value2");
     try tree.batchCommit(&batch);
@@ -830,7 +825,7 @@ test "LSMTree write batch" {
 test "Bloom filter" {
     const allocator = std.testing.allocator;
     var filter = try BloomFilter.init(allocator, 100, 10);
-    defer filter.deinit();
+    defer filter.deinit(allocator);
 
     filter.add("test_key");
     try std.testing.expect(filter.contains("test_key"));

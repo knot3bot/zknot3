@@ -95,7 +95,7 @@ pub const Ed25519 = struct {
 test "Real Ed25519 sign and verify" {
     const seed = [_]u8{1} ** 32;
     const message = "test message";
-    const sig_bytes = Ed25519.sign(seed, message);
+    const sig_bytes = try Ed25519.sign(seed, message);
 
     const real_kp = crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch return error.SigningFailed;
     const real_pk_bytes = real_kp.public_key.toBytes();

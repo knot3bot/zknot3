@@ -263,7 +263,7 @@ pub const Mysticeti = struct {
         while (it.next()) |entry| {
             var block_it = entry.value_ptr.iterator();
             while (block_it.next()) |block_entry| {
-                block_entry.value_ptr.deinit();
+                block_entry.value_ptr.deinit(self.allocator);
             }
             entry.value_ptr.deinit();
         }
@@ -411,7 +411,7 @@ test "Mysticeti block creation" {
         try quorum.addValidator([_]u8{@intCast(i + 1)} ** 32, 1000);
     }
 
-    var consensus = try Mysticeti.init(allocator, &quorum);
+    var consensus = try Mysticeti.init(allocator, quorum);
     defer consensus.deinit();
 
     const parents = &[_]Round{ .{ .value = 0 }, .{ .value = 1 } };
@@ -437,7 +437,7 @@ test "Mysticeti quorum commit" {
         try quorum.addValidator([_]u8{@intCast(i + 1)} ** 32, 1000);
     }
 
-    var consensus = try Mysticeti.init(allocator, &quorum);
+    var consensus = try Mysticeti.init(allocator, quorum);
     defer consensus.deinit();
 
     try std.testing.expect(consensus.f == 1);

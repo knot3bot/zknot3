@@ -4,7 +4,7 @@
 //! for integration testing of consensus, networking, and Move execution.
 
 const std = @import("std");
-const root = @import("root.zig");
+const root = @import("../../src/root.zig");
 
 const ObjectID = root.core.ObjectID;
 const ObjectStore = root.form.storage.ObjectStore;

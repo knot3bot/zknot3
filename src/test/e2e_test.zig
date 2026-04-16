@@ -70,7 +70,7 @@ test "E2E: Transaction execution and receipt retrieval" {
     defer node.stop();
 
     // Create and submit a transaction
-    const tx = pipeline.Ingress.Transaction{
+    const tx = pipeline.Transaction{
         .sender = [_]u8{0x42} ** 32,
         .inputs = &.{},
         .program = try allocator.dupe(u8, "transfer"),
@@ -127,7 +127,7 @@ test "E2E: Pipeline components integration" {
     defer egress.deinit(allocator);
 
     // Submit transaction
-    const tx = pipeline.Ingress.Transaction{
+    const tx = pipeline.Transaction{
         .sender = [_]u8{0x01} ** 32,
         .inputs = &.{},
         .program = try allocator.dupe(u8, "nop"),
@@ -222,10 +222,10 @@ test "E2E: Batch transaction execution" {
 
     // Execute multiple transactions
     const num_txs = 3;
-    var txs: [num_txs]pipeline.Ingress.Transaction = undefined;
+    var txs: [num_txs]pipeline.Transaction = undefined;
 
     for (0..num_txs) |i| {
-        txs[i] = pipeline.Ingress.Transaction{
+        txs[i] = pipeline.Transaction{
             .sender = [_]u8{@intCast(i)} ** 32,
             .inputs = &.{},
             .program = try allocator.dupe(u8, "batch_test"),

@@ -138,7 +138,7 @@ test "Epoch is active" {
 test "Epoch manager" {
     const allocator = std.testing.allocator;
     var manager = try EpochManager.init(allocator, .{}, 1000);
-    defer manager.deinit(allocator);
+    defer manager.deinit();
 
     const epoch = manager.getCurrentEpoch();
     try std.testing.expect(epoch.number == 0);

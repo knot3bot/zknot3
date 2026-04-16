@@ -532,7 +532,7 @@ pub const HTTPServer = struct {
                         }
                     }
                 }
-                const tx = pipeline.Ingress.Transaction{
+                const tx = pipeline.Transaction{
                     .sender = sender,
                     .inputs = &.{},
                     .program = &.{},
@@ -610,18 +610,20 @@ test "HTTP Response creation" {
 }
 
 test "HTTP Response with header" {
-    const response = try Response.ok("Test").withHeader("X-Custom", "value");
+    var response = Response.ok("Test");
+    const response_with_header = try response.withHeader("X-Custom", "value");
+    try std.testing.expectEqualStrings("value", response_with_header.headers.get("X-Custom").?);
     try std.testing.expectEqualStrings("value", response.headers.get("X-Custom").?);
 }
 
 test "JSON-RPC response success" {
-    const response = JSONRPCResponse.success(.{ .string = "test" }, .{ .number = 1 });
+    const response = JSONRPCResponse.success(.{ .string = "test" }, .{ .integer = 1 });
     try std.testing.expect(response.err == null);
     try std.testing.expect(response.result != null);
 }
 
 test "JSON-RPC response error" {
-    const response = JSONRPCResponse.newError(-32600, "Invalid request", .{ .number = 1 });
+    const response = JSONRPCResponse.newError(-32600, "Invalid request", .{ .integer = 1 });
     try std.testing.expect(response.err != null);
     try std.testing.expectEqual(@as(i32, -32600), response.err.?.code);
 }

@@ -7,11 +7,10 @@ const core = @import("../../core.zig");
 const move_vm = @import("index.zig");
 const Bytecode = move_vm.Bytecode;
 const BytecodeVerifier = Bytecode.BytecodeVerifier;
-const Interpreter = move_vm.Interpreter.Interpreter;
+const Interpreter = move_vm.Interpreter;
 const Gas = move_vm.Gas;
-const ResourceModule = move_vm.Resource;
-const Resource = ResourceModule.Resource;
-const ResourceTracker = ResourceModule.ResourceTracker;
+const Resource = @import("Resource.zig").Resource;
+const ResourceTracker = @import("Resource.zig").ResourceTracker;
 
 /// Simple arithmetic contract: add two constants and return
 /// Bytecode: ld_const(7); ld_const(3); add; ret

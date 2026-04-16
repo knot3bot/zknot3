@@ -35,7 +35,7 @@ pub const Message = struct {
     msg_type: MessageType,
     sender: [32]u8,
     sequence: u64,
-    payload: []u8,
+    payload: []const u8,
 
     const Self = @This();
 
@@ -281,7 +281,7 @@ test "Transport basic operations" {
     const allocator = std.testing.allocator;
     const config = TransportConfig{};
     var transport = try Transport.init(allocator, config);
-    defer transport.deinit(allocator);
+    defer transport.deinit();
 
     const peer = [_]u8{1} ** 32;
     const conn_id = try transport.connect(peer);
@@ -324,7 +324,7 @@ test "Transport stats" {
     const allocator = std.testing.allocator;
     const config = TransportConfig{};
     var transport = try Transport.init(allocator, config);
-    defer transport.deinit(allocator);
+    defer transport.deinit();
 
     const stats = transport.stats();
     try std.testing.expect(stats.active_connections == 0);

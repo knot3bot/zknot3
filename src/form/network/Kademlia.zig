@@ -28,7 +28,7 @@ pub const KBucket = struct {
 
     pub const PeerEntry = struct {
         peer_id: [32]u8,
-        address: []u8,
+        address: []const u8,
         port: u16,
         last_seen: i64,
         successful_pings: u32,
@@ -71,7 +71,7 @@ pub const KBucket = struct {
     }
 
     /// Add a peer to this bucket
-    pub fn addPeer(self: *Self, peer_id: [32]u8, address: []u8, port: u16) !void {
+    pub fn addPeer(self: *Self, peer_id: [32]u8, address: []const u8, port: u16) !void {
         const entry = PeerEntry{
             .peer_id = peer_id,
             .address = try self.allocator.dupe(u8, address),
@@ -87,7 +87,7 @@ pub const KBucket = struct {
     pub fn removePeer(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
             self.allocator.free(entry.address);
-            _ = self.peers.remove(peer_id);
+            _ = self.peers.swapRemove(peer_id);
         }
     }
 
@@ -167,14 +167,14 @@ pub const RoutingTable = struct {
         while (i < 32) : (i += 1) {
             const diff = peer_id[i] ^ local_id[i];
             if (diff != 0) {
-                return @as(u8, 7 - @clz(diff)) + (31 - i) * 8;
+                return @intCast(7 - @clz(diff) + (31 - i) * 8);
             }
         }
         return 0;
     }
 
     /// Add a peer to the routing table
-    pub fn addPeer(self: *Self, peer_id: [32]u8, address: []u8, port: u16) !void {
+    pub fn addPeer(self: *Self, peer_id: [32]u8, address: []const u8, port: u16) !void {
         const bucket_idx = getBucketIndex(peer_id, self.local_peer_id);
         const bucket = self.buckets[bucket_idx] orelse return;
 
@@ -223,34 +223,35 @@ pub const RoutingTable = struct {
     }
 
     /// Get peers closest to a target ID
-    pub fn getClosestPeers(self: *Self, target_id: [32]u8, count: usize) []const [32]u8 {
-        var peers = std.ArrayList(struct { id: [32]u8, dist: KBucket.Distance }).init(self.allocator);
-        defer peers.deinit();
+    pub fn getClosestPeers(self: *Self, target_id: [32]u8, count: usize) ![]const [32]u8 {
+        const PeerEntry = struct { id: [32]u8, dist: KBucket.Distance };
+        var peers = std.ArrayList(PeerEntry){};
+        defer peers.deinit(self.allocator);
 
         for (self.buckets) |bucket| {
             if (bucket) |b| {
                 var it = b.peers.iterator();
-                                while (it.next()) |entry| {
-                                        const dist = KBucket.xorDistance(target_id, entry.key_ptr.*);
-                                        try peers.append(.{ .id = entry.key_ptr.*, .dist = dist });
-                                }
+                while (it.next()) |entry| {
+                    const dist = KBucket.xorDistance(target_id, entry.key_ptr.*);
+                    try peers.append(self.allocator, .{ .id = entry.key_ptr.*, .dist = dist });
+                }
             }
         }
 
         // Sort by distance
-        std.sort.sort(struct { id: [32]u8, dist: KBucket.Distance }, peers.items, {}, struct {
-            fn lessThan(_: void, a: @TypeOf(peers.items[0]), b: @TypeOf(peers.items[0])) bool {
+        std.sort.pdq(PeerEntry, peers.items, {}, struct {
+            fn lessThan(_: void, a: PeerEntry, b: PeerEntry) bool {
                 return a.dist < b.dist;
             }
         }.lessThan);
 
         // Return top 'count' peers
         const result_len = @min(count, peers.items.len);
-        var result = std.ArrayList([32]u8).init(self.allocator);
-                for (peers.items[0..result_len]) |peer| {
-                        try result.append(peer.id);
-                }
-        return result.toOwnedSlice();
+        var result = std.ArrayList([32]u8){};
+        for (peers.items[0..result_len]) |peer| {
+            try result.append(self.allocator, peer.id);
+        }
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Total peer count across all buckets
@@ -315,7 +316,7 @@ test "RoutingTable closest peers" {
     try rt.addPeer(peer2, "127.0.0.1", 8081);
     try rt.addPeer(peer3, "127.0.0.1", 8082);
     
-    const closest = rt.getClosestPeers(peer1, 2);
+    const closest = try rt.getClosestPeers(peer1, 2);
     defer allocator.free(closest);
     
     try std.testing.expect(closest.len == 2);

@@ -15,5 +15,11 @@ pub const app = @import("app.zig");
 // Move contract tests
 const _move_contract_tests = @import("property/move_vm/contract_test.zig");
 comptime {
+    _ = core;
+    _ = form;
+    _ = property;
+    _ = metric;
+    _ = pipeline;
+    _ = app;
     _ = _move_contract_tests;
 }

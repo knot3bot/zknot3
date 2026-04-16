@@ -56,7 +56,7 @@ pub const RPCResponse = struct {
     err: ?RPCError,
 
     pub const RPCResult = union(enum) {
-        success: []u8,
+        success: []const u8,
         event: ?EventEnvelope,
         object: ?ObjectResponse,
         checkpoint: ?CheckpointResponse,
@@ -100,11 +100,11 @@ pub const RPCResponse = struct {
 
     pub const RPCError = struct {
         code: ErrorCode,
-        message: []u8,
+        message: []const u8,
         data: ?[]u8 = null,
     };
 
-    pub fn success(id: ?RPCRequest.RPCID, result: []u8) @This() {
+    pub fn success(id: ?RPCRequest.RPCID, result: []const u8) @This() {
         return .{
             .id = id,
             .result = .{ .success = result },
@@ -112,7 +112,7 @@ pub const RPCResponse = struct {
         };
     }
 
-    pub fn makeError(id: ?RPCRequest.RPCID, code: ErrorCode, message: []u8) @This() {
+    pub fn makeError(id: ?RPCRequest.RPCID, code: ErrorCode, message: []const u8) @This() {
         return .{
             .id = id,
             .result = null,
@@ -350,7 +350,8 @@ fn handleGetEpochs(_ctx: *RPCContext, _: []const u8) !RPCResponse {
 }
 
 test "RPC server init and deinit" {
-    var server = try RPCServer{};
+    var server = try RPCServer.init(std.testing.allocator);
+    defer server.deinit();
     defer server.deinit();
 
     try std.testing.expect(server.handlers.count() == 0);

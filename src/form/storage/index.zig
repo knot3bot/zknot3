@@ -7,3 +7,4 @@ pub const ObjectStore = @import("ObjectStore.zig").ObjectStore;
 pub const WAL = @import("WAL.zig").WAL;
 pub const Checkpoint = @import("Checkpoint.zig").Checkpoint;
 pub const CheckpointSequence = @import("Checkpoint.zig").CheckpointSequence;
+pub const Object = @import("ObjectStore.zig").Object;

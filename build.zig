@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
 
     const test_module = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("tests.zig"),
         .target = target,
         .optimize = .Debug,
     });

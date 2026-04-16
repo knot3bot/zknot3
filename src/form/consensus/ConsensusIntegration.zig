@@ -46,7 +46,7 @@ pub const ConsensusIntegration = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn onBlockReceived(self: *Self, peer_id: [32]u8, block_data: []u8) !void {
+    pub fn onBlockReceived(self: *Self, peer_id: [32]u8, block_data: []const u8) !void {
         _ = peer_id;
         Log.debug("Received block from peer", .{});
 
@@ -60,7 +60,7 @@ pub const ConsensusIntegration = struct {
         try self.createAndBroadcastVote(&block);
     }
 
-    pub fn onVoteReceived(self: *Self, peer_id: [32]u8, vote_data: []u8) !void {
+    pub fn onVoteReceived(self: *Self, peer_id: [32]u8, vote_data: []const u8) !void {
         _ = peer_id;
         Log.debug("Received vote from peer", .{});
 
@@ -68,7 +68,7 @@ pub const ConsensusIntegration = struct {
         try self.tryCommit();
     }
 
-    pub fn onCertificateReceived(_self: *Self, _: [32]u8, _: []u8) !void {
+    pub fn onCertificateReceived(_self: *Self, _: [32]u8, _: []const u8) !void {
         _ = _self;
         Log.debug("Received certificate from peer", .{});
     }

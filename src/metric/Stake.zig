@@ -99,8 +99,8 @@ pub const StakePool = struct {
 
 test "StakePool basic operations" {
     const allocator = std.testing.allocator;
-    var pool = try StakePool{};
-    defer pool.deinit(allocator);
+    var pool = try StakePool.init(allocator);
+    defer pool.deinit();
 
     const validator = [_]u8{1} ** 32;
 
@@ -111,8 +111,8 @@ test "StakePool basic operations" {
 
 test "StakePool quorum threshold" {
     const allocator = std.testing.allocator;
-    var pool = try StakePool{};
-    defer pool.deinit(allocator);
+    var pool = try StakePool.init(allocator);
+    defer pool.deinit();
 
     // Add 4 validators with 1000 each
     for (0..4) |i| {

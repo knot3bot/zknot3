@@ -123,7 +123,7 @@ pub const WAL = struct {
 
         // Build header
         var header = WalRecordHeader{
-            .checksum = 0, // Placeholder
+            .checksum = 0, // Computed below after preparing header body
             .record_type = @intFromEnum(record_type),
             .key_len = key_len,
             .value_len = value_len,
@@ -136,10 +136,10 @@ pub const WAL = struct {
         defer checksum_data.deinit(self.allocator);
 
         // Skip checksum field (first 4 bytes) for checksum calculation
-        try checksum_data.appendSlice(header_bytes[4..]);
-        try checksum_data.appendSlice(key);
+        try checksum_data.appendSlice(self.allocator, header_bytes[4..]);
+        try checksum_data.appendSlice(self.allocator, key);
         if (value) |v| {
-            try checksum_data.appendSlice(v);
+            try checksum_data.appendSlice(self.allocator, v);
         }
 
         header.checksum = std.hash.Crc32.hash(checksum_data.items);

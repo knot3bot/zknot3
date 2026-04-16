@@ -27,18 +27,18 @@ pub const Object = struct {
         errdefer buf.deinit(allocator);
 
         // Write ID (32 bytes)
-        try buf.appendSlice(self.id.asBytes());
+        try buf.appendSlice(allocator, self.id.asBytes());
         // Write version (24 bytes)
-        try buf.appendSlice(&self.version.encode());
+        try buf.appendSlice(allocator, &self.version.encode());
         // Write ownership tag
         try buf.append(allocator, @intFromEnum(self.ownership.tag));
         // Write context if shared
         if (self.ownership.getContext()) |ctx| {
             var ctx_buf: [8]u8 = undefined;
             std.mem.writeInt(u64, &ctx_buf, ctx, .big);
-            try buf.appendSlice(&ctx_buf);
+            try buf.appendSlice(allocator, &ctx_buf);
         } else if (self.ownership.getOwner()) |owner| {
-            try buf.appendSlice(&owner);
+            try buf.appendSlice(allocator, &owner);
         }
         // Write type tag
         try buf.append(allocator, self.type_tag);
@@ -46,10 +46,10 @@ pub const Object = struct {
         const len: u32 = @intCast(self.data.len);
         var len_buf: [4]u8 = undefined;
         std.mem.writeInt(u32, &len_buf, len, .big);
-        try buf.appendSlice(&len_buf);
-        try buf.appendSlice(self.data);
+        try buf.appendSlice(allocator, &len_buf);
+        try buf.appendSlice(allocator, self.data);
 
-        return buf.toOwnedSlice();
+        return buf.toOwnedSlice(allocator);
     }
 
     /// Deserialize object from bytes
@@ -160,7 +160,7 @@ pub const ObjectStore = struct {
     /// Get object by ID
     pub fn get(self: *Self, id: core.ObjectID) !?Object {
         const key = id.asBytes();
-        const value = self.lsm.get(key) orelse return null;
+        const value = (try self.lsm.get(key)) orelse return null;
         return try Object.deserialize(self.allocator, value);
     }
 
@@ -198,7 +198,7 @@ test "Object serialization" {
     const serialized = try object.serialize(allocator);
     defer allocator.free(serialized);
 
-    const deserialized = try Object.deserialize(allocator, serialized);
+    var deserialized = try Object.deserialize(allocator, serialized);
     defer deserialized.deinit(allocator);
 
     try std.testing.expect(std.mem.eql(u8, object.data, deserialized.data));

@@ -504,7 +504,7 @@ pub const Node = struct {
             var sender: [32]u8 = undefined;
             @memcpy(&sender, block.payload[offset..offset + sender_len]);
 
-            const tx = pipeline.Ingress.Transaction{
+            const tx = pipeline.Transaction{
                 .sender = sender,
                 .inputs = &.{},
                 .program = &.{},

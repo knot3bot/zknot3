@@ -31,24 +31,27 @@ pub const Egress = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    pending_certificates: std.Fifo(Certificate),
+    pending_certificates: std.ArrayList(Certificate),
     quorum_stake: u128,
 
     pub fn init(allocator: std.mem.Allocator, quorum_stake: u128) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .pending_certificates = std.Fifo(Certificate){},
+            .pending_certificates = std.ArrayList(Certificate){},
             .quorum_stake = quorum_stake,
         };
         return self;
     }
 
     pub fn deinit(self: *Self) void {
-        while (self.pending_certificates.readItem()) |cert| {
+        for (self.pending_certificates.items) |cert| {
             self.allocator.free(cert.signatures);
         }
+        self.pending_certificates.deinit(self.allocator);
+        self.allocator.destroy(self);
     }
+
 
     /// Aggregate signatures into certificate
     pub fn aggregate(self: *Self, execution: Executor.ExecutionResult, signatures: []const SignaturePair) !Certificate {
@@ -88,7 +91,7 @@ pub const Egress = struct {
         ctx.final(&state_root);
 
         // Generate checkpoint sequence based on committed count
-        const checkpoint_seq = self.pending_certificates.count + 1;
+        const checkpoint_seq = self.pending_certificates.items.len + 1;
 
         return CommitResult{
             .checkpoint_sequence = checkpoint_seq,
@@ -100,12 +103,15 @@ pub const Egress = struct {
 
     /// Add pending certificate
     pub fn addPending(self: *Self, cert: Certificate) !void {
-        try self.pending_certificates.writeItem(cert);
+        try self.pending_certificates.append(self.allocator, cert);
     }
 
     /// Get next pending certificate
     pub fn getPending(self: *Self) ?Certificate {
-        return self.pending_certificates.readItem();
+        if (self.pending_certificates.items.len == 0) return null;
+        const cert = self.pending_certificates.items[0];
+        _ = self.pending_certificates.orderedRemove(0);
+        return cert;
     }
 
     /// Verify a certificate has sufficient stake for quorum
@@ -136,7 +142,7 @@ pub const Egress = struct {
 test "Egress certificate aggregation" {
     const allocator = std.testing.allocator;
     var egress = try Egress.init(allocator, 3000); // Need 2/3 of 3000 = 2000
-    defer egress.deinit(allocator);
+    defer egress.deinit();
 
     const execution = Executor.ExecutionResult{
         .digest = [_]u8{1} ** 32,

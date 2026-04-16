@@ -6,10 +6,10 @@ const std = @import("std");
 const FuzzInput = @import("fuzz_framework.zig").FuzzInput;
 const ObjectID = @import("../../src/core.zig").ObjectID;
 
-/// Fuzz test: ObjectID group operation associativity
+// Fuzz test: ObjectID group operation associativity
 test "Fuzz: ObjectID add associativity" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     // Run many iterations with random data
     var i: u64 = 0;
@@ -19,9 +19,9 @@ test "Fuzz: ObjectID add associativity" {
         var b_data: [32]u8 = undefined;
         var c_data: [32]u8 = undefined;
         
-        rng.random().fill(&a_data);
-        rng.random().fill(&b_data);
-        rng.random().fill(&c_data);
+        rng.random().bytes(&a_data);
+        rng.random().bytes(&b_data);
+        rng.random().bytes(&c_data);
         
         const a = ObjectID.hash(&a_data);
         const b = ObjectID.hash(&b_data);
@@ -37,19 +37,19 @@ test "Fuzz: ObjectID add associativity" {
     }
 }
 
-/// Fuzz test: ObjectID zero identity
+// Fuzz test: ObjectID zero identity
 test "Fuzz: ObjectID zero identity" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         var data: [32]u8 = undefined;
-        rng.random().fill(&data);
+        rng.random().bytes(&data);
         
         const a = ObjectID.hash(&data);
-        const az = a.add(.zero);
-        const za = .zero.add(a);
+        const az = a.add(ObjectID.zero);
+        const za = ObjectID.zero.add(a);
         
         if (!az.eql(a)) {
             std.debug.panic("ObjectID zero identity failed (a + 0 != a)", .{});
@@ -60,34 +60,34 @@ test "Fuzz: ObjectID zero identity" {
     }
 }
 
-/// Fuzz test: ObjectID self-inverse
+// Fuzz test: ObjectID self-inverse
 test "Fuzz: ObjectID self-inverse" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         var data: [32]u8 = undefined;
-        rng.random().fill(&data);
+        rng.random().bytes(&data);
         
         const a = ObjectID.hash(&data);
         const aa = a.add(a);
         
-        if (!aa.eql(.zero)) {
+        if (!aa.eql(ObjectID.zero)) {
             std.debug.panic("ObjectID self-inverse failed (a + a != 0)", .{});
         }
     }
 }
 
-/// Fuzz test: ObjectID negation involution
+// Fuzz test: ObjectID negation involution
 test "Fuzz: ObjectID negation involution" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         var data: [32]u8 = undefined;
-        rng.random().fill(&data);
+        rng.random().bytes(&data);
         
         const a = ObjectID.hash(&data);
         const neg_neg_a = a.negate().negate();
@@ -98,17 +98,17 @@ test "Fuzz: ObjectID negation involution" {
     }
 }
 
-/// Fuzz test: ObjectID commutativity
+// Fuzz test: ObjectID commutativity
 test "Fuzz: ObjectID commutativity" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         var a_data: [32]u8 = undefined;
         var b_data: [32]u8 = undefined;
-        rng.random().fill(&a_data);
-        rng.random().fill(&b_data);
+        rng.random().bytes(&a_data);
+        rng.random().bytes(&b_data);
         
         const a = ObjectID.hash(&a_data);
         const b = ObjectID.hash(&b_data);
@@ -122,16 +122,16 @@ test "Fuzz: ObjectID commutativity" {
     }
 }
 
-/// Fuzz test: ObjectID fromBytes validation
+// Fuzz test: ObjectID fromBytes validation
 test "Fuzz: ObjectID fromBytes validation" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
     while (i < 100) : (i += 1) {
         // Generate exactly 32 bytes - should always succeed
         var data: [32]u8 = undefined;
-        rng.random().fill(&data);
+        rng.random().bytes(&data);
         
         const id = ObjectID.hash(&data);
         const roundtrip = try ObjectID.fromBytes(&data);
@@ -149,16 +149,16 @@ test "Fuzz: ObjectID fromBytes validation" {
     }
 }
 
-/// Fuzz test: ObjectID hash determinism
+// Fuzz test: ObjectID hash determinism
 test "Fuzz: ObjectID hash determinism" {
     const seed = @as(u64, @intCast(std.time.timestamp()));
-    var rng = std.rand.DefaultPrng.init(seed);
+    var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
     while (i < 1000) : (i += 1) {
         const size = rng.random().uintAtMost(usize, 256);
         var data: [256]u8 = undefined;
-        rng.random().fill(&data);
+        rng.random().bytes(&data);
         
         const hash1 = ObjectID.hash(data[0..size]);
         const hash2 = ObjectID.hash(data[0..size]);

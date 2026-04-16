@@ -72,7 +72,7 @@ pub const Indexer = struct {
     event_index: std.AutoArrayHashMap([32]u8, std.ArrayList(IndexedEvent)),
     
     /// Events by type for filtering
-    events_by_type: std.AutoArrayHashMap([]u8, std.ArrayList(IndexedEvent)),
+    events_by_type: std.StringArrayHashMap(std.ArrayList(IndexedEvent)),
     
     /// Object count for metrics
     object_count: u64,
@@ -86,7 +86,7 @@ pub const Indexer = struct {
             .config = config,
             .object_index = std.AutoArrayHashMap(core.ObjectID, IndexedObject).init(allocator),
             .event_index = std.AutoArrayHashMap([32]u8, std.ArrayList(IndexedEvent)).init(allocator),
-            .events_by_type = std.AutoArrayHashMap([]u8, std.ArrayList(IndexedEvent)).init(allocator),
+            .events_by_type = std.StringArrayHashMap(std.ArrayList(IndexedEvent)).init(allocator),
             .object_count = 0,
             .event_count = 0,
         };

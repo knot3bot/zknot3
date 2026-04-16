@@ -167,7 +167,7 @@ test "TriSourceMetrics Pareto score" {
 test "MetricsCollector" {
     const allocator = std.testing.allocator;
     var collector = try MetricsCollector.init(allocator, 10);
-    defer collector.deinit(allocator);
+    defer collector.deinit();
 
     try collector.record(.{ .wu_feng = 0.8, .xiang_da = 0.8, .zi_zai = 0.8 });
     try collector.record(.{ .wu_feng = 0.9, .xiang_da = 0.9, .zi_zai = 0.9 });

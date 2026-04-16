@@ -4,10 +4,10 @@
 
 pub const P2P = @import("P2P.zig");
 pub const RPC = @import("RPC.zig");
-pub const HTTPServer = @import("HTTPServer.zig").HTTPServer;
+pub const HTTPServer = @import("HTTPServer.zig");
 pub const Transport = @import("Transport.zig");
 pub const Topology = @import("Topology.zig");
-pub const P2PServer = @import("P2PServer.zig").P2PServer;
+pub const P2PServer = @import("P2PServer.zig");
 pub const Kademlia = @import("Kademlia.zig");
 pub const QUIC = @import("QUIC.zig");
 pub const Yamux = @import("Yamux.zig");
