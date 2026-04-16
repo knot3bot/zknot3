@@ -193,7 +193,7 @@ pub const DashboardHandler = struct {
         if (self.node == null) return error.NodeNotSet;
         const node = self.node.?;
 
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         var blocks = try std.ArrayList(BlockInfo).initCapacity(self.allocator, 20);
         var hex_strings = std.ArrayList([]const u8).empty;
         defer {
@@ -251,7 +251,7 @@ pub const DashboardHandler = struct {
                 .hash = hash_hex,
                 .status = @tagName(receipt.status),
                 .gas_used = receipt.gas_used,
-                .timestamp = std.time.timestamp(),
+                .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
                 .sender = sender_hex,
             });
         }

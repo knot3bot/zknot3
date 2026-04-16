@@ -40,7 +40,7 @@ pub const TxnPool = struct {
     priority_queue: std.PriorityQueue(PoolTransaction, void, txnPoolOrder),
 
     /// Pending transactions by sender (sequence-based ordering)
-    by_sender: std.AutoArrayHashMap([32]u8, std.ArrayList(PoolTransaction)),
+    by_sender: std.AutoArrayHashMapUnmanaged([32]u8, std.ArrayList(PoolTransaction)),
 
     /// Received count for metrics
     received_count: u64,
@@ -52,8 +52,8 @@ pub const TxnPool = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .priority_queue = std.PriorityQueue(PoolTransaction, void, txnPoolOrder).init(allocator, {}),
-            .by_sender = std.AutoArrayHashMap([32]u8, std.ArrayList(PoolTransaction)).init(allocator),
+            .priority_queue = std.PriorityQueue(PoolTransaction, void, txnPoolOrder).initContext({}),
+            .by_sender = std.AutoArrayHashMapUnmanaged([32]u8, std.ArrayList(PoolTransaction)).empty,
             .received_count = 0,
             .executed_count = 0,
         };
@@ -62,11 +62,11 @@ pub const TxnPool = struct {
 
     pub fn deinit(self: *Self) void {
         // Clean up priority queue
-        while (self.priority_queue.removeOrNull()) |ptx| {
+        while (self.priority_queue.pop()) |ptx| {
             ptx.tx.deinit(self.allocator);
             self.allocator.destroy(ptx.tx);
         }
-        self.priority_queue.deinit();
+        self.priority_queue.deinit(self.allocator);
 
         // Clean up by_sender map
         var it = self.by_sender.iterator();
@@ -77,7 +77,7 @@ pub const TxnPool = struct {
             }
             entry.value_ptr.deinit(self.allocator);
         }
-        self.by_sender.deinit();
+        self.by_sender.deinit(self.allocator);
 
         self.allocator.destroy(self);
     }
@@ -110,18 +110,18 @@ pub const TxnPool = struct {
         const pool_tx = PoolTransaction{
             .tx = tx_ptr,
             .gas_price = gas_price,
-            .received_at = std.time.timestamp(),
+            .received_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
 
         // Add to sender's list
-        const sender_list = try self.by_sender.getOrPut(tx.sender);
+        const sender_list = try self.by_sender.getOrPut(self.allocator, tx.sender);
         if (!sender_list.found_existing) {
-            sender_list.value_ptr.* = std.ArrayList(PoolTransaction){};
+            sender_list.value_ptr.* = std.ArrayList(PoolTransaction).empty;
         }
         try sender_list.value_ptr.append(self.allocator, pool_tx);
 
         // Add to priority queue
-        try self.priority_queue.add(pool_tx);
+        try self.priority_queue.push(self.allocator, pool_tx);
 
         self.received_count += 1;
     }
@@ -131,7 +131,7 @@ pub const TxnPool = struct {
         // Lazy expiry check at front of queue
         self.skipExpired();
 
-        const ptx = self.priority_queue.removeOrNull() orelse return null;
+        const ptx = self.priority_queue.pop() orelse return null;
         self.executed_count += 1;
 
         // Remove from sender's tracking
@@ -157,7 +157,7 @@ pub const TxnPool = struct {
 
     /// Remove expired transactions - optimized lazy expiry approach
     pub fn removeExpired(self: *Self) usize {
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         var removed: usize = 0;
 
         // Use a temporary queue to rebuild without expired items
@@ -182,7 +182,7 @@ pub const TxnPool = struct {
 
         // Re-add valid transactions - O(n log n)
         for (valid_txs.items) |ptx| {
-            self.priority_queue.add(ptx) catch {
+            self.priority_queue.push(self.allocator, ptx) catch {
                 ptx.tx.deinit(self.allocator);
                 self.allocator.destroy(ptx.tx);
             };
@@ -193,10 +193,10 @@ pub const TxnPool = struct {
 
     /// Check and skip expired transactions at front of queue (lazy expiry)
     pub fn skipExpired(self: *Self) void {
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         while (self.priority_queue.peek()) |ptx| {
             if (now - ptx.received_at > self.config.timeout_seconds) {
-                _ = self.priority_queue.remove();
+                _ = self.priority_queue.pop();
                 ptx.tx.deinit(self.allocator);
                 self.allocator.destroy(ptx.tx);
             } else {

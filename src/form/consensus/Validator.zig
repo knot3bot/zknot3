@@ -120,7 +120,7 @@ pub const ValidatorSet = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    validators: std.AutoArrayHashMap([32]u8, Validator),
+    validators: std.AutoArrayHashMapUnmanaged([32]u8, Validator),
     sorted_by_stake: std.ArrayList([32]u8),
 
     /// Initialize empty validator set
@@ -128,7 +128,7 @@ pub const ValidatorSet = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .validators = std.AutoArrayHashMap([32]u8, Validator).init(allocator),
+            .validators = .empty,
             .sorted_by_stake = try std.ArrayList([32]u8).initCapacity(allocator, 4),
         };
         return self;
@@ -139,14 +139,14 @@ pub const ValidatorSet = struct {
         while (it.next()) |entry| {
             entry.value_ptr.deinit(self.allocator);
         }
-        self.validators.deinit();
+        self.validators.deinit(self.allocator);
         self.sorted_by_stake.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
     /// Add a validator
     pub fn add(self: *Self, validator: Validator) !void {
-        try self.validators.put(validator.id, validator);
+        try self.validators.put(self.allocator, validator.id, validator);
         try self.rebuildSortedList();
     }
 

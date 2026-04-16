@@ -23,7 +23,7 @@ pub const Object = struct {
 
     /// Serialize object to bytes
     pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
 
         // Write ID (32 bytes)

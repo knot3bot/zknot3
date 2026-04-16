@@ -35,7 +35,7 @@ pub const KeyPair = struct {
 
     pub fn generate() !KeyPair {
         var seed: [32]u8 = undefined;
-        crypto.random.bytes(&seed);
+        @import("io_instance").io.random(&seed);
         const kp = crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch return error.KeyGenerationFailed;
         return .{
             .secret_key = seed,

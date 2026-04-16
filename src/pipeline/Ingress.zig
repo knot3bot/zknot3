@@ -106,8 +106,8 @@ pub const Ingress = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .pending = std.ArrayList(Transaction){},
-            .verified = std.ArrayList(Transaction){},
+            .pending = std.ArrayList(Transaction).empty,
+            .verified = std.ArrayList(Transaction).empty,
         };
         // Pre-allocate based on max_pending to avoid reallocations
         try self.pending.ensureTotalCapacity(allocator, config.max_pending);

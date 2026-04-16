@@ -6,6 +6,17 @@ const Node = @import("../../app/Node.zig").Node;
 const pipeline = @import("../../pipeline.zig");
 const Log = @import("../../app/Log.zig");
 
+fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
+    var writer = stream.writer(@import("io_instance").io, &.{});
+    try writer.interface.writeAll(bytes);
+}
+
+fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
+    var reader = stream.reader(@import("io_instance").io, &.{});
+    return reader.interface.readSliceShort(buf) catch |err| switch (err) {
+        error.ReadFailed => return reader.err.?,
+    };
+}
 /// JSON-RPC request
 pub const JSONRPCRequest = struct {
     jsonrpc: []const u8 = "2.0",
@@ -75,13 +86,13 @@ pub const StatusCode = enum(u16) {
 /// HTTP Response
 pub const Response = struct {
     status: StatusCode,
-    headers: std.StringArrayHashMap([]const u8),
+    headers: std.StringArrayHashMapUnmanaged([]const u8),
     body: ?[]const u8,
 
     pub fn ok(body: []const u8) @This() {
         return .{
             .status = .ok,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = body,
         };
     }
@@ -89,7 +100,7 @@ pub const Response = struct {
     pub fn json(body: []const u8) @This() {
         return .{
             .status = .ok,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = body,
         };
     }
@@ -97,7 +108,7 @@ pub const Response = struct {
     pub fn notFound(body: []const u8) @This() {
         return .{
             .status = .not_found,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = body,
         };
     }
@@ -105,7 +116,7 @@ pub const Response = struct {
     pub fn badRequest(body: []const u8) @This() {
         return .{
             .status = .bad_request,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = body,
         };
     }
@@ -113,7 +124,7 @@ pub const Response = struct {
     pub fn methodNotAllowed() @This() {
         return .{
             .status = .method_not_allowed,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = null,
         };
     }
@@ -121,20 +132,20 @@ pub const Response = struct {
     pub fn internalError(body: []const u8) @This() {
         return .{
             .status = .internal_server_error,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = body,
         };
     }
     pub fn serviceUnavailable(body: []const u8) @This() {
         return .{
             .status = .service_unavailable,
-            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
             .body = body,
         };
     }
 
     pub fn withHeader(self: *@This(), name: []const u8, value: []const u8) !@This() {
-        try self.headers.put(name, value);
+        try self.headers.put(std.heap.page_allocator, name, value);
         return self.*;
     }
 
@@ -143,7 +154,7 @@ pub const Response = struct {
         return self.*;
     }
 
-    pub fn send(self: *const @This(), conn: std.net.Server.Connection) !void {
+    pub fn send(self: *const @This(), conn: std.Io.net.Stream) !void {
         const status_text = switch (self.status) {
             .ok => "200 OK",
             .created => "201 Created",
@@ -166,32 +177,32 @@ pub const Response = struct {
             .too_many_requests => "429 Too Many Requests",
         };
 
-        try conn.stream.writeAll("HTTP/1.1 ");
-        try conn.stream.writeAll(status_text);
-        try conn.stream.writeAll("\r\n");
+        try streamWriteAll(conn, "HTTP/1.1 ");
+        try streamWriteAll(conn, status_text);
+        try streamWriteAll(conn, "\r\n");
 
         // Write headers from the headers map
         var headers_it = self.headers.iterator();
         while (headers_it.next()) |entry| {
-            try conn.stream.writeAll(entry.key_ptr.*);
-            try conn.stream.writeAll(": ");
-            try conn.stream.writeAll(entry.value_ptr.*);
-            try conn.stream.writeAll("\r\n");
+            try streamWriteAll(conn, entry.key_ptr.*);
+            try streamWriteAll(conn, ": ");
+            try streamWriteAll(conn, entry.value_ptr.*);
+            try streamWriteAll(conn, "\r\n");
         }
 
         if (self.body) |body| {
-            try conn.stream.writeAll("Content-Length: ");
+            try streamWriteAll(conn, "Content-Length: ");
             var buf: [20]u8 = undefined;
             const len_str = try std.fmt.bufPrint(&buf, "{}", .{body.len});
-            try conn.stream.writeAll(len_str);
-            try conn.stream.writeAll("\r\n");
+            try streamWriteAll(conn, len_str);
+            try streamWriteAll(conn, "\r\n");
         } else {
-            try conn.stream.writeAll("Content-Length: 0\r\n");
+            try streamWriteAll(conn, "Content-Length: 0\r\n");
         }
-        try conn.stream.writeAll("\r\n");
+        try streamWriteAll(conn, "\r\n");
 
         if (self.body) |body| {
-            try conn.stream.writeAll(body);
+            try streamWriteAll(conn, body);
         }
     }
 };
@@ -234,15 +245,15 @@ pub const Response = struct {
 pub const HTTPServer = struct {
     const Self = @This();
     allocator: std.mem.Allocator,
-    listener: ?std.net.Server,
-    address: std.net.Address,
+    listener: ?std.Io.net.Server,
+    address: std.Io.net.IpAddress,
     dashboard_handler: ?*Dashboard.DashboardHandler,
     node: ?*Node,
     request_count: usize,
     last_request_second: i64,
     max_requests_per_second: usize,
 
-    pub fn init(allocator: std.mem.Allocator, address: std.net.Address) !@This() {
+    pub fn init(allocator: std.mem.Allocator, address: std.Io.net.IpAddress) !@This() {
         return .{
             .allocator = allocator,
             .listener = null,
@@ -255,7 +266,7 @@ pub const HTTPServer = struct {
         };
     }
 
-    pub fn initWithDashboard(allocator: std.mem.Allocator, address: std.net.Address, node: *Node, max_requests_per_second: u32) !@This() {
+    pub fn initWithDashboard(allocator: std.mem.Allocator, address: std.Io.net.IpAddress, node: *Node, max_requests_per_second: u32) !@This() {
         var handler = try allocator.create(Dashboard.DashboardHandler);
         handler.* = Dashboard.DashboardHandler.init(allocator);
         handler.setNode(node);
@@ -279,7 +290,7 @@ pub const HTTPServer = struct {
     }
 
     pub fn start(self: *@This()) !void {
-        const listener = try self.address.listen(.{});
+        const listener = try self.address.listen(@import("io_instance").io, .{});
         self.listener = listener;
 
         // Set accept timeout to prevent blocking the event loop indefinitely
@@ -288,7 +299,7 @@ pub const HTTPServer = struct {
         else
             .{ .sec = 1, .usec = 0 };
         std.posix.setsockopt(
-            listener.stream.handle,
+            listener.socket.handle,
             std.posix.SOL.SOCKET,
             std.posix.SO.RCVTIMEO,
             std.mem.asBytes(&timeout),
@@ -299,20 +310,20 @@ pub const HTTPServer = struct {
 
     pub fn stop(self: *@This()) void {
         if (self.listener) |*l| {
-            l.deinit();
+            l.deinit(@import("io_instance").io);
             self.listener = null;
         }
     }
 
-    pub fn accept(self: *@This()) !std.net.Server.Connection {
+    pub fn accept(self: *@This()) !std.Io.net.Stream {
         if (self.listener) |*l| {
-            return try l.accept();
+            return try l.accept(@import("io_instance").io);
         }
         return error.NotListening;
     }
 
-    pub fn handleConnection(self: *@This(), conn: std.net.Server.Connection) !void {
-        defer conn.stream.close();
+    pub fn handleConnection(self: *@This(), conn: std.Io.net.Stream) !void {
+        defer conn.close(@import("io_instance").io);
 
         // Set read/write timeout to prevent malicious clients from blocking the event loop
         const timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
@@ -320,7 +331,7 @@ pub const HTTPServer = struct {
         else
             .{ .sec = 5, .usec = 0 };
         std.posix.setsockopt(
-            conn.stream.handle,
+            conn.socket.handle,
             std.posix.SOL.SOCKET,
             std.posix.SO.RCVTIMEO,
             std.mem.asBytes(&timeout),
@@ -328,7 +339,7 @@ pub const HTTPServer = struct {
             Log.warn("[WARN] HTTPServer failed to set receive timeout: {}", .{err});
         };
         std.posix.setsockopt(
-            conn.stream.handle,
+            conn.socket.handle,
             std.posix.SOL.SOCKET,
             std.posix.SO.SNDTIMEO,
             std.mem.asBytes(&timeout),
@@ -337,7 +348,7 @@ pub const HTTPServer = struct {
         };
 
         // Rate limiting: global max requests per second
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         if (now != self.last_request_second) {
             self.last_request_second = now;
             self.request_count = 0;
@@ -345,7 +356,7 @@ pub const HTTPServer = struct {
         if (self.request_count >= self.max_requests_per_second) {
             var response = Response{
                 .status = .too_many_requests,
-                .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+                .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
             _ = try response.withJSONContentType();
@@ -355,9 +366,9 @@ pub const HTTPServer = struct {
         self.request_count += 1;
 
 
-        // Read request (simplified - just read first 4KB)
         var buf: [4096]u8 = undefined;
-        const bytes_read = conn.stream.read(&buf) catch |err| {
+        var net_reader = conn.reader(@import("io_instance").io, &buf);
+        const bytes_read = net_reader.interface.readSliceShort(&buf) catch |err| {
             if (err == error.WouldBlock) {
                 var response = Response.badRequest("{\"error\":\"Request timeout\"}");
                 _ = try response.withJSONContentType();
@@ -544,7 +555,7 @@ pub const HTTPServer = struct {
                         error.NotRunning, error.PoolFull => Response.serviceUnavailable("{\"error\":\"Service unavailable - try again later\"}"),
                         error.TransactionAlreadyExecuted, error.DuplicateTransaction => Response{
                             .status = .conflict,
-                            .headers = std.StringArrayHashMap([]const u8).init(std.heap.page_allocator),
+                            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
                             .body = "{\"error\":\"Transaction already known\"}",
                         },
                         error.GasPriceTooLow => Response.badRequest("{\"error\":\"Gas price too low\"}"),

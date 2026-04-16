@@ -29,7 +29,7 @@ pub const NoiseSecretKey = struct {
     /// Generate a new random secret key
     pub fn generate() @This() {
         var key: @This() = undefined;
-        std.crypto.random.bytes(&key.bytes);
+        @import("io_instance").io.random(&key.bytes);
         // Ensure scalar is valid (clamp bits as per X25519 spec)
         key.bytes[0] &= 248;
         key.bytes[31] &= 127;
@@ -497,7 +497,7 @@ test "NoiseKeypair generation" {
 
 test "CipherState encrypt/decrypt" {
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    @import("io_instance").io.random(&key);
 
     var cipher = CipherState.init(key);
 
@@ -515,7 +515,7 @@ test "SymmetricState mixHash" {
     const sym = try SymmetricState.init("test", "protocol");
 
     var data: [16]u8 = undefined;
-    std.crypto.random.bytes(&data);
+    @import("io_instance").io.random(&data);
 
     const hash_before = sym.hash;
     _ = sym.mixHash(&data);

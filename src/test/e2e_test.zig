@@ -18,12 +18,13 @@ const pipeline = @import("../pipeline.zig");
 
 test "E2E: Node with ObjectStore - object lifecycle" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
     const test_dir = "/tmp/e2e_object_test";
 
     // Clean up
-    std.fs.cwd().deleteTree(test_dir) catch {};
-    std.fs.cwd().makeDir(test_dir) catch {};
-    defer std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
 
     // Initialize components
     const config = try allocator.create(@import("../app/Config.zig").Config);
@@ -58,6 +59,7 @@ test "E2E: Node with ObjectStore - object lifecycle" {
 
 test "E2E: Transaction execution and receipt retrieval" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
 
     const config = try allocator.create(@import("../app/Config.zig").Config);
     config.* = @import("../app/Config.zig").Config.default();
@@ -92,6 +94,7 @@ test "E2E: Transaction execution and receipt retrieval" {
 
 test "E2E: Block commit workflow" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
 
     const config = try allocator.create(@import("../app/Config.zig").Config);
     config.* = @import("../app/Config.zig").Config.default();
@@ -115,6 +118,7 @@ test "E2E: Block commit workflow" {
 
 test "E2E: Pipeline components integration" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
 
     // Initialize pipeline
     var ingress = try Ingress.init(allocator, .{ .max_pending = 100 });
@@ -162,6 +166,7 @@ test "E2E: Pipeline components integration" {
 
 test "E2E: Node with checkpoint sequence" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
 
     const config = try allocator.create(@import("../app/Config.zig").Config);
     config.* = @import("../app/Config.zig").Config.default();
@@ -184,6 +189,7 @@ test "E2E: Node with checkpoint sequence" {
 
 test "E2E: Node state transitions" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
 
     const config = try allocator.create(@import("../app/Config.zig").Config);
     config.* = @import("../app/Config.zig").Config.default();
@@ -209,6 +215,7 @@ test "E2E: Node state transitions" {
 
 test "E2E: Batch transaction execution" {
     const allocator = std.testing.allocator;
+    ("root").io_instance = std.testing.io;
 
     const config = try allocator.create(@import("../app/Config.zig").Config);
     config.* = @import("../app/Config.zig").Config.default();

@@ -110,7 +110,7 @@ pub const MemTable = struct {
 
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList(KeyValue){},
+            .entries = std.ArrayList(KeyValue).empty,
             .size = 0,
             .max_size = max_size,
             .bloom = bloom,
@@ -189,12 +189,36 @@ pub const SSTableIndexEntry = struct {
     size: u32,
 };
 
+/// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
+const CompatFile = struct {
+    file: std.Io.File,
+
+    pub fn close(self: CompatFile) void {
+        self.file.close(@import("io_instance").io);
+    }
+
+    pub fn seekTo(self: CompatFile, offset: u64) !void {
+        var reader = self.file.reader(@import("io_instance").io, &.{});
+        try reader.seekTo(offset);
+    }
+
+    pub fn writeAll(self: CompatFile, bytes: []const u8) !void {
+        try self.file.writeStreamingAll(@import("io_instance").io, bytes);
+    }
+
+    pub fn readAll(self: CompatFile, buf: []u8) !usize {
+        var reader = self.file.reader(@import("io_instance").io, &.{});
+        return reader.interface.readSliceShort(buf) catch |err| switch (err) {
+            error.ReadFailed => return reader.err.?,
+        };
+    }
+};
 /// SSTable - Sorted String Table file
 pub const SSTable = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: CompatFile,
     path: []const u8,
     index: std.ArrayList(SSTableIndexEntry),
     bloom: *BloomFilter,
@@ -203,13 +227,13 @@ pub const SSTable = struct {
     max_key: []const u8,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8, level: usize) !Self {
-        const file = std.fs.cwd().createFile(path, .{}) catch try std.fs.cwd().openFile(path, .{ .mode = .read_write });
+        const file = CompatFile{ .file = std.Io.Dir.cwd().createFile(@import("io_instance").io, path, .{}) catch try std.Io.Dir.cwd().openFile(@import("io_instance").io, path, .{ .mode = .read_write }) };
 
         return .{
             .allocator = allocator,
             .file = file,
             .path = try allocator.dupe(u8, path),
-            .index = std.ArrayList(SSTableIndexEntry){},
+            .index = std.ArrayList(SSTableIndexEntry).empty,
             .bloom = try allocator.create(BloomFilter),
             .level = level,
             .min_key = &.{},
@@ -364,7 +388,7 @@ pub const SSTable = struct {
 
     /// Read all entries from SSTable for compaction
     pub fn readAllEntries(self: *Self, allocator: std.mem.Allocator) ![]KeyValue {
-        var entries = std.ArrayList(KeyValue){};
+        var entries = std.ArrayList(KeyValue).empty;
         errdefer {
             for (entries.items) |entry| {
                 allocator.free(entry.key);
@@ -429,9 +453,9 @@ pub const CompactionManager = struct {
     active_level: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: LSMTreeConfig) !Self {
-        var levels = std.ArrayList(std.ArrayList(*SSTable)){};
+        var levels = std.ArrayList(std.ArrayList(*SSTable)).empty;
         for (0..config.max_levels) |_| {
-            try levels.append(allocator, std.ArrayList(*SSTable){});
+            try levels.append(allocator, std.ArrayList(*SSTable).empty);
         }
 
         return .{
@@ -473,7 +497,7 @@ pub const CompactionManager = struct {
         const sstables = self.levels.items[level].items;
         if (sstables.len == 0) return;
 
-        var all_entries = std.ArrayList(KeyValue){};
+        var all_entries = std.ArrayList(KeyValue).empty;
         defer all_entries.deinit();
 
         for (sstables) |sst| {
@@ -496,7 +520,7 @@ pub const CompactionManager = struct {
             }
         }.lessThan);
 
-        var deduped = std.ArrayList(KeyValue){};
+        var deduped = std.ArrayList(KeyValue).empty;
         defer {
             for (deduped.items) |entry| {
                 allocator.free(entry.key);
@@ -505,7 +529,7 @@ pub const CompactionManager = struct {
             deduped.deinit();
         }
 
-        var seen = std.AutoArrayHashMap([]const u8, void).init(allocator);
+        var seen = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{});
         defer seen.deinit();
 
         for (all_entries.items) |entry| {
@@ -568,7 +592,7 @@ pub const WriteBatch = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .operations = std.ArrayList(Operation){},
+            .operations = std.ArrayList(Operation).empty,
         };
     }
 
@@ -633,7 +657,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
             .allocator = allocator,
             .config = config,
             .memtable = try MemTable.init(allocator, config.memtable_size),
-            .sstables = std.ArrayList(*SSTable){},
+            .sstables = std.ArrayList(*SSTable).empty,
             .sequence = 0,
             .compaction = try allocator.create(CompactionManager),
             .arena = std.heap.ArenaAllocator.init(allocator),
@@ -643,7 +667,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
         self.compaction.* = try CompactionManager.init(allocator, config);
 
         // Create SST directory
-        std.fs.cwd().makeDir(config.sst_dir) catch |err| {
+        std.Io.Dir.cwd().createDir(@import("io_instance").io, config.sst_dir, .default_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
         return self;
@@ -798,6 +822,8 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
 
 test "LSMTree basic operations" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     var tree = try LSMTree.init(allocator, .{ .sst_dir = "/tmp/lsm_test" });
     defer tree.deinit();
 
@@ -809,6 +835,8 @@ test "LSMTree basic operations" {
 
 test "LSMTree write batch" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     var tree = try LSMTree.init(allocator, .{ .sst_dir = "/tmp/lsm_test2" });
     defer tree.deinit();
 
@@ -834,11 +862,13 @@ test "Bloom filter" {
 
 test "LSMTree + WAL recover after crash" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     const test_dir = "/tmp/lsm_wal_recover_test";
 
     // Clean up any previous test data
-    std.fs.cwd().deleteTree(test_dir) catch {};
-    std.fs.cwd().makeDir(test_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
 
     // Phase 1: Create LSMTree and write data
     {
@@ -881,16 +911,18 @@ test "LSMTree + WAL recover after crash" {
     }
 
     // Cleanup
-    std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
 }
 
 test "LSMTree WAL delete replay" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     const test_dir = "/tmp/lsm_wal_delete_test";
 
     // Clean up
-    std.fs.cwd().deleteTree(test_dir) catch {};
-    std.fs.cwd().makeDir(test_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
 
     // Phase 1: Write and delete
     {
@@ -914,6 +946,6 @@ test "LSMTree WAL delete replay" {
     }
 
     // Cleanup
-    std.fs.cwd().deleteTree(test_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
 }
 

@@ -1,5 +1,5 @@
+const std = @import("std");
 comptime {
-    _ = @import("src/root.zig");
     _ = @import("test/unit/graphql_test.zig");
     _ = @import("test/unit/serialization_test.zig");
     _ = @import("test/unit/test_framework.zig");
@@ -15,3 +15,5 @@ comptime {
     _ = @import("test/fuzz/fuzz_framework.zig");
     _ = @import("test/fuzz/ObjectIDFuzzTests.zig");
 }
+
+

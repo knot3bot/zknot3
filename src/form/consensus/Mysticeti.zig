@@ -24,7 +24,7 @@ pub const Block = struct {
     round: Round,
     payload: []const u8,
     parents: []const Round,
-    votes: std.AutoArrayHashMap([32]u8, Vote),
+    votes: std.AutoArrayHashMapUnmanaged([32]u8, Vote),
     digest: [32]u8,
 
     const Self = @This();
@@ -41,7 +41,7 @@ pub const Block = struct {
             .round = round,
             .payload = try allocator.dupe(u8, payload),
             .parents = try allocator.dupe(Round, parents),
-            .votes = std.AutoArrayHashMap([32]u8, Vote).init(allocator),
+            .votes = .empty,
             .digest = undefined,
         };
 
@@ -59,7 +59,7 @@ pub const Block = struct {
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         allocator.free(self.payload);
         allocator.free(self.parents);
-        self.votes.deinit();
+        self.votes.deinit(allocator);
     }
 
     pub fn hasQuorum(self: Self, _: u128, threshold: u128) bool {
@@ -130,7 +130,7 @@ pub const Block = struct {
             .round = round,
             .payload = payload,
             .parents = parents,
-            .votes = std.AutoArrayHashMap([32]u8, Vote).init(allocator),
+            .votes = .empty,
             .digest = digest,
         };
     }
@@ -233,8 +233,8 @@ pub const CommitCertificate = struct {
 
 pub const Mysticeti = struct {
     allocator: std.mem.Allocator,
-    dag: std.AutoArrayHashMap(Round, std.AutoArrayHashMap([32]u8, Block)),
-    committed_rounds: std.AutoArrayHashMap(Round, void),
+    dag: std.AutoArrayHashMapUnmanaged(Round, std.AutoArrayHashMapUnmanaged([32]u8, Block)),
+    committed_rounds: std.AutoArrayHashMapUnmanaged(Round, void),
     current_round: Round,
     quorum: *Quorum.Quorum,
     total_stake: u128,
@@ -247,8 +247,8 @@ pub const Mysticeti = struct {
         const self_ptr = try allocator.create(Self);
         self_ptr.* = .{
             .allocator = allocator,
-            .dag = std.AutoArrayHashMap(Round, std.AutoArrayHashMap([32]u8, Block)).init(allocator),
-            .committed_rounds = std.AutoArrayHashMap(Round, void).init(allocator),
+            .dag = .empty,
+            .committed_rounds = .empty,
             .current_round = .{ .value = 0 },
             .quorum = quorum,
             .total_stake = quorum.totalStake(),
@@ -265,17 +265,17 @@ pub const Mysticeti = struct {
             while (block_it.next()) |block_entry| {
                 block_entry.value_ptr.deinit(self.allocator);
             }
-            entry.value_ptr.deinit();
+            entry.value_ptr.deinit(self.allocator);
         }
-        self.dag.deinit();
-        self.committed_rounds.deinit();
+        self.dag.deinit(self.allocator);
+        self.committed_rounds.deinit(self.allocator);
     }
 
     pub fn addBlock(self: *Self, block: Block) !void {
         if (!self.dag.contains(block.round)) {
-            try self.dag.put(block.round, std.AutoArrayHashMap([32]u8, Block).init(self.allocator));
+            try self.dag.put(self.allocator, block.round, std.AutoArrayHashMapUnmanaged([32]u8, Block).empty);
         }
-        try self.dag.getPtr(block.round).?.put(block.author, block);
+        try self.dag.getPtr(block.round).?.put(self.allocator, block.author, block);
     }
 
     pub fn proposeBlock(self: *Self, author: [32]u8, payload: []const u8) !Block {
@@ -313,7 +313,7 @@ pub const Mysticeti = struct {
     pub fn receiveVote(self: *Self, vote: Vote) !void {
         if (self.dag.getPtr(vote.round)) |round_blocks| {
             if (round_blocks.getPtr(vote.block_digest[0..32].*)) |blk| {
-                try blk.votes.put(vote.voter, vote);
+                try blk.votes.put(self.allocator, vote.voter, vote);
             }
         }
     }
@@ -321,7 +321,7 @@ pub const Mysticeti = struct {
     pub fn processVote(self: *Self, vote: Vote) !void {
         if (self.dag.getPtr(vote.round)) |round_blocks| {
             if (round_blocks.getPtr(vote.block_digest[0..32].*)) |blk| {
-                try blk.votes.put(vote.voter, vote);
+                try blk.votes.put(self.allocator, vote.voter, vote);
             }
         }
     }
@@ -362,7 +362,7 @@ pub const Mysticeti = struct {
         return null;
     }
 
-    fn computeStake(votes: *const std.AutoArrayHashMap([32]u8, Vote)) u128 {
+    fn computeStake(votes: *const std.AutoArrayHashMapUnmanaged([32]u8, Vote)) u128 {
         var total: u128 = 0;
         var it = votes.iterator();
         while (it.next()) |entry| {

@@ -39,16 +39,16 @@ pub const Topology = struct {
     allocator: std.mem.Allocator,
     validators: std.ArrayList(Validator),
     edges: std.ArrayList(Edge),
-    adjacency: std.AutoArrayHashMap(u32, std.ArrayList(u32)),
+    adjacency: std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(u32)),
 
     /// Initialize empty topology
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .validators = std.ArrayList(Validator){},
-            .edges = std.ArrayList(Edge){},
-            .adjacency = std.AutoArrayHashMap(u32, std.ArrayList(u32)){},
+            .validators = std.ArrayList(Validator).empty,
+            .edges = std.ArrayList(Edge).empty,
+            .adjacency = std.AutoArrayHashMapUnmanaged(u32, std.ArrayList(u32)){},
         };
         return self;
     }
@@ -67,7 +67,7 @@ pub const Topology = struct {
     pub fn addValidator(self: *Self, validator: Validator) !u32 {
         const idx = @as(u32, @intCast(self.validators.items.len));
         try self.validators.append(self.allocator, validator);
-        try self.adjacency.put(idx, std.ArrayList(u32){});
+        try self.adjacency.put(idx, std.ArrayList(u32).empty);
         return idx;
     }
 
@@ -116,13 +116,13 @@ pub const Topology = struct {
     pub fn findPath(self: Self, from: u32, to: u32) ?[]const u32 {
         if (from == to) return &.{from};
 
-        var visited = std.AutoArrayHashMap(u32, void).init(self.allocator);
+        var visited = std.AutoArrayHashMapUnmanaged(u32, void).init(self.allocator);
         defer visited.deinit();
 
         var queue = std.ArrayList(u32).init(self.allocator);
         defer queue.deinit();
 
-        var parent = std.AutoArrayHashMap(u32, u32).init(self.allocator);
+        var parent = std.AutoArrayHashMapUnmanaged(u32, u32).init(self.allocator);
         defer parent.deinit();
 
         try visited.put(from, {});
@@ -137,7 +137,7 @@ pub const Topology = struct {
 
                     if (neighbor == to) {
                         // Reconstruct path
-                        var path = std.ArrayList(u32){};
+                        var path = std.ArrayList(u32).empty;
                         var node = to;
                         while (true) {
                             try path.append(self.allocator, node);

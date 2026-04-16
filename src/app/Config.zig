@@ -199,7 +199,7 @@ pub const NodeConfig = struct {
 
 /// Load node config from JSON file
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-    const contents = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+    const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
     defer allocator.free(contents);
     return try Self.loadFromJSON(allocator, contents);
 }
@@ -222,7 +222,7 @@ pub fn loadFromJSON(allocator: std.mem.Allocator, json_slice: []const u8) !Self 
     pub fn saveToFile(self: Self, allocator: std.mem.Allocator, path: []const u8) !void {
         const json_str = try self.toJSON(allocator);
         defer allocator.free(json_str);
-        try std.fs.cwd().writeFile(path, json_str);
+        try std.Io.Dir.cwd().writeFile(@import("io_instance").io, .{ .sub_path = path, .data = json_str });
     }
 };
 
@@ -239,8 +239,8 @@ pub const ConfigWithBuffer = struct {
 
 /// Load node config from JSON file, returning with its backing buffer.
 /// The buffer is kept alive to ensure string slices in config remain valid.
-pub fn loadConfigWithBuffer(allocator: std.mem.Allocator, path: []const u8) !ConfigWithBuffer {
-    const contents = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+pub fn loadConfigWithBuffer(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !ConfigWithBuffer {
+    const contents = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(1024 * 1024));
     errdefer allocator.free(contents);
     const parsed = try json.parseFromSlice(Config, allocator, contents, .{ .ignore_unknown_fields = true });
     // parsed.value contains slices into contents, so we must keep contents alive
@@ -371,7 +371,7 @@ pub const Config = struct {
 
     /// Load configuration from JSON file
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const contents = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+        const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
         defer allocator.free(contents);
         return try Self.loadFromJSON(allocator, contents);
     }
@@ -393,7 +393,7 @@ pub const Config = struct {
     pub fn saveToFile(self: Self, allocator: std.mem.Allocator, path: []const u8) !void {
         const json_str = try self.toJSON(allocator);
         defer allocator.free(json_str);
-        try std.fs.cwd().writeFile(path, json_str);
+        try std.Io.Dir.cwd().writeFile(@import("io_instance").io, .{ .sub_path = path, .data = json_str });
     }
 };
 

@@ -33,12 +33,48 @@ pub const WalError = error{
     InvalidRecordType,
 };
 
+/// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
+const CompatFile = struct {
+    file: std.Io.File,
+
+    pub fn close(self: CompatFile) void {
+        self.file.close(@import("io_instance").io);
+    }
+
+    pub fn stat(self: CompatFile) !std.Io.File.Stat {
+        return self.file.stat(@import("io_instance").io);
+    }
+
+    pub fn seekTo(self: CompatFile, offset: u64) !void {
+        var reader = self.file.reader(@import("io_instance").io, &.{});
+        try reader.seekTo(offset);
+    }
+
+    pub fn writeAll(self: CompatFile, bytes: []const u8) !void {
+        try self.file.writeStreamingAll(@import("io_instance").io, bytes);
+    }
+
+    pub fn sync(self: CompatFile) !void {
+        try self.file.sync(@import("io_instance").io);
+    }
+
+    pub fn setEndPos(self: CompatFile, length: u64) !void {
+        try self.file.setLength(@import("io_instance").io, length);
+    }
+
+    pub fn readAll(self: CompatFile, buf: []u8) !usize {
+        var reader = self.file.reader(@import("io_instance").io, &.{});
+        return reader.interface.readSliceShort(buf) catch |err| switch (err) {
+            error.ReadFailed => return reader.err.?,
+        };
+    }
+};
 /// Write-Ahead Log for durability
 pub const WAL = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: CompatFile,
     file_path: []const u8,
     current_offset: u64,
 
@@ -48,13 +84,14 @@ pub const WAL = struct {
         errdefer allocator.free(wal_path);
 
         // Open or create WAL file
-        const file = std.fs.cwd().createFile(wal_path, .{
+        const inner_file = std.Io.Dir.cwd().createFile(@import("io_instance").io, wal_path, .{
             .read = true,
             .truncate = false,
         }) catch |err| {
             allocator.free(wal_path);
             return err;
         };
+        const file = CompatFile{ .file = inner_file };
         errdefer file.close();
 
         // Get current file size for append offset
@@ -68,7 +105,6 @@ pub const WAL = struct {
         };
     }
 
-    /// Close WAL and free resources
     pub fn deinit(self: *Self) void {
         self.file.close();
         self.allocator.free(self.file_path);
@@ -225,11 +261,13 @@ pub const WAL = struct {
 
 test "WAL basic operations" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     const test_path = "/tmp/wal_test.db";
 
     // Clean up any existing WAL
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 
     // Initialize WAL
     var wal = try WAL.init(allocator, test_path);
@@ -245,17 +283,19 @@ test "WAL basic operations" {
     try std.testing.expect(wal.current_offset > 0);
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 }
 
 test "WAL replay recovers inserted records" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     const test_path = "/tmp/wal_replay_test.db";
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 
     // Create WAL and log operations
     var wal = try WAL.init(allocator, test_path);
@@ -295,16 +335,18 @@ test "WAL replay recovers inserted records" {
     try std.testing.expectEqual(@as(u32, 1), counters.commits);
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 }
 test "WAL replay after crash simulation" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     const test_path = "/tmp/wal_crash_test.db";
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 
     // Phase 1: Write some data (simulate crash before commit)
     {
@@ -346,17 +388,19 @@ test "WAL replay after crash simulation" {
     }
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 }
 
 test "WAL clear resets state" {
     const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
     const test_path = "/tmp/wal_clear_test.db";
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 
     var wal = try WAL.init(allocator, test_path);
     defer wal.deinit();
@@ -388,7 +432,7 @@ test "WAL clear resets state" {
     try std.testing.expectEqual(@as(u32, 0), counters.count);
 
     // Clean up
-    std.fs.cwd().deleteFile(test_path ++ ".wal") catch {};
-    std.fs.cwd().deleteFile(test_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 }
 

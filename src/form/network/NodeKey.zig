@@ -87,18 +87,19 @@ fn generateKeyPair(secret_key: *[64]u8, public_key: *[32]u8) !void {
 /// Generate random seed for key generation
 fn generateSeed() [32]u8 {
     var seed: [32]u8 = undefined;
-    std.crypto.random.bytes(&seed);
+    @import("io_instance").io.random(&seed);
     return seed;
 }
 
 /// Load key from PEM file
 fn loadKeyFromFile(path: []const u8, secret_key: *[64]u8, public_key: *[32]u8) bool {
-    const file = std.fs.cwd().openFile(path, .{}) catch return false;
-    defer file.close();
+    const file = std.Io.Dir.cwd().openFile(@import("io_instance").io, path, .{}) catch return false;
+    defer file.close(@import("io_instance").io);
 
     // Read file content
     var content: [1024]u8 = undefined;
-    const bytes_read = file.readAll(&content) catch return false;
+    var reader = file.reader(@import("io_instance").io, &.{});
+    const bytes_read = reader.interface.readSliceShort(&content) catch return false;
     if (bytes_read < 128) return false; // Need at least 128 bytes for key
 
     // Simple PEM-like format: "ZKNOT3_KEY_V1\n" + hex(secret_key || public_key)
@@ -127,23 +128,23 @@ fn loadKeyFromFile(path: []const u8, secret_key: *[64]u8, public_key: *[32]u8) b
 /// Save key to PEM file
 fn saveKeyToFile(path: []const u8, secret_key: [64]u8, public_key: [32]u8) !void {
     // Create data directory if needed
-    const dir = try std.fs.cwd().makeOpenPath(std.fs.path.dirname(path).?, .{});
-    defer dir.close();
+    const dir = try std.Io.Dir.cwd().createDirPathOpen(@import("io_instance").io, std.fs.path.dirname(path).?, .{});
+    defer dir.close(@import("io_instance").io);
 
-    const file = try dir.createFile(std.fs.path.basename(path), .{});
-    defer file.close();
+    const file = try dir.createFile(@import("io_instance").io, std.fs.path.basename(path), .{});
+    defer file.close(@import("io_instance").io);
 
     // Write header
-    try file.writeAll("ZKNOT3_KEY_V1\n");
+    try file.writeStreamingAll(@import("io_instance").io, "ZKNOT3_KEY_V1\n");
 
     // Write key data as hex
     for (secret_key[0..32]) |b| {
-        try file.writeAll(std.fmt.formatHex(b, .{}));
+        try file.writeStreamingAll(@import("io_instance").io, std.fmt.formatHex(b, .{}));
     }
     for (public_key) |b| {
-        try file.writeAll(std.fmt.formatHex(b, .{}));
+        try file.writeStreamingAll(@import("io_instance").io, std.fmt.formatHex(b, .{}));
     }
-    try file.writeAll("\n");
+    try file.writeStreamingAll(@import("io_instance").io, "\n");
 }
 
 /// Derive public key from secret seed
@@ -155,12 +156,13 @@ fn derivePublicKey(seed: [32]u8) ![32]u8 {
 }
 
 test "NodeKey generation" {
+    @import("io_instance").io = std.testing.io;
     const allocator = std.testing.allocator;
 
         // Use temp directory
         const tmp_dir = "/tmp/zknot3_test_keys";
     // Create temp dir if not exists
-    std.fs.cwd().makeDir(tmp_dir) catch |err| {
+    std.Io.Dir.cwd().createDir(std.testing.io, tmp_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 
@@ -181,10 +183,11 @@ test "NodeKey generation" {
 }
 
 test "Peer ID derivation" {
+    @import("io_instance").io = std.testing.io;
         const allocator = std.testing.allocator;
         const tmp_dir = "/tmp/zknot3_test_keys2";
     // Create temp dir if not exists
-    std.fs.cwd().makeDir(tmp_dir) catch |err| {
+    std.Io.Dir.cwd().createDir(std.testing.io, tmp_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
     };
 

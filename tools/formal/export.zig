@@ -40,7 +40,7 @@ pub const Exporter = struct {
 
     /// Export to Coq format with full proofs
     pub fn exportCoq(self: *Self) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
 
         try buf.appendSlice(self.allocator, 
             \\(* zknot3 Formal Verification Specifications *)
@@ -75,7 +75,7 @@ pub const Exporter = struct {
 
     /// Export to Lean 4 format
     pub fn exportLean4(self: *Self) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
 
         try buf.appendSlice(self.allocator, 
             \\-- zknot3 Formal Verification Specifications
@@ -649,15 +649,17 @@ pub const Exporter = struct {
 };
 
 /// Main entry point
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
-    var args = std.process.args();
-    
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+
+    var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer it.deinit();
+
     // Skip program name
-    _ = args.next();
-    
+    _ = it.next();
+
     // Get format argument (default: coq)
-    const format_arg = args.next() orelse "coq";
+    const format_arg = it.next() orelse "coq";
     const format = if (std.mem.eql(u8, format_arg, "lean") or std.mem.eql(u8, format_arg, "lean4"))
         ExportFormat.lean4
     else

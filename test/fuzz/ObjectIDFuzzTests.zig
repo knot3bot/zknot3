@@ -8,7 +8,7 @@ const ObjectID = @import("../../src/core.zig").ObjectID;
 
 // Fuzz test: ObjectID group operation associativity
 test "Fuzz: ObjectID add associativity" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     // Run many iterations with random data
@@ -39,7 +39,7 @@ test "Fuzz: ObjectID add associativity" {
 
 // Fuzz test: ObjectID zero identity
 test "Fuzz: ObjectID zero identity" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
@@ -62,7 +62,7 @@ test "Fuzz: ObjectID zero identity" {
 
 // Fuzz test: ObjectID self-inverse
 test "Fuzz: ObjectID self-inverse" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
@@ -81,7 +81,7 @@ test "Fuzz: ObjectID self-inverse" {
 
 // Fuzz test: ObjectID negation involution
 test "Fuzz: ObjectID negation involution" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
@@ -100,7 +100,7 @@ test "Fuzz: ObjectID negation involution" {
 
 // Fuzz test: ObjectID commutativity
 test "Fuzz: ObjectID commutativity" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
@@ -124,7 +124,7 @@ test "Fuzz: ObjectID commutativity" {
 
 // Fuzz test: ObjectID fromBytes validation
 test "Fuzz: ObjectID fromBytes validation" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;
@@ -151,7 +151,7 @@ test "Fuzz: ObjectID fromBytes validation" {
 
 // Fuzz test: ObjectID hash determinism
 test "Fuzz: ObjectID hash determinism" {
-    const seed = @as(u64, @intCast(std.time.timestamp()));
+    const seed = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); }));
     var rng = std.Random.DefaultPrng.init(seed);
     
     var i: u64 = 0;

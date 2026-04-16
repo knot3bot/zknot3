@@ -95,7 +95,7 @@ pub const Tool = struct {
         category: ToolCategory,
         owner: [32]u8,
     ) Self {
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         return .{
             .id = ObjectID.hash(name),
             .name = name,
@@ -264,7 +264,7 @@ pub const ToolPermission = struct {
     /// Check if valid
     pub fn isValid(self: Self) bool {
         if (self.is_revoked) return false;
-        if (self.expires_at > 0 and std.time.timestamp() > self.expires_at) {
+        if (self.expires_at > 0 and blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } > self.expires_at) {
             return false;
         }
         return true;
@@ -376,7 +376,7 @@ test "Tool invocation validity" {
         .session_id = null,
         .parameters = "{\"amount\": 100}",
         .gas_offered = 1000,
-        .timestamp = std.time.timestamp(),
+        .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .result = null,
     };
     

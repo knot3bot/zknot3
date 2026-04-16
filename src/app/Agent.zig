@@ -77,7 +77,7 @@ pub const AgentId = struct {
             .owner = owner,
             .public_key = public_key,
             .permissions = .{},
-            .created_at = std.time.timestamp(),
+            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .is_active = true,
         };
     }
@@ -132,7 +132,7 @@ pub const AgentSession = struct {
     /// Check if session is valid
     pub fn isValid(self: Self) bool {
         if (!self.is_active) return false;
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         return now < self.expires_at;
     }
 
@@ -225,7 +225,7 @@ pub const AgentCapability = struct {
     pub fn isValid(self: Self) bool {
         if (self.is_revoked) return false;
         if (self.expires_at > 0) {
-            return std.time.timestamp() < self.expires_at;
+            return blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } < self.expires_at;
         }
         return true;
     }
@@ -256,7 +256,7 @@ pub const AgentDelegation = struct {
             .to_agent = to,
             .permissions = permissions,
             .is_active = true,
-            .created_at = std.time.timestamp(),
+            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
     }
 };
@@ -292,8 +292,8 @@ test "AgentSession validity" {
         .agent_id = agent_id,
         .authorized_by = owner,
         .permissions = .{.can_transact = true},
-        .started_at = std.time.timestamp(),
-        .expires_at = std.time.timestamp() + 3600, // 1 hour
+        .started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .expires_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600, // 1 hour
         .is_active = true,
     };
     

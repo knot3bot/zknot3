@@ -62,11 +62,11 @@ pub const Node = struct {
     deps: NodeDependencies,
     object_store: ?*ObjectStore,
     checkpoint_store: CheckpointSequence,
-    txn_history: std.AutoArrayHashMap([32]u8, pipeline.TransactionReceipt),
-    committed_blocks: std.AutoArrayHashMap([32]u8, Mysticeti.Block),
-    pending_blocks: std.AutoArrayHashMap([32]u8, Mysticeti.Block),
-    execution_results: std.AutoArrayHashMap([32]u8, ExecutionResult),
-    sender_sequence: std.AutoArrayHashMap([32]u8, u64),
+    txn_history: std.AutoArrayHashMapUnmanaged([32]u8, pipeline.TransactionReceipt),
+    committed_blocks: std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block),
+    pending_blocks: std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block),
+    execution_results: std.AutoArrayHashMapUnmanaged([32]u8, ExecutionResult),
+    sender_sequence: std.AutoArrayHashMapUnmanaged([32]u8, u64),
     stats: NodeStats,
     started_at: i64,
     p2p_server: ?*P2PServer = null,
@@ -94,13 +94,13 @@ pub const Node = struct {
         self_ptr.deps = deps;
         self_ptr.object_store = null;
         self_ptr.checkpoint_store = CheckpointSequence.init();
-        self_ptr.txn_history = std.AutoArrayHashMap([32]u8, pipeline.TransactionReceipt).init(allocator);
-        self_ptr.committed_blocks = std.AutoArrayHashMap([32]u8, Mysticeti.Block).init(allocator);
-        self_ptr.pending_blocks = std.AutoArrayHashMap([32]u8, Mysticeti.Block).init(allocator);
-        self_ptr.execution_results = std.AutoArrayHashMap([32]u8, ExecutionResult).init(allocator);
-        self_ptr.sender_sequence = std.AutoArrayHashMap([32]u8, u64).init(allocator);
+        self_ptr.txn_history = std.AutoArrayHashMapUnmanaged([32]u8, pipeline.TransactionReceipt).empty;
+        self_ptr.committed_blocks = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block).empty;
+        self_ptr.pending_blocks = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block).empty;
+        self_ptr.execution_results = std.AutoArrayHashMapUnmanaged([32]u8, ExecutionResult).empty;
+        self_ptr.sender_sequence = std.AutoArrayHashMapUnmanaged([32]u8, u64).empty;
         self_ptr.stats = .{};
-        self_ptr.started_at = std.time.timestamp();
+        self_ptr.started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         self_ptr.p2p_server = null;
         self_ptr.consensus_round = 0;
         self_ptr.txn_pool = txn_pool;
@@ -140,11 +140,11 @@ pub const Node = struct {
         if (self.object_store) |store| {
             store.deinit();
         }
-        self.txn_history.deinit();
-        self.committed_blocks.deinit();
-        self.pending_blocks.deinit();
-        self.execution_results.deinit();
-        self.sender_sequence.deinit();
+        self.txn_history.deinit(self.allocator);
+        self.committed_blocks.deinit(self.allocator);
+        self.pending_blocks.deinit(self.allocator);
+        self.execution_results.deinit(self.allocator);
+        self.sender_sequence.deinit(self.allocator);
         if (self.p2p_server) |server| {
             server.deinit();
         }
@@ -220,7 +220,7 @@ pub const Node = struct {
         return .{
             .version = "0.1.0",
             .state = @tagName(self.state),
-            .uptime_seconds = @intCast(std.time.timestamp() - self.started_at),
+            .uptime_seconds = @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } - self.started_at),
             .object_store_count = self.execution_results.count(),
             .checkpoint_sequence = self.checkpoint_store.getLatestSequence(),
             .pending_transactions = self.getPendingTxnCount(),
@@ -344,9 +344,10 @@ pub const Node = struct {
     fn getTotalSystemMemory() u64 {
         if (builtin.target.os.tag == .linux) {
             var buf: [1024]u8 = undefined;
-            const file = std.fs.cwd().openFile("/proc/meminfo", .{}) catch return 0;
-            defer file.close();
-            const n = file.read(&buf) catch return 0;
+            const file = std.Io.Dir.cwd().openFile(@import("io_instance").io, "/proc/meminfo", .{}) catch return 0;
+            defer file.close(@import("io_instance").io);
+            var reader = file.reader(@import("io_instance").io, &.{},);
+            const n = reader.interface.readSliceShort(&buf) catch return 0;
             const content = buf[0..n];
             const prefix = "MemTotal:";
             if (std.mem.indexOf(u8, content, prefix)) |idx| {
@@ -381,7 +382,7 @@ pub const Node = struct {
             &.{},
             self.allocator,
         );
-        try self.pending_blocks.put(block.digest, block);
+        try self.pending_blocks.put(self.allocator, block.digest, block);
         return self.pending_blocks.getPtr(block.digest);
     }
 
@@ -405,7 +406,7 @@ pub const Node = struct {
             block.deinit(self.allocator);
             return;
         }
-        try self.pending_blocks.put(block.digest, block);
+        try self.pending_blocks.put(self.allocator, block.digest, block);
     }
 
     pub fn receiveVote(self: *Self, vote_data: []const u8) !void {
@@ -424,12 +425,12 @@ pub const Node = struct {
         if (self.pending_blocks.getPtr(vote.block_digest)) |block| {
             // Add vote if not already present from this voter
             if (!block.votes.contains(vote.voter)) {
-                try block.votes.put(vote.voter, vote);
+                try block.votes.put(self.allocator, vote.voter, vote);
             }
         } else if (self.committed_blocks.getPtr(vote.block_digest)) |block| {
             // Vote on already committed block - add to committed block's votes too
             if (!block.votes.contains(vote.voter)) {
-                try block.votes.put(vote.voter, vote);
+                try block.votes.put(self.allocator, vote.voter, vote);
             }
         }
         // If block not found, vote is orphaned (this is normal in DAG consensus)
@@ -469,7 +470,7 @@ pub const Node = struct {
                 };
                 if (self.pending_blocks.get(block.digest)) |committed| {
                     _ = self.pending_blocks.swapRemove(block.digest);
-                    try self.committed_blocks.put(block.digest, committed);
+                    try self.committed_blocks.put(self.allocator, block.digest, committed);
 
                     // Prune old committed blocks to prevent unbounded growth
                     while (self.committed_blocks.count() > self.config.consensus.max_committed_blocks) {
@@ -532,7 +533,7 @@ pub const Node = struct {
                 .gas_used = result.gas_used,
                 .sender = sender,
             };
-            try self.txn_history.put(result.digest, receipt);
+            try self.txn_history.put(self.allocator, result.digest, receipt);
         }
 
         self.stats.transactions_executed += results.items.len;
@@ -551,7 +552,7 @@ pub const Node = struct {
             .gas_used = total_gas,
             .output = &.{},
         };
-        try self.execution_results.put(block.digest, summary);
+        try self.execution_results.put(self.allocator, block.digest, summary);
         self.stats.transactions_executed += @intCast(results.len);
         self.stats.total_gas_used += total_gas;
         return summary;
@@ -600,17 +601,17 @@ const result = ExecutionResult{
 .gas_used = tx.gas_budget / 2,
 .output = &.{},
 };
-try self.execution_results.put(digest, result);
+try self.execution_results.put(self.allocator, digest, result);
 const receipt = pipeline.TransactionReceipt{
 .digest = digest,
 .status = .success,
 .gas_used = result.gas_used,
 .sender = tx.sender,
 };
-        try self.txn_history.put(digest, receipt);
+        try self.txn_history.put(self.allocator, digest, receipt);
 
         // Increment sender sequence
-        try self.sender_sequence.put(tx.sender, expected_sequence + 1);
+        try self.sender_sequence.put(self.allocator, tx.sender, expected_sequence + 1);
 self.stats.transactions_executed += 1;
 self.stats.total_gas_used += result.gas_used;
 return result;

@@ -44,34 +44,33 @@ fn printUsage() void {
 }
 
 /// Parse command line arguments
-fn parseArgs() !ProfilerConfig {
+fn parseArgs(args: std.process.Args, allocator: std.mem.Allocator) !ProfilerConfig {
     var config = ProfilerConfig{};
 
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    var it = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer it.deinit();
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    // Skip program name
+    _ = it.next();
+
+    while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             printUsage();
             std.process.exit(0);
         } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--iterations")) {
-            i += 1;
-            if (i >= args.len) {
+            const next = it.next() orelse {
                 std.debug.print("Error: --iterations requires a number\n", .{});
                 return error.MissingIterations;
-            }
-            config.iterations = try std.fmt.parseInt(u64, args[i], 10);
+            };
+            config.iterations = try std.fmt.parseInt(u64, next, 10);
         } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--no-warmup")) {
             config.warmup = false;
         } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--metrics")) {
-            i += 1;
-            if (i >= args.len) {
+            const next = it.next() orelse {
                 std.debug.print("Error: --metrics requires a comma-separated list\n", .{});
                 return error.MissingMetrics;
-            }
-            config.metrics = &.{args[i]};
+            };
+            config.metrics = &.{next};
         } else {
             std.debug.print("Unknown option: {s}\n", .{arg});
             printUsage();
@@ -83,42 +82,35 @@ fn parseArgs() !ProfilerConfig {
 }
 
 /// Run simple built-in benchmarks
-fn runSimpleBenchmarks(iterations: u64) void {
+fn runSimpleBenchmarks(iterations: u64, io: std.Io) void {
     std.debug.print("Running built-in microbenchmarks ({d} iterations)...\n", .{iterations});
-    
+
     // Simple loop benchmark
-    const start1 = std.time.nanoTimestamp();
+    const start1 = std.Io.Timestamp.now(io, .awake);
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         // empty - just measuring loop overhead
     }
-    const end1 = std.time.nanoTimestamp();
-    const loop_ns = @as(u64, @intCast(end1 - start1));
-    std.debug.print("  loop_overhead: {d} ns/op, {d:.2} ops/sec\n", .{
-        loop_ns / iterations,
-        @as(f64, @floatFromInt(iterations)) * 1_000_000_000.0 / @as(f64, @floatFromInt(loop_ns))
-    });
-    
+    const end1 = std.Io.Timestamp.now(io, .awake);
+    const loop_ns = @as(u64, @intCast(std.Io.Timestamp.durationTo(start1, end1).nanoseconds));
+    std.debug.print("  loop_overhead: {d} ns/op, {d:.2} ops/sec\n", .{ loop_ns / iterations, @as(f64, @floatFromInt(iterations)) * 1_000_000_000.0 / @as(f64, @floatFromInt(loop_ns)) });
+
     // Simple compute benchmark
-    const start2 = std.time.nanoTimestamp();
+    const start2 = std.Io.Timestamp.now(io, .awake);
     i = 0;
     var result: u64 = 0;
     while (i < iterations) : (i += 1) {
         result +%= i;
     }
-    const end2 = std.time.nanoTimestamp();
-    const compute_ns = @as(u64, @intCast(end2 - start2));
-    std.debug.print("  compute_benchmark: {d} ns/op, {d:.2} ops/sec (result={d})\n", .{
-        compute_ns / iterations,
-        @as(f64, @floatFromInt(iterations)) * 1_000_000_000.0 / @as(f64, @floatFromInt(compute_ns)),
-        result
-    });
-    
+    const end2 = std.Io.Timestamp.now(io, .awake);
+    const compute_ns = @as(u64, @intCast(std.Io.Timestamp.durationTo(start2, end2).nanoseconds));
+    std.debug.print("  compute_benchmark: {d} ns/op, {d:.2} ops/sec (result={d})\n", .{ compute_ns / iterations, @as(f64, @floatFromInt(iterations)) * 1_000_000_000.0 / @as(f64, @floatFromInt(compute_ns)), result });
+
     std.debug.print("\nNote: Full benchmarks require linking with zknot3 library.\n", .{});
     std.debug.print("Run 'zig build test' to verify core functionality.\n", .{});
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     std.debug.print("\n", .{});
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});
     std.debug.print("║           zknot3 Performance Profiler v0.1.0                    ║\n", .{});
@@ -126,7 +118,7 @@ pub fn main() !void {
     std.debug.print("╚══════════════════════════════════════════════════════════════╝\n", .{});
     std.debug.print("\n", .{});
 
-    const config = try parseArgs();
+    const config = try parseArgs(init.minimal.args, init.gpa);
 
     std.debug.print("Configuration:\n", .{});
     std.debug.print("  Iterations: {d}\n", .{config.iterations});
@@ -139,7 +131,7 @@ pub fn main() !void {
     std.debug.print("\n\n", .{});
 
     // Run built-in microbenchmarks
-    runSimpleBenchmarks(config.iterations);
+    runSimpleBenchmarks(config.iterations, init.io);
 
     std.debug.print("\n", .{});
     std.debug.print("╔══════════════════════════════════════════════════════════════╗\n", .{});

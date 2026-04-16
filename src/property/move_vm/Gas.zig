@@ -74,32 +74,32 @@ pub const GasFunctor = struct {
     const Self = @This();
     /// Base cost per instruction type
     allocator: std.mem.Allocator,
-    base_costs: std.AutoArrayHashMap(u8, u64),
+    base_costs: std.AutoArrayHashMapUnmanaged(u8, u64),
 
     pub const CostInstruction = struct { opcode: u8, complexity: u32 };
 
     /// Initialize with default costs
     pub fn init(allocator: std.mem.Allocator) !Self {
-        var costs = std.AutoArrayHashMap(u8, u64).init(allocator);
+        var costs = std.AutoArrayHashMapUnmanaged(u8, u64).empty;
 
         // Default costs
-        try costs.put(0x00, 1); // nop
-        try costs.put(0x01, 1); // ret
-        try costs.put(0x02, 2); // branch
-        try costs.put(0x10, 1); // pop
-        try costs.put(0x11, 1); // dup
-        try costs.put(0x20, 1); // ld_loc
-        try costs.put(0x21, 1); // st_loc
-        try costs.put(0x30, 2); // ld_const
-        try costs.put(0x40, 1); // add
-        try costs.put(0x80, 10); // move_resource
-        try costs.put(0x90, 5); // call
+        try costs.put(allocator, 0x00, 1); // nop
+        try costs.put(allocator, 0x01, 1); // ret
+        try costs.put(allocator, 0x02, 2); // branch
+        try costs.put(allocator, 0x10, 1); // pop
+        try costs.put(allocator, 0x11, 1); // dup
+        try costs.put(allocator, 0x20, 1); // ld_loc
+        try costs.put(allocator, 0x21, 1); // st_loc
+        try costs.put(allocator, 0x30, 2); // ld_const
+        try costs.put(allocator, 0x40, 1); // add
+        try costs.put(allocator, 0x80, 10); // move_resource
+        try costs.put(allocator, 0x90, 5); // call
 
         return .{ .allocator = allocator, .base_costs = costs };
     }
 
     pub fn deinit(self: *Self) void {
-        self.base_costs.deinit();
+        self.base_costs.deinit(self.allocator);
     }
 
     /// Calculate cost for an instruction (monotone functor)

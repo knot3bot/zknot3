@@ -53,7 +53,7 @@ pub const Resource = struct {
             .description = description,
             .mime_type = "application/json",
             .is_sensitive = false,
-            .updated_at = std.time.timestamp(),
+            .updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
     }
 
@@ -230,8 +230,8 @@ pub const MCPServer = struct {
             .id = ObjectID.hash(agent_id.asBytes()),
             .agent_id = agent_id,
             .policy_id = policy_id,
-            .created_at = std.time.timestamp(),
-            .last_active = std.time.timestamp(),
+            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .last_active = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .request_count = 0,
             .is_active = true,
         };
@@ -273,7 +273,7 @@ pub const MCPSession = struct {
 
     /// Record activity
     pub fn recordActivity(self: *Self) void {
-        self.last_active = std.time.timestamp();
+        self.last_active = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         self.request_count += 1;
     }
 };
@@ -400,8 +400,8 @@ test "MCPSession activity" {
         .id = ObjectID.hash("session"),
         .agent_id = ObjectID.hash("agent"),
         .policy_id = ObjectID.hash("policy"),
-        .created_at = std.time.timestamp(),
-        .last_active = std.time.timestamp(),
+        .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .last_active = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .request_count = 0,
         .is_active = true,
     };
@@ -419,7 +419,7 @@ test "MCPRequest validation" {
         .request_type = .tools_list,
         .method = "tools.list",
         .params = "{}",
-        .timestamp = std.time.timestamp(),
+        .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
     };
     
     try std.testing.expect(req.isValid());

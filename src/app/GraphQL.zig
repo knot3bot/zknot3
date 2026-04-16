@@ -41,7 +41,7 @@ pub const Schema = struct {
         allocator: std.mem.Allocator,
         query_type: ?*ObjectType = null,
         mutation_type: ?*ObjectType = null,
-        types: std.StringArrayHashMap(*const TypeDefinition),
+        types: std.StringArrayHashMapUnmanaged(*const TypeDefinition),
 
     /// Type definition
     pub const TypeDefinition = struct {
@@ -87,7 +87,7 @@ pub const Schema = struct {
     /// Object type with fields
     pub const ObjectType = struct {
         name: []const u8,
-    fields: std.StringArrayHashMap(FieldDefinition),
+    fields: std.StringArrayHashMapUnmanaged(FieldDefinition),
         interfaces: []const []const u8,
     };
 
@@ -98,7 +98,7 @@ pub const Schema = struct {
             .allocator = allocator,
             .query_type = null,
             .mutation_type = null,
-            .types = std.StringArrayHashMap(*const TypeDefinition).init(allocator),
+            .types = std.StringArrayHashMapUnmanaged(*const TypeDefinition).empty,
         };
 
         // Build Knot3-compatible schema
@@ -174,12 +174,12 @@ pub const Schema = struct {
         const obj = try self.allocator.create(ObjectType);
         obj.* = .{
             .name = name,
-            .fields = std.StringArrayHashMap(FieldDefinition).init(self.allocator),
+            .fields = std.StringArrayHashMapUnmanaged(FieldDefinition).empty,
             .interfaces = interfaces,
         };
 
         for (fields) |field| {
-            try obj.fields.put(field.name, field);
+            try obj.fields.put(self.allocator, field.name, field);
         }
 
         const type_def = try self.allocator.create(TypeDefinition);
@@ -191,7 +191,7 @@ pub const Schema = struct {
             .implements = if (interfaces.len > 0) interfaces else null,
         };
 
-        try self.types.put(name, type_def);
+        try self.types.put(self.allocator, name, type_def);
     }
 
     pub fn deinit(self: *Self) void {
@@ -200,7 +200,7 @@ pub const Schema = struct {
         while (it.next()) |entry| {
             self.allocator.destroy(entry.value_ptr.*);
         }
-        self.types.deinit();
+        self.types.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 };
@@ -226,7 +226,7 @@ pub const Value = struct {
     float: ?f64,
     bool: ?bool,
     list: ?[]const Value,
-    object: ?std.StringArrayHashMap(Value),
+    object: ?std.StringArrayHashMapUnmanaged(Value),
 
     pub const ValueKind = enum {
         Null,
@@ -252,7 +252,7 @@ fn listValue(items: []const Value) Value {
     return .{ .kind = .List, .list = items, .string = null, .int = null, .float = null, .bool = null, .object = null };
 }
 
-fn objectValue(obj: std.StringArrayHashMap(Value)) Value {
+fn objectValue(obj: std.StringArrayHashMapUnmanaged(Value)) Value {
     return .{ .kind = .Object, .object = obj, .string = null, .int = null, .float = null, .bool = null, .list = null };
 }
 
@@ -314,7 +314,7 @@ fn resolveCheckpointDigest(ctx: *const ResolverContext, args: []const ArgValue) 
 fn resolveCheckpointTimestamp(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = ctx;
     _ = args;
-    return intValue(std.time.timestamp());
+    return intValue(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); });
 }
 
 fn resolveCheckpointTxs(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
@@ -387,17 +387,17 @@ fn resolveCoinPrevTx(ctx: *const ResolverContext, args: []const ArgValue) anyerr
 fn resolveGetObject(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = args;
     // Would look up object from object_store
-    var obj = std.StringArrayHashMap(Value).init(ctx.allocator);
-    try obj.put("id", stringValue("0x0"));
-    try obj.put("version", intValue(1));
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    try obj.put(ctx.allocator, "id", stringValue("0x0"));
+    try obj.put(ctx.allocator, "version", intValue(1));
     return objectValue(obj);
 }
 
 fn resolveGetCheckpoint(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = args;
-    var obj = std.StringArrayHashMap(Value).init(ctx.allocator);
-    try obj.put("sequence", intValue(0));
-    try obj.put("digest", stringValue("0xabc123"));
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    try obj.put(ctx.allocator, "sequence", intValue(0));
+    try obj.put(ctx.allocator, "digest", stringValue("0xabc123"));
     return objectValue(obj);
 }
 
@@ -410,9 +410,9 @@ fn resolveGetCoins(ctx: *const ResolverContext, args: []const ArgValue) anyerror
 
 fn resolveGetTransaction(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = args;
-    var obj = std.StringArrayHashMap(Value).init(ctx.allocator);
-    try obj.put("digest", stringValue("0x0"));
-    try obj.put("status", stringValue("Success"));
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    try obj.put(ctx.allocator, "digest", stringValue("0x0"));
+    try obj.put(ctx.allocator, "status", stringValue("Success"));
     return objectValue(obj);
 }
 
@@ -426,8 +426,9 @@ fn resolveQueryEvents(ctx: *const ResolverContext, args: []const ArgValue) anyer
 pub const Query = struct {
     const Self = @This();
 
+    allocator: std.mem.Allocator,
     operation: Operation,
-    variables: std.StringArrayHashMap(Value),
+    variables: std.StringArrayHashMapUnmanaged(Value),
 
     pub const Operation = struct {
         kind: OperationKind,
@@ -463,24 +464,25 @@ pub const Query = struct {
     /// Parse GraphQL query string
     pub fn parse(allocator: std.mem.Allocator, query_str: []const u8) !Self {
         const query = Query{
+            .allocator = allocator,
             .operation = .{
                 .kind = .Query,
                 .name = null,
                 .selections = try parseSelections(allocator, query_str),
             },
-            .variables = std.StringArrayHashMap(Value).init(allocator),
+            .variables = std.StringArrayHashMapUnmanaged(Value).empty,
         };
         return query;
     }
 
     pub fn deinit(self: *Self) void {
-        self.variables.deinit();
+        self.variables.deinit(self.allocator);
     }
 };
 
 /// Parse field selections from query
 fn parseSelections(allocator: std.mem.Allocator, query_str: []const u8) ![]const Query.Selection {
-    var selections = std.ArrayList(Query.Selection){};
+    var selections = std.ArrayList(Query.Selection).empty;
     defer selections.deinit(allocator);
 
     // Simple parsing - extract field names between { and }
@@ -544,7 +546,7 @@ pub const Response = struct {
 
     /// Serialize to JSON
     pub fn toJSON(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         try buf.appendSlice(allocator, "{\"data\":");
 
         if (self.data) |d| {
@@ -557,7 +559,9 @@ pub const Response = struct {
             try buf.appendSlice(allocator, ",\"errors\":[");
             for (self.errors, 0..) |err, i| {
                 if (i > 0) try buf.append(allocator, ',');
-                try std.fmt.format(buf.writer(allocator), "{{\"message\":\"{s}\"}}", .{err.message});
+                const err_json = try std.fmt.allocPrint(allocator, "{{\"message\":\"{s}\"}}", .{err.message});
+                defer allocator.free(err_json);
+                try buf.appendSlice(allocator, err_json);
             }
             try buf.append(allocator, '}');
         }
@@ -571,9 +575,21 @@ pub const Response = struct {
 fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: Value) !void {
     switch (value.kind) {
         .Null => try buf.appendSlice(allocator, "null"),
-        .String => try std.fmt.format(buf.writer(allocator), "\"{s}\"", .{value.string.?},),
-        .Int => try std.fmt.format(buf.writer(allocator), "{d}", .{value.int.?}),
-        .Float => try std.fmt.format(buf.writer(allocator), "{d}", .{value.float.?}),
+        .String => {
+            const str_json = try std.fmt.allocPrint(allocator, "\"{s}\"", .{value.string.?});
+            defer allocator.free(str_json);
+            try buf.appendSlice(allocator, str_json);
+        },
+        .Int => {
+            const int_json = try std.fmt.allocPrint(allocator, "{d}", .{value.int.?});
+            defer allocator.free(int_json);
+            try buf.appendSlice(allocator, int_json);
+        },
+        .Float => {
+            const float_json = try std.fmt.allocPrint(allocator, "{d}", .{value.float.?});
+            defer allocator.free(float_json);
+            try buf.appendSlice(allocator, float_json);
+        },
         .Boolean => try buf.appendSlice(allocator, if (value.bool.?) "true" else "false"),
         .List => {
             try buf.append(allocator, '[');
@@ -593,7 +609,9 @@ fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: 
                 while (it.next()) |entry| {
                     if (!first) try buf.append(allocator, ',');
                     first = false;
-                    try std.fmt.format(buf.writer(allocator), "\"{s}\":", .{entry.key_ptr.*});
+                    const key_json = try std.fmt.allocPrint(allocator, "\"{s}\":", .{entry.key_ptr.*});
+                    defer allocator.free(key_json);
+                    try buf.appendSlice(allocator, key_json);
                     try serializeValue(allocator, buf, entry.value_ptr.*);
                 }
             }
@@ -636,14 +654,14 @@ pub const GraphQLCompiler = struct {
 
     /// Execute field selections
     fn executeSelections(self: *Self, selections: []const Query.Selection, ctx: *const ResolverContext) !Value {
-        var result = std.StringArrayHashMap(Value).init(self.allocator);
+        var result = std.StringArrayHashMapUnmanaged(Value).empty;
 
         for (selections) |sel| {
             switch (sel.kind) {
                 .Field => {
                     const value = try self.executeField(sel, ctx);
                     const key = sel.alias orelse sel.name;
-                    try result.put(key, value);
+                    try result.put(self.allocator, key, value);
                 },
                 else => {},
             }
@@ -655,7 +673,7 @@ pub const GraphQLCompiler = struct {
     /// Execute a single field - looks up resolver in schema and calls it
     fn executeField(self: *Self, sel: Query.Selection, ctx: *const ResolverContext) !Value {
         // Build arguments from selection
-        var args = std.ArrayList(ArgValue){};
+        var args = std.ArrayList(ArgValue).empty;
         defer args.deinit(self.allocator);
 
         for (sel.arguments) |arg| {
@@ -706,8 +724,8 @@ test "GraphQL query parsing" {
 test "GraphQL response JSON serialization" {
     const allocator = std.testing.allocator;
 
-    var obj = std.StringArrayHashMap(Value).init(allocator);
-    defer obj.deinit();
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    defer obj.deinit(allocator);
     const resp = Response.success(objectValue(obj));
 
     const json = try resp.toJSON(allocator);
@@ -738,13 +756,13 @@ test "GraphQL compiler executes query" {
 
 test "GraphQL serialize object value" {
     const allocator = std.testing.allocator;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
-    var obj = std.StringArrayHashMap(Value).init(allocator);
-    defer obj.deinit();
-    try obj.put("id", stringValue("0x1"));
-    try obj.put("count", intValue(42));
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    defer obj.deinit(allocator);
+    try obj.put(allocator, "id", stringValue("0x1"));
+    try obj.put(allocator, "count", intValue(42));
 
     try serializeValue(allocator, &buf, objectValue(obj));
 

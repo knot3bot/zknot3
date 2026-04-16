@@ -219,7 +219,7 @@ pub const YamuxSession = struct {
     config: YamuxConfig,
 
     /// All streams (both sides)
-    streams: std.AutoArrayHashMap(u32, *YamuxStream),
+    streams: std.AutoArrayHashMapUnmanaged(u32, *YamuxStream),
 
     /// Next stream ID for initiator
     next_stream_id: u32,
@@ -236,7 +236,7 @@ pub const YamuxSession = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .streams = std.AutoArrayHashMap(u32, *YamuxStream).init(allocator),
+            .streams = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
             .next_stream_id = if (is_initiator) 0 else 1,
             .is_initiator = is_initiator,
             .go_away = false,

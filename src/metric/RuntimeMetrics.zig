@@ -139,9 +139,9 @@ pub const RuntimeMetricsCollector = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .resource_history = std.ArrayList(ResourceMetrics){},
-            .knowledge_history = std.ArrayList(KnowledgeMetrics){},
-            .user_history = std.ArrayList(UserMetrics){},
+            .resource_history = std.ArrayList(ResourceMetrics).empty,
+            .knowledge_history = std.ArrayList(KnowledgeMetrics).empty,
+            .user_history = std.ArrayList(UserMetrics).empty,
             .window_size = window_size,
             .current_resource = .{ .cpu_util = 0, .mem_util = 0, .storage_util = 0, .network_util = 0 },
             .current_knowledge = .{ .unique_types = 0, .total_objects = 0, .unique_tx_types = 0, .total_transactions = 0, .ownership_entropy = 0 },

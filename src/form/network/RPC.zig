@@ -137,13 +137,13 @@ pub const RPCServer = struct {
     context: *RPCContext,
 
     // Store handlers as pointers to allow dynamic dispatch
-    handlers: std.StringArrayHashMap(*const HandlerFn),
+    handlers: std.StringArrayHashMapUnmanaged(*const HandlerFn),
 
     pub fn init(allocator: std.mem.Allocator) !*@This() {
         const self = try allocator.create(@This());
         self.* = .{
             .allocator = allocator,
-            .handlers = std.StringArrayHashMap(*const HandlerFn).init(allocator),
+            .handlers = std.StringArrayHashMapUnmanaged(*const HandlerFn).empty,
             .context = try allocator.create(RPCContext),
         };
         self.context.* = .{
@@ -154,7 +154,7 @@ pub const RPCServer = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        self.handlers.deinit();
+        self.handlers.deinit(self.allocator);
         self.allocator.destroy(self.context);
         self.allocator.destroy(self);
     }
@@ -171,7 +171,7 @@ pub const RPCServer = struct {
 
     /// Register a method handler
     pub fn register(self: *@This(), name: []const u8, handler: *const HandlerFn) !void {
-        try self.handlers.put(name, handler);
+        try self.handlers.put(self.allocator, name, handler);
     }
 
     /// Handle HTTP request (used by HTTPServer)
@@ -195,7 +195,7 @@ pub const RPCServer = struct {
         };
 
         // Serialize response using std.json
-        var response_json = std.ArrayList(u8){};
+        var response_json = std.ArrayList(u8).empty;
         defer response_json.deinit();
         try std.json.stringify(response, .{}, response_json.writer());
         return response_json.toOwnedSlice();
@@ -286,7 +286,7 @@ fn handleGetCheckpoint(ctx: *RPCContext, _: []const u8) !RPCResponse {
         .checkpoint = RPCResponse.CheckpointResponse{
             .sequence = ctx.checkpoint_sequence,
             .digest = "0xabc123",
-            .timestamp = std.time.timestamp(),
+            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         },
     };
     return .{ .id = null, .result = result, .err = null };
@@ -321,7 +321,7 @@ fn handleGetEvents(_ctx: *RPCContext, _: []const u8) !RPCResponse {
     _ = _ctx;
     const result = RPCResponse.RPCResult{
         .event = RPCResponse.EventEnvelope{
-            .timestamp = std.time.timestamp(),
+            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .events = &.{},
         },
     };

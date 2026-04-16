@@ -24,7 +24,7 @@ pub const StakePool = struct {
     /// Delegated stake
     delegated: StakeAmount,
     /// Active validators
-    validators: std.AutoArrayHashMap([32]u8, StakeAmount),
+    validators: std.AutoArrayHashMapUnmanaged([32]u8, StakeAmount),
     /// Delegations
     delegations: std.ArrayList(Delegation),
 
@@ -35,14 +35,14 @@ pub const StakePool = struct {
             .total = 0,
             .self_stake = 0,
             .delegated = 0,
-            .validators = std.AutoArrayHashMap([32]u8, StakeAmount).init(allocator),
+            .validators = .empty,
             .delegations = try std.ArrayList(Delegation).initCapacity(allocator, 16),
         };
         return self;
     }
 
     pub fn deinit(self: *Self) void {
-        self.validators.deinit();
+        self.validators.deinit(self.allocator);
         self.delegations.deinit(self.allocator);
         self.allocator.destroy(self);
     }
@@ -51,7 +51,7 @@ pub const StakePool = struct {
     pub fn addStake(self: *Self, validator: [32]u8, amount: StakeAmount, is_self: bool) !void {
         // Update validator stake
         const current = self.validators.get(validator) orelse 0;
-        try self.validators.put(validator, current + amount);
+        try self.validators.put(self.allocator, validator, current + amount);
 
         // Update totals
         self.total += amount;
@@ -67,7 +67,7 @@ pub const StakePool = struct {
         const current = self.validators.get(validator) orelse 0;
         if (current < amount) return error.InsufficientStake;
 
-        try self.validators.put(validator, current - amount);
+        try self.validators.put(self.allocator, validator, current - amount);
         self.total -= amount;
 
         // Check if self or delegated

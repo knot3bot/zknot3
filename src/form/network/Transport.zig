@@ -126,7 +126,7 @@ pub const Connection = struct {
     }
 
     pub fn updateActivity(self: *Self) void {
-        self.last_activity = std.time.timestamp();
+        self.last_activity = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
     }
 };
 
@@ -182,7 +182,7 @@ pub const Transport = struct {
             .id = conn_id,
             .state = .connecting,
             .peer = peer,
-            .last_activity = std.time.timestamp(),
+            .last_activity = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .bytes_sent = 0,
             .bytes_received = 0,
         });
@@ -245,7 +245,7 @@ pub const Transport = struct {
     }
 
     pub fn removeTimeouts(self: *Self) usize {
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         var removed: usize = 0;
 
         var it = self.connections.iterator();

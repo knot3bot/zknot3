@@ -40,14 +40,14 @@ test "ObjectID: hash is deterministic" {
 
 test "Ownership: encode produces bytes" {
     const original = Ownership.ownedBy([_]u8{0xAB} ** 32);
-    const encoded = original.encode();
+    const encoded = try original.encode(std.testing.allocator);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Owned));
 }
 
 test "Ownership: shared object encode" {
     const original = Ownership.shared(1234);
-    const encoded = original.encode();
+    const encoded = try original.encode(std.testing.allocator);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Shared));
     const context_back = std.mem.readInt(u64, encoded[33..41], .big);
@@ -56,7 +56,7 @@ test "Ownership: shared object encode" {
 
 test "Ownership: immutable encode" {
     const original = Ownership.immutable();
-    const encoded = original.encode();
+    const encoded = try original.encode(std.testing.allocator);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Immutable));
 }
@@ -128,7 +128,7 @@ test "Quorum: basic operations" {
 
 test "BinarySerializer: write and read primitives" {
     const allocator = std.testing.allocator;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, &[_]u8{ 0x01, 0x02, 0x03, 0x04 });
@@ -141,10 +141,10 @@ test "BinarySerializer: string serialization" {
     const allocator = std.testing.allocator;
     const original = "Hello, zknot3!";
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
-    try std.fmt.format(buf.writer(allocator), "{s}", .{original});
+    try buf.appendSlice(allocator, original);
 
     try std.testing.expect(buf.items.len > 0);
     try std.testing.expect(std.mem.eql(u8, buf.items, original));
@@ -169,10 +169,12 @@ test "JSON: serialize struct" {
     const allocator = std.testing.allocator;
     const obj = .{ .name = "zknot3", .version = @as(u32, 1) };
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
-    try buf.writer(allocator).print("{{\"name\":\"{s}\",\"version\":{}}}", .{ obj.name, obj.version });
+    const json_str = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"version\":{}}}", .{ obj.name, obj.version });
+    defer allocator.free(json_str);
+    try buf.appendSlice(allocator, json_str);
     try std.testing.expect(buf.items.len > 0);
     try std.testing.expect(std.mem.containsAtLeast(u8, buf.items, 1, "zknot3"));
 }

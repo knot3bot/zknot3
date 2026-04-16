@@ -17,6 +17,8 @@ const Log = @import("app/Log.zig");
 /// Global shutdown flag with atomic access
 var running = std.atomic.Value(bool).init(true);
 
+/// Global I/O instance for compatibility with Zig 0.16.0 API
+
 /// Command line options
 const Options = struct {
     help: bool = false,
@@ -70,16 +72,16 @@ fn printVersion() void {
 }
 
 /// Parse command line arguments
-fn parseArgs(allocator: std.mem.Allocator) !Options {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
+fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Options {
     var opts = Options{};
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    var it = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer it.deinit();
 
+    // Skip program name
+    _ = it.next();
+
+    while (it.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             opts.help = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
@@ -89,25 +91,20 @@ fn parseArgs(allocator: std.mem.Allocator) !Options {
         } else if (std.mem.eql(u8, arg, "--validator")) {
             opts.validator = true;
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
-            if (i + 1 >= args.len) return error.MissingArgument;
-            i += 1;
-            opts.config_file = try allocator.dupe(u8, args[i]);
+            const next = it.next() orelse return error.MissingArgument;
+            opts.config_file = try allocator.dupe(u8, next);
         } else if (std.mem.eql(u8, arg, "--rpc-port")) {
-            if (i + 1 >= args.len) return error.MissingArgument;
-            i += 1;
-            opts.rpc_port = try std.fmt.parseInt(u16, args[i], 10);
+            const next = it.next() orelse return error.MissingArgument;
+            opts.rpc_port = try std.fmt.parseInt(u16, next, 10);
         } else if (std.mem.eql(u8, arg, "--p2p-port")) {
-            if (i + 1 >= args.len) return error.MissingArgument;
-            i += 1;
-            opts.p2p_port = try std.fmt.parseInt(u16, args[i], 10);
+            const next = it.next() orelse return error.MissingArgument;
+            opts.p2p_port = try std.fmt.parseInt(u16, next, 10);
         } else if (std.mem.eql(u8, arg, "--log-level")) {
-            if (i + 1 >= args.len) return error.MissingArgument;
-            i += 1;
-            opts.log_level = try allocator.dupe(u8, args[i]);
+            const next = it.next() orelse return error.MissingArgument;
+            opts.log_level = try allocator.dupe(u8, next);
         } else if (std.mem.eql(u8, arg, "--data-dir")) {
-            if (i + 1 >= args.len) return error.MissingArgument;
-            i += 1;
-            opts.data_dir = try allocator.dupe(u8, args[i]);
+            const next = it.next() orelse return error.MissingArgument;
+            opts.data_dir = try allocator.dupe(u8, next);
         } else if (std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownOption;
         }
@@ -155,7 +152,7 @@ fn applyLogLevel(level_str: []const u8) void {
 }
 
 /// Signal handler for SIGINT and SIGTERM
-fn handleSignal(sig: i32, info: *const std.posix.siginfo_t, ctx: ?*const anyopaque) callconv(.c) void {
+fn handleSignal(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx: ?*const anyopaque) callconv(.c) void {
     _ = sig;
     _ = info;
     _ = ctx;
@@ -179,14 +176,13 @@ fn registerSignalHandlers() void {
 }
 
 /// Main entry point
-pub fn main() !void {
-    // Create a general purpose allocator
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    @import("io_instance").io = init.io;
+
 
     // Parse command line arguments
-    const opts = parseArgs(allocator) catch |err| {
+    const opts = parseArgs(allocator, init.minimal.args) catch |err| {
         switch (err) {
             error.MissingArgument => {
                 Log.err("Error: option requires an argument", .{});
@@ -220,7 +216,7 @@ pub fn main() !void {
     // Load config from file if specified
     if (opts.config_file) |config_path| {
         Log.info("[CONFIG] Loading config from: {s}", .{config_path});
-        const cwb = ConfigModule.loadConfigWithBuffer(allocator, config_path) catch |err| {
+        const cwb = ConfigModule.loadConfigWithBuffer(allocator, init.io, config_path) catch |err| {
             Log.err("[CONFIG] Failed to load config from {s}: {s}", .{ config_path, @errorName(err) });
             return;
         };
@@ -259,7 +255,7 @@ pub fn main() !void {
     };
 
     // Start HTTP server
-    const rpc_addr = std.net.Address.parseIp("0.0.0.0", config.network.rpc_port) catch {
+    const rpc_addr = std.Io.net.IpAddress.parseIp4("0.0.0.0", config.network.rpc_port) catch {
         Log.err("Invalid RPC address", .{});
         return;
     };
@@ -337,7 +333,7 @@ pub fn main() !void {
         }
 
         // Prevent busy-waiting in the event loop
-        std.Thread.sleep(1 * std.time.ns_per_ms);
+        try std.Io.sleep(init.io, std.Io.Duration.fromNanoseconds(1 * std.time.ns_per_ms), .awake);
     }
 
     // Graceful shutdown

@@ -20,7 +20,7 @@ pub const FuzzSeed = struct {
 
     /// Create from current time
     pub fn timed() Self {
-        return .{ .value = @as(u64, @intCast(std.time.timestamp())) };
+        return .{ .value = @as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); })) };
     }
 };
 
@@ -345,7 +345,7 @@ pub fn fuzztest(comptime name: []const u8, comptime T: type, comptime oracle: *c
     const test_name = "fuzz_" ++ name;
     const test_func = struct {
         fn run() void {
-            var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(std.time.timestamp())));
+            var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); })));
             const size = rng.random().uintAtMost(usize, 4096);
             var data: [4096]u8 = undefined;
             for (data[0..size]) |*byte| {

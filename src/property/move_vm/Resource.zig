@@ -136,18 +136,18 @@ pub const ResourceTracker = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    active_resources: std.AutoArrayHashMap(core.ObjectID, *Resource),
-    moved_resources: std.AutoArrayHashMap(core.ObjectID, void),
-    consumed_resources: std.AutoArrayHashMap(core.ObjectID, void),
+    active_resources: std.AutoArrayHashMapUnmanaged(core.ObjectID, *Resource),
+    moved_resources: std.AutoArrayHashMapUnmanaged(core.ObjectID, void),
+    consumed_resources: std.AutoArrayHashMapUnmanaged(core.ObjectID, void),
     total_created: usize,
     total_transferred: usize,
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .active_resources = std.AutoArrayHashMap(core.ObjectID, *Resource).init(allocator),
-            .moved_resources = std.AutoArrayHashMap(core.ObjectID, void).init(allocator),
-            .consumed_resources = std.AutoArrayHashMap(core.ObjectID, void).init(allocator),
+            .active_resources = std.AutoArrayHashMapUnmanaged(core.ObjectID, *Resource).empty,
+            .moved_resources = std.AutoArrayHashMapUnmanaged(core.ObjectID, void).empty,
+            .consumed_resources = std.AutoArrayHashMapUnmanaged(core.ObjectID, void).empty,
             .total_created = 0,
             .total_transferred = 0,
         };
@@ -159,13 +159,13 @@ pub const ResourceTracker = struct {
             entry.value_ptr.*.deinit(self.allocator);
             self.allocator.destroy(entry.value_ptr.*);
         }
-        self.active_resources.deinit();
-        self.moved_resources.deinit();
-        self.consumed_resources.deinit();
+        self.active_resources.deinit(self.allocator);
+        self.moved_resources.deinit(self.allocator);
+        self.consumed_resources.deinit(self.allocator);
     }
 
     pub fn track(self: *Self, resource: *Resource) !void {
-        try self.active_resources.put(resource.id, resource);
+        try self.active_resources.put(self.allocator, resource.id, resource);
         self.total_created += 1;
     }
 
@@ -173,7 +173,7 @@ pub const ResourceTracker = struct {
         if (self.active_resources.contains(resource_id)) {
             _ = self.active_resources.swapRemove(resource_id);
         }
-        try self.moved_resources.put(resource_id, {});
+        try self.moved_resources.put(self.allocator, resource_id, {});
         self.total_transferred += 1;
     }
 
@@ -181,7 +181,7 @@ pub const ResourceTracker = struct {
         if (self.active_resources.contains(resource_id)) {
             _ = self.active_resources.swapRemove(resource_id);
         }
-        try self.consumed_resources.put(resource_id, {});
+        try self.consumed_resources.put(self.allocator, resource_id, {});
     }
 
     pub fn getCreated(self: Self) ![]const core.ObjectID {

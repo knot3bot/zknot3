@@ -178,7 +178,7 @@ pub const SparseMerkle = struct {
 /// Merkle tree batch for efficient updates
 pub const MerkleBatch = struct {
     allocator: std.mem.Allocator,
-    updates: std.AutoArrayHashMap(core.ObjectID, []u8),
+    updates: std.AutoArrayHashMapUnmanaged(core.ObjectID, []u8),
 
     const Self = @This();
 
@@ -186,7 +186,7 @@ pub const MerkleBatch = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .updates = std.AutoArrayHashMap(core.ObjectID, []u8).init(allocator),
+            .updates = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
         };
         return self;
     }

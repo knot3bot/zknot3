@@ -36,7 +36,7 @@ pub const ConsensusIntegration = struct {
             .validator_id = validator_id,
             .validator_key = validator_key,
             .validator_index = validator_index,
-            .last_round_advance = std.time.timestamp(),
+            .last_round_advance = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .last_proposed_round = 0,
         };
         return self_ptr;
@@ -132,7 +132,7 @@ pub const ConsensusIntegration = struct {
     pub fn checkAndPropose(self: *Self) !void {
         if (!self.node.isRunning()) return;
 
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
 
             if (now - self.last_round_advance >= self.node.config.consensus.round_interval_secs) {
             self.node.advanceRound();

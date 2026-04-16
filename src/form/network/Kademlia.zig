@@ -23,7 +23,7 @@ pub const KBucket = struct {
 
     allocator: std.mem.Allocator,
     local_peer_id: [32]u8,
-    peers: std.AutoArrayHashMap([32]u8, PeerEntry),
+    peers: std.AutoArrayHashMapUnmanaged([32]u8, PeerEntry),
     bucket_index: u8,
 
     pub const PeerEntry = struct {
@@ -40,7 +40,7 @@ pub const KBucket = struct {
         self.* = .{
             .allocator = allocator,
             .local_peer_id = local_peer_id,
-            .peers = std.AutoArrayHashMap([32]u8, PeerEntry).init(allocator),
+            .peers = .empty,
             .bucket_index = bucket_index,
         };
         return self;
@@ -51,7 +51,7 @@ pub const KBucket = struct {
         while (it.next()) |entry| {
             self.allocator.free(entry.value_ptr.address);
         }
-        self.peers.deinit();
+        self.peers.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -76,11 +76,11 @@ pub const KBucket = struct {
             .peer_id = peer_id,
             .address = try self.allocator.dupe(u8, address),
             .port = port,
-            .last_seen = std.time.timestamp(),
+            .last_seen = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .successful_pings = 0,
             .failed_pings = 0,
         };
-        try self.peers.put(peer_id, entry);
+        try self.peers.put(self.allocator, peer_id, entry);
     }
 
     /// Remove a peer from this bucket
@@ -94,7 +94,7 @@ pub const KBucket = struct {
     /// Update peer last_seen timestamp
     pub fn touchPeer(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
-            entry.last_seen = std.time.timestamp();
+            entry.last_seen = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         }
     }
 
@@ -102,7 +102,7 @@ pub const KBucket = struct {
     pub fn recordPingSuccess(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
             entry.successful_pings += 1;
-            entry.last_seen = std.time.timestamp();
+            entry.last_seen = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         }
     }
 
@@ -225,7 +225,7 @@ pub const RoutingTable = struct {
     /// Get peers closest to a target ID
     pub fn getClosestPeers(self: *Self, target_id: [32]u8, count: usize) ![]const [32]u8 {
         const PeerEntry = struct { id: [32]u8, dist: KBucket.Distance };
-        var peers = std.ArrayList(PeerEntry){};
+        var peers = std.ArrayList(PeerEntry).empty;
         defer peers.deinit(self.allocator);
 
         for (self.buckets) |bucket| {
@@ -247,7 +247,7 @@ pub const RoutingTable = struct {
 
         // Return top 'count' peers
         const result_len = @min(count, peers.items.len);
-        var result = std.ArrayList([32]u8){};
+        var result = std.ArrayList([32]u8).empty;
         for (peers.items[0..result_len]) |peer| {
             try result.append(self.allocator, peer.id);
         }

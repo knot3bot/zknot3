@@ -5,6 +5,7 @@
 //! - 性: Intrinsic attributes and relation contracts
 //! - 数: Quantitative measures and ordinal evolution
 
+const std = @import("std");
 pub const core = @import("core.zig");
 pub const form = @import("form.zig");
 pub const property = @import("property.zig");

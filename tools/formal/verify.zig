@@ -11,7 +11,7 @@ pub const CoqSpec = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .sections = std.ArrayList([]const u8){},
+            .sections = std.ArrayList([]const u8).empty,
         };
         return self;
     }
@@ -25,7 +25,7 @@ pub const CoqSpec = struct {
     }
 
     pub fn generateCoq(self: *Self) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         try buf.appendSlice(self.header("Coq"));
         try buf.appendSlice(self.section_object_model());
         try buf.appendSlice(self.section_ownership());
@@ -37,7 +37,7 @@ pub const CoqSpec = struct {
     }
 
     pub fn generateLean(self: *Self) ![]const u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         try buf.appendSlice(self.header("Lean"));
         try buf.appendSlice(self.section_object_model_lean());
         try buf.appendSlice(self.section_consensus_lean());

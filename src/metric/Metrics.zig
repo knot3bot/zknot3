@@ -82,7 +82,7 @@ pub const MetricsCollector = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .history = std.ArrayList(TriSourceMetrics){},
+            .history = std.ArrayList(TriSourceMetrics).empty,
             .window_size = window_size,
         };
         return self;

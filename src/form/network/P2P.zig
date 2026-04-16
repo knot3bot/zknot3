@@ -45,7 +45,7 @@ pub const Peer = struct {
 
 pub const PeerManager = struct {
     allocator: std.mem.Allocator,
-    peers: std.AutoArrayHashMap([32]u8, Peer),
+    peers: std.AutoArrayHashMapUnmanaged([32]u8, Peer),
     routing_table: *Kademlia.RoutingTable,
     transport: *Transport.Transport,
     local_peer_id: [32]u8,
@@ -59,7 +59,7 @@ pub const PeerManager = struct {
         errdefer allocator.destroy(self);
         self.* = .{
             .allocator = allocator,
-            .peers = std.AutoArrayHashMap([32]u8, Peer).init(allocator),
+            .peers = .empty,
             .routing_table = routing_table,
             .transport = transport,
             .local_peer_id = local_peer_id,
@@ -71,7 +71,7 @@ pub const PeerManager = struct {
 
     pub fn deinit(self: *@This()) void {
         self.routing_table.deinit();
-        self.peers.deinit();
+        self.peers.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -79,7 +79,7 @@ pub const PeerManager = struct {
         if (self.peers.count() >= self.max_peers) {
             return error.TooManyPeers;
         }
-        try self.peers.put(peer.id, peer);
+        try self.peers.put(self.allocator, peer.id, peer);
 
         // Also add to Kademlia routing table for DHT-based discovery
         try self.routing_table.addPeer(peer.id, peer.address, peer.port);
@@ -170,7 +170,7 @@ pub const P2PNode = struct {
             .server = server,
             .local_peer_id = local_peer_id,
             .state = .initializing,
-            .started_at = std.time.timestamp(),
+            .started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
 
                 return self;
@@ -193,7 +193,7 @@ pub const P2PNode = struct {
             .server = server,
             .local_peer_id = peer_id,
             .state = .initializing,
-            .started_at = std.time.timestamp(),
+            .started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
 
         return self;
@@ -270,16 +270,16 @@ pub const P2PNode = struct {
 /// Gossip protocol for consensus messages
 pub const GossipProtocol = struct {
     allocator: std.mem.Allocator,
-    pending_blocks: std.AutoArrayHashMap([32]u8, []u8),
-    pending_votes: std.AutoArrayHashMap([32]u8, []u8),
+    pending_blocks: std.AutoArrayHashMapUnmanaged([32]u8, []u8),
+    pending_votes: std.AutoArrayHashMapUnmanaged([32]u8, []u8),
     max_pending: usize,
 
     pub fn init(allocator: std.mem.Allocator) !*@This() {
         const self = try allocator.create(@This());
         self.* = .{
             .allocator = allocator,
-            .pending_blocks = std.AutoArrayHashMap([32]u8, []u8).init(allocator),
-            .pending_votes = std.AutoArrayHashMap([32]u8, []u8).init(allocator),
+            .pending_blocks = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
+            .pending_votes = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
             .max_pending = 1000,
         };
         return self;
@@ -351,8 +351,8 @@ test "Peer creation" {
         .address = "127.0.0.1",
         .port = 8080,
         .is_outbound = true,
-        .connected_at = std.time.timestamp(),
-        .last_message = std.time.timestamp(),
+        .connected_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .last_message = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .latency_ms = 10,
     };
 
@@ -373,8 +373,8 @@ test "PeerManager with Kademlia routing" {
         .address = "127.0.0.1",
         .port = 8080,
         .is_outbound = true,
-        .connected_at = std.time.timestamp(),
-        .last_message = std.time.timestamp(),
+        .connected_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .last_message = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .latency_ms = 10,
     };
 

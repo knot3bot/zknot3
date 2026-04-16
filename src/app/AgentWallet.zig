@@ -43,7 +43,7 @@ pub const TokenBalance = struct {
             .token_type = token_type,
             .balance = 0,
             .locked_balance = 0,
-            .updated_at = std.time.timestamp(),
+            .updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
     }
 };
@@ -69,7 +69,7 @@ pub const SpendingLimit = struct {
 
     /// Check if amount is within limit
     pub fn allows(self: *Self, amount: u64) bool {
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         
         // Reset counters if needed
         if (now >= self.hour_reset) {
@@ -125,11 +125,11 @@ pub const AgentWallet = struct {
                 .per_day = 100_000_000,
                 .hour_spent = 0,
                 .day_spent = 0,
-                .hour_reset = std.time.timestamp() + 3600,
-                .day_reset = std.time.timestamp() + 86400,
+                .hour_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,
+                .day_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 86400,
             },
             .is_frozen = false,
-            .created_at = std.time.timestamp(),
+            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
 	    /// Deinitialize wallet and free resources
 	    pub fn deinit(self: *Self) void {
@@ -154,7 +154,7 @@ pub const AgentWallet = struct {
         for (self.balances.items) |*balance| {
             if (balance.token_type == token_type) {
                 balance.balance += amount;
-                balance.updated_at = std.time.timestamp();
+                balance.updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
                 return;
             }
         }
@@ -178,7 +178,7 @@ pub const AgentWallet = struct {
                     return error.SpendingLimitExceeded;
                 }
                 balance.balance -= amount;
-                balance.updated_at = std.time.timestamp();
+                balance.updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
                 self.spending_limit.recordSpend(amount);
                 return;
             }
@@ -228,7 +228,7 @@ pub const AgentTreasury = struct {
             .members = std.ArrayList(ObjectID).init(std.heap.page_allocator),
             .required_signatures = required_signatures,
             .total_balance = 0,
-            .created_at = std.time.timestamp(),
+            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .is_active = true,
         };
     }
@@ -282,7 +282,7 @@ pub const AuthRequest = struct {
 
     /// Check if valid
     pub fn isValid(self: Self) bool {
-        const now = std.time.timestamp();
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         return !self.is_approved and now < self.expires_at;
     }
 
@@ -344,8 +344,8 @@ test "SpendingLimit" {
         .per_day = 1000,
         .hour_spent = 0,
         .day_spent = 0,
-        .hour_reset = std.time.timestamp() + 3600,
-        .day_reset = std.time.timestamp() + 86400,
+        .hour_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,
+        .day_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 86400,
     };
     
     try std.testing.expect(limit.allows(50));
@@ -376,8 +376,8 @@ test "AuthRequest validity" {
         .recipient = [_]u8{0x55} ** 32,
         .owner = [_]u8{0x42} ** 32,
         .is_approved = false,
-        .created_at = std.time.timestamp(),
-        .expires_at = std.time.timestamp() + 3600,
+        .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .expires_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,
     };
     
     try std.testing.expect(req.isValid());

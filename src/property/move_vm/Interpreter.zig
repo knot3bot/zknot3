@@ -86,7 +86,7 @@ pub const CallStack = struct {
 
     pub fn init(max_depth: usize) Self {
         return .{
-            .frames = std.ArrayList(Frame){},
+            .frames = std.ArrayList(Frame).empty,
             .max_depth = max_depth,
         };
     }
@@ -124,13 +124,13 @@ pub const Interpreter = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .stack = std.ArrayList(Value){},
+            .stack = std.ArrayList(Value).empty,
             .gas = gas,
             .resource_tracker = tracker,
             .call_stack = CallStack.init(1024),
             .pc = 0,
             .instructions = &.{},
-            .output_objects = std.ArrayList([32]u8){},
+            .output_objects = std.ArrayList([32]u8).empty,
         };
         return self;
     }

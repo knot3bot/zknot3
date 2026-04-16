@@ -22,18 +22,12 @@ pub fn log(comptime level: Level, comptime fmt: []const u8, args: anytype) void 
     var buf: [1024]u8 = undefined;
     const full = std.fmt.bufPrint(&buf, fmt, args) catch |e| {
         if (e == error.NoSpaceLeft) {
-            var list: std.ArrayList(u8) = .empty;
-            defer list.deinit(std.heap.page_allocator);
-            std.fmt.format(list.writer(std.heap.page_allocator), fmt, args) catch {
+            const allocated = std.fmt.allocPrint(std.heap.page_allocator, fmt, args) catch {
                 std.debug.print("[LOG] format error\n", .{});
                 return;
             };
-            const allocated = list.toOwnedSlice(std.heap.page_allocator) catch {
-                std.debug.print("[LOG] allocation error\n", .{});
-                return;
-            };
+            defer std.heap.page_allocator.free(allocated);
             std.debug.print("{s}\n", .{allocated});
-            std.heap.page_allocator.free(allocated);
             return;
         }
         std.debug.print("[LOG] bufPrint error: {s}\n", .{@errorName(e)});

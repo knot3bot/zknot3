@@ -89,14 +89,16 @@ pub const Ownership = struct {
     }
 
     /// Encode to bytes for storage
-    pub fn encode(self: Self) []u8 {
-        var buf: [64]u8 = undefined; // tag(1) + owner(32) + context(8) + padding(23)
-        buf[0] = @intFromEnum(self.tag);
+    pub fn encode(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        var result = try allocator.alloc(u8, 41); // tag(1) + owner(32) + context(8)
+        result[0] = @intFromEnum(self.tag);
         if (self.owner) |addr| {
-            @memcpy(buf[1..33], &addr);
+            @memcpy(result[1..33], &addr);
+        } else {
+            @memset(result[1..33], 0);
         }
-        std.mem.writeInt(u64, buf[33..41], self.context, .big);
-        return &buf;
+        std.mem.writeInt(u64, result[33..41], self.context, .big);
+        return result;
     }
 
     /// Check ownership transfer compatibility

@@ -48,14 +48,14 @@ pub const Benchmark = struct {
 
     /// Run a benchmark
     pub fn run(self: *Self, name: []const u8, iterations: u64, func: *const fn () void) !void {
-        const start = std.time.nanoTimestamp();
+        const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
 
         var i: u64 = 0;
         while (i < iterations) : (i += 1) {
             func();
         }
 
-        const end = std.time.nanoTimestamp();
+        const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
         const total_ns = @as(u64, @intCast(end - start));
         const avg_ns = total_ns / iterations;
         const ops_per_sec = @as(f64, @floatFromInt(iterations)) * 1_000_000_000.0 / @as(f64, @floatFromInt(total_ns));
@@ -91,13 +91,13 @@ pub fn benchObjectIDHash(iterations: u64) !BenchmarkResult {
     const allocator = std.testing.allocator;
     const input = "benchmark_test_input_data_for_object_id_hash";
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         const id = ObjectID.hash(input);
         _ = id;
     }
-    const end = std.time.nanoTimestamp();
+    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -123,13 +123,13 @@ pub fn benchLSMTreePutGet(iterations: u64) !BenchmarkResult {
     // Warm up
     try tree.put(&key, &value);
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         try tree.put(&key, &value);
         _ = try tree.get(&key);
     }
-    const end = std.time.nanoTimestamp();
+    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -151,13 +151,13 @@ pub fn benchSignatureSignVerify(iterations: u64) !BenchmarkResult {
     const secret_key = Signature.generateSecretKey(seed);
     const public_key = Signature.derivePublicKey(secret_key);
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         const signature = Signature.sign(&message, secret_key);
         _ = Signature.verify(&message, signature, public_key);
     }
-    const end = std.time.nanoTimestamp();
+    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -179,12 +179,12 @@ pub fn benchInterpreterExecute(iterations: u64) !BenchmarkResult {
 
     const bytecode = &.{ 0x31, 0x01 }; // ld_true; ret
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         _ = try interpreter.execute(bytecode);
     }
-    const end = std.time.nanoTimestamp();
+    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -203,13 +203,13 @@ pub fn benchVersionCompare(iterations: u64) !BenchmarkResult {
     const v1 = Versioned{ .seq = 100, .causal = [_]u8{1} ** 16 };
     const v2 = Versioned{ .seq = 200, .causal = [_]u8{2} ** 16 };
 
-    const start = std.time.nanoTimestamp();
+    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         _ = v1.lessThan(v2);
         _ = v1.compare(v2);
     }
-    const end = std.time.nanoTimestamp();
+    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;

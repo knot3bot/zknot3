@@ -9,7 +9,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
+    root_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
 
     // Static library
     const lib = b.addLibrary(.{
@@ -17,7 +19,6 @@ pub fn build(b: *std.Build) void {
         .root_module = root_module,
         .linkage = .static,
     });
-    lib.linkLibC();
     b.installArtifact(lib);
 
     // ========================================================================
@@ -28,13 +29,14 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests.zig"),
         .target = target,
         .optimize = .Debug,
+        .link_libc = true,
     });
+    test_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
 
     // Unit tests
     const unit_tests = b.addTest(.{
         .root_module = test_module,
     });
-    unit_tests.linkLibC();
 
     const unit_test_step = b.step("test-unit", "Run unit tests");
     unit_test_step.dependOn(&unit_tests.step);
@@ -43,7 +45,6 @@ pub fn build(b: *std.Build) void {
     const integration_tests = b.addTest(.{
         .root_module = test_module,
     });
-    integration_tests.linkLibC();
 
     const integration_test_step = b.step("test-integration", "Run integration tests");
     integration_test_step.dependOn(&integration_tests.step);
@@ -52,7 +53,6 @@ pub fn build(b: *std.Build) void {
     const all_tests = b.addTest(.{
         .root_module = test_module,
     });
-    all_tests.linkLibC();
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&all_tests.step);
@@ -65,13 +65,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/formal/export.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true,
     });
 
     const formal_exporter = b.addExecutable(.{
         .name = "zknot3-formal-export",
         .root_module = formal_module,
     });
-    formal_exporter.linkLibC();
     b.installArtifact(formal_exporter);
 
     const export_coq_step = b.step("export-coq", "Export Coq formal specifications");
@@ -101,12 +101,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/profiler/main.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true,
     });
     const profiler = b.addExecutable(.{
         .name = "zknot3-profiler",
         .root_module = profiler_module,
     });
-    profiler.linkLibC();
     b.installArtifact(profiler);
 
     // Fast build (ReleaseFast)
@@ -114,12 +114,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .link_libc = true,
     });
     const release_fast = b.addExecutable(.{
         .name = "zknot3-node-fast",
         .root_module = fast_module,
     });
-    release_fast.linkLibC();
     b.installArtifact(release_fast);
 
     // Safe build (ReleaseSafe)
@@ -127,12 +127,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
+        .link_libc = true,
     });
     const release_safe = b.addExecutable(.{
         .name = "zknot3-node-safe",
         .root_module = safe_module,
     });
-    release_safe.linkLibC();
     b.installArtifact(release_safe);
 
     // Debug build (Debug)
@@ -140,11 +140,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = .Debug,
+        .link_libc = true,
     });
     const debug_exe = b.addExecutable(.{
         .name = "zknot3-node-debug",
         .root_module = debug_module,
     });
-    debug_exe.linkLibC();
     b.installArtifact(debug_exe);
 }

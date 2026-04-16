@@ -26,7 +26,7 @@ pub const VRFSecretKey = struct {
 
     pub fn generate() !@This() {
         var seed: [32]u8 = undefined;
-        std.crypto.random.bytes(&seed);
+        @import("io_instance").io.random(&seed);
         return @This(){ .seed = seed };
     }
 

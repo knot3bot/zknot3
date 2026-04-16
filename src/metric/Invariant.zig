@@ -31,7 +31,7 @@ pub const FormInvariants = struct {
 
     /// Check that object IDs are unique in a set
     pub fn areUnique(ids: []const ObjectID) InvariantError!void {
-        var seen = std.AutoArrayHashMap(ObjectID, void).init(std.heap.page_allocator);
+        var seen = std.AutoArrayHashMapUnmanaged(ObjectID, void).init(std.heap.page_allocator);
         defer seen.deinit();
 
         for (ids) |id| {

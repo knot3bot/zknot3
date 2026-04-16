@@ -17,7 +17,7 @@ pub const Checkpoint = struct {
     object_changes: []const ObjectChange,
     state_root: [32]u8,
     /// Validator signatures: validator_id -> BLS signature
-    signatures: std.AutoArrayHashMap([32]u8, [96]u8),
+    signatures: std.AutoArrayHashMapUnmanaged([32]u8, [96]u8),
 
     const Self = @This();
 
@@ -37,16 +37,16 @@ pub const Checkpoint = struct {
 
         return .{
             .sequence = sequence,
-            .timestamp = std.time.timestamp(),
+            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .previous_digest = previous_digest,
             .object_changes = try allocator.dupe(ObjectChange, changes),
             .state_root = state_root,
-            .signatures = std.AutoArrayHashMap([32]u8, [96]u8).init(allocator),
+            .signatures = .empty,
         };
     }
 
     pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
 
         var seq_buf: [8]u8 = undefined;
@@ -135,13 +135,13 @@ pub const Checkpoint = struct {
 
     /// Add a signature from a validator
     pub fn addSignature(self: *Self, validator_id: [32]u8, signature: [96]u8) !void {
-        try self.signatures.put(validator_id, signature);
+        try self.signatures.put(self.allocator, validator_id, signature);
     }
 
     /// Deinitialize checkpoint and free resources
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         allocator.free(self.object_changes);
-        self.signatures.deinit();
+        self.signatures.deinit(allocator);
     }
 };
 

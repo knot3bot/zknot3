@@ -17,6 +17,17 @@
 const std = @import("std");
 const core = @import("../../core.zig");
 
+fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
+    var writer = stream.writer(@import("io_instance").io, &.{});
+    try writer.interface.writeAll(bytes);
+}
+
+fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
+    var reader = stream.reader(@import("io_instance").io, &.{});
+    return reader.interface.readSliceShort(buf) catch |err| switch (err) {
+        error.ReadFailed => return reader.err.?,
+    };
+}
 pub const QUICConfig = struct {
     bind_address: []const u8 = "0.0.0.0:8080",
     max_connections: usize = 256,
@@ -31,7 +42,7 @@ pub const QUICConnectionID = struct {
 
     pub fn generate() @This() {
         var id: @This() = undefined;
-        std.crypto.random.bytes(&id.bytes);
+        @import("io_instance").io.random(&id.bytes);
         return id;
     }
 
@@ -81,7 +92,7 @@ pub const QUICStream = struct {
             .remote_window = 1024 * 1024,
             .bytes_sent = 0,
             .bytes_received = 0,
-            .data = std.ArrayList(u8){},
+            .data = std.ArrayList(u8).empty,
         };
         errdefer self.data.deinit(std.heap.page_allocator);
         return self;
@@ -140,13 +151,13 @@ pub const QUICConnection = struct {
     connection_id: QUICConnectionID,
     peer_connection_id: QUICConnectionID,
     state: ConnectionState,
-    streams: std.AutoArrayHashMap(u64, *QUICStream),
+    streams: std.AutoArrayHashMapUnmanaged(u64, *QUICStream),
     local_window: u64,
     remote_window: u64,
     bytes_sent: u64,
     bytes_received: u64,
     created_at: i64,
-    tcp_connection: ?std.net.Server.Connection,
+    tcp_connection: ?std.Io.net.Stream,
     receive_buffer: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator, connection_id: QUICConnectionID) !*Self {
@@ -156,12 +167,12 @@ pub const QUICConnection = struct {
             .connection_id = connection_id,
             .peer_connection_id = undefined,
             .state = .dialing,
-            .streams = std.AutoArrayHashMap(u64, *QUICStream).init(allocator),
+            .streams = .empty,
             .local_window = 16 * 1024 * 1024,
             .remote_window = 16 * 1024 * 1024,
             .bytes_sent = 0,
             .bytes_received = 0,
-            .created_at = std.time.timestamp(),
+            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .tcp_connection = null,
             .receive_buffer = .empty,
         };
@@ -173,17 +184,17 @@ pub const QUICConnection = struct {
         while (it.next()) |entry| {
             entry.value_ptr.*.deinit();
         }
-        self.streams.deinit();
+        self.streams.deinit(self.allocator);
         self.receive_buffer.deinit(self.allocator);
 
         if (self.tcp_connection) |conn| {
-            conn.stream.close();
+            conn.close(@import("io_instance").io);
         }
         self.allocator.destroy(self);
     }
 
     /// Set the TCP connection for this QUIC connection
-    pub fn setTCPConnection(self: *Self, conn: std.net.Server.Connection) void {
+    pub fn setTCPConnection(self: *Self, conn: std.Io.net.Stream) void {
         self.tcp_connection = conn;
         self.state = .connected;
     }
@@ -197,8 +208,8 @@ pub const QUICConnection = struct {
             // Simplified: just prefix with stream_id (8 bytes) + length (4 bytes)
             std.mem.writeIntLittle(u64, &frame[0..8].*, stream_id);
             std.mem.writeIntLittle(u32, &frame[8..12].*, @intCast(data.len));
-            try conn.stream.writeAll(&frame);
-            try conn.stream.writeAll(data);
+            try streamWriteAll(conn, &frame);
+            try streamWriteAll(conn, data);
             self.bytes_sent += data.len;
         } else {
             return error.NotConnected;
@@ -211,12 +222,12 @@ pub const QUICConnection = struct {
         if (self.tcp_connection) |*conn| {
             // Try to read a frame
             var header: [12]u8 = undefined;
-            const header_len = try conn.stream.read(&header);
+            const header_len = try streamReadShort(conn, &header);
             if (header_len == 0) return 0;
             
             const data_len = std.mem.readIntLittle(u32, &header[8..12].*);
             const len = @min(buf.len, data_len);
-            const received = try conn.stream.read(buf[0..len]);
+            const received = try streamReadShort(conn, buf[0..len]);
             self.bytes_received += received;
             return received;
         }
@@ -227,7 +238,7 @@ pub const QUICConnection = struct {
     pub fn openStream(self: *Self) !u64 {
         const stream_id = self.streams.count() * 4; // Client-initiated bidirectional
         const stream = try QUICStream.init(stream_id, .bidirectional);
-        try self.streams.put(stream_id, stream);
+        try self.streams.put(self.allocator, stream_id, stream);
         return stream_id;
     }
 
@@ -235,7 +246,7 @@ pub const QUICConnection = struct {
     pub fn openUnidirectionalStream(self: *Self) !u64 {
         const stream_id = self.streams.count() * 4 + 1; // Client-initiated unidirectional
         const stream = try QUICStream.init(stream_id, .unidirectional);
-        try self.streams.put(stream_id, stream);
+        try self.streams.put(self.allocator, stream_id, stream);
         return stream_id;
     }
 
@@ -262,7 +273,7 @@ pub const QUICConnection = struct {
             entry.value_ptr.*.close();
         }
         if (self.tcp_connection) |conn| {
-            conn.stream.close();
+            conn.close(@import("io_instance").io);
             self.tcp_connection = null;
         }
     }
@@ -273,8 +284,8 @@ pub const QUICTransport = struct {
 
     allocator: std.mem.Allocator,
     config: QUICConfig,
-    connections: std.AutoArrayHashMap(QUICConnectionID, *QUICConnection),
-    listener: ?std.net.Server,
+    connections: std.AutoArrayHashMapUnmanaged(QUICConnectionID, *QUICConnection),
+    listener: ?std.Io.net.Server,
     is_running: bool,
     next_connection_id: u64,
 
@@ -283,7 +294,7 @@ pub const QUICTransport = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .connections = std.AutoArrayHashMap(QUICConnectionID, *QUICConnection).init(allocator),
+            .connections = std.AutoArrayHashMapUnmanaged(QUICConnectionID, *QUICConnection).empty,
             .listener = null,
             .is_running = false,
             .next_connection_id = 0,
@@ -297,7 +308,7 @@ pub const QUICTransport = struct {
         while (it.next()) |entry| {
             entry.value_ptr.*.deinit();
         }
-        self.connections.deinit();
+        self.connections.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -309,15 +320,15 @@ pub const QUICTransport = struct {
         const port_str = parts.next() orelse "8080";
         const port = try std.fmt.parseInt(u16, port_str, 10);
 
-        const addr = try std.net.Address.parseIp(host, port);
-        self.listener = try addr.listen(.{ .reuse_address = true });
+        const addr = try std.Io.net.IpAddress.parseIp4(host, port);
+        self.listener = try addr.listen(@import("io_instance").io, .{ .reuse_address = true });
         self.is_running = true;
     }
 
     pub fn stop(self: *Self) void {
         self.is_running = false;
         if (self.listener) |*l| {
-            l.deinit();
+            l.deinit(@import("io_instance").io);
             self.listener = null;
         }
     }
@@ -325,11 +336,11 @@ pub const QUICTransport = struct {
     /// Accept an incoming QUIC connection
     pub fn accept(self: *Self) !*QUICConnection {
         if (self.listener) |_| {
-            const tcp_conn = try self.listener.?.accept();
+            const tcp_conn = try self.listener.?.accept(@import("io_instance").io);
             const cid = QUICConnectionID.generate();
             const quic_conn = try QUICConnection.init(self.allocator, cid);
             quic_conn.setTCPConnection(tcp_conn);
-            try self.connections.put(cid, quic_conn);
+            try self.connections.put(self.allocator, cid, quic_conn);
             return quic_conn;
         }
         return error.NotListening;
@@ -341,24 +352,21 @@ pub const QUICTransport = struct {
         const host = parts.next() orelse return error.InvalidAddress;
         const port_str = parts.next() orelse return error.InvalidAddress;
         const port = try std.fmt.parseInt(u16, port_str, 10);
-        const addr = try std.net.Address.parseIp(host, port);
-        const tcp_conn = try std.net.tcpConnectToAddress(addr);
+        const addr = try std.Io.net.IpAddress.parseIp4(host, port);
+        const tcp_conn = try addr.connect(@import("io_instance").io, .{ .mode = .stream });
         // Wrap stream in Connection struct
-        const conn = std.net.Server.Connection{
-            .stream = tcp_conn,
-            .address = addr,
-        };
+        const conn = tcp_conn;
         const cid = QUICConnectionID.generate();
         const quic_conn = try QUICConnection.init(self.allocator, cid);
         quic_conn.setTCPConnection(conn);
-        try self.connections.put(cid, quic_conn);
+        try self.connections.put(self.allocator, cid, quic_conn);
         return quic_conn;
     }
 
     pub fn closeConnection(self: *Self, cid: QUICConnectionID) void {
         if (self.connections.getPtr(cid)) |conn| {
             conn.*.close();
-            _ = self.connections.remove(cid);
+            _ = self.connections.swapRemove(cid);
         }
     }
 
@@ -423,8 +431,8 @@ test "QUICTransport listen and connection" {
 
     // Get the actual port the listener was assigned
     if (transport.listener) |listener| {
-        const local_addr = listener.listen_address;
-        _ = local_addr; // Address available for dial if needed
+        // Server address not directly accessible in Zig 0.16.0
+        _ = listener;
     }
 
     // Stop listening

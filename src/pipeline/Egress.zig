@@ -38,7 +38,7 @@ pub const Egress = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .pending_certificates = std.ArrayList(Certificate){},
+            .pending_certificates = std.ArrayList(Certificate).empty,
             .quorum_stake = quorum_stake,
         };
         return self;
@@ -97,7 +97,7 @@ pub const Egress = struct {
             .checkpoint_sequence = checkpoint_seq,
             .certificate = cert,
             .state_root = state_root,
-            .timestamp = std.time.timestamp(),
+            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         };
     }
 

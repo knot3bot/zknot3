@@ -154,13 +154,13 @@ pub const TestCluster = struct {
 /// Network topology for test cluster
 pub const TestTopology = struct {
     allocator: std.mem.Allocator,
-    connections: std.AutoArrayHashMap([2]*const TestNode, void),
+    connections: std.AutoArrayHashMapUnmanaged([2]*const TestNode, void),
 
     pub fn init(allocator: std.mem.Allocator) !*@This() {
         const self = try allocator.create(@This());
         self.* = .{
             .allocator = allocator,
-            .connections = std.AutoArrayHashMap([2]*const TestNode, void).init(allocator),
+            .connections = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
         };
         return self;
     }

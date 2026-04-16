@@ -66,13 +66,13 @@ pub const Indexer = struct {
     config: IndexConfig,
     
     /// Objects indexed by ID
-    object_index: std.AutoArrayHashMap(core.ObjectID, IndexedObject),
+    object_index: std.AutoArrayHashMapUnmanaged(core.ObjectID, IndexedObject),
     
     /// Events indexed by transaction digest
-    event_index: std.AutoArrayHashMap([32]u8, std.ArrayList(IndexedEvent)),
+    event_index: std.AutoArrayHashMapUnmanaged([32]u8, std.ArrayList(IndexedEvent)),
     
     /// Events by type for filtering
-    events_by_type: std.StringArrayHashMap(std.ArrayList(IndexedEvent)),
+    events_by_type: std.StringArrayHashMapUnmanaged(std.ArrayList(IndexedEvent)),
     
     /// Object count for metrics
     object_count: u64,
@@ -84,9 +84,9 @@ pub const Indexer = struct {
         self.* = .{
             .allocator = allocator,
             .config = config,
-            .object_index = std.AutoArrayHashMap(core.ObjectID, IndexedObject).init(allocator),
-            .event_index = std.AutoArrayHashMap([32]u8, std.ArrayList(IndexedEvent)).init(allocator),
-            .events_by_type = std.StringArrayHashMap(std.ArrayList(IndexedEvent)).init(allocator),
+            .object_index = std.AutoArrayHashMapUnmanaged(core.ObjectID, IndexedObject).empty,
+            .event_index = std.AutoArrayHashMapUnmanaged([32]u8, std.ArrayList(IndexedEvent)).empty,
+            .events_by_type = std.StringArrayHashMapUnmanaged(std.ArrayList(IndexedEvent)).empty,
             .object_count = 0,
             .event_count = 0,
         };
@@ -99,7 +99,7 @@ pub const Indexer = struct {
             self.allocator.free(entry.value_ptr.type);
             self.allocator.free(entry.value_ptr.data);
         }
-        self.object_index.deinit();
+        self.object_index.deinit(self.allocator);
         
         var evt_it = self.event_index.iterator();
         while (evt_it.next()) |entry| {
@@ -109,13 +109,13 @@ pub const Indexer = struct {
             }
             entry.value_ptr.deinit(self.allocator);
         }
-        self.event_index.deinit();
+        self.event_index.deinit(self.allocator);
         
         var type_it = self.events_by_type.iterator();
         while (type_it.next()) |entry| {
             entry.value_ptr.deinit(self.allocator);
         }
-        self.events_by_type.deinit();
+        self.events_by_type.deinit(self.allocator);
         
         self.allocator.destroy(self);
     }
@@ -134,7 +134,7 @@ pub const Indexer = struct {
             .timestamp = obj.timestamp,
         };
         
-        try self.object_index.put(obj.id, owned_obj);
+        try self.object_index.put(self.allocator, obj.id, owned_obj);
         self.object_count += 1;
     }
     
@@ -152,13 +152,13 @@ pub const Indexer = struct {
         };
         
         // Index by transaction
-        const tx_list = try self.event_index.getOrPutValue(event.transaction_digest, 
-            std.ArrayList(IndexedEvent){});
+        const tx_list = try self.event_index.getOrPutValue(self.allocator, event.transaction_digest,
+            std.ArrayList(IndexedEvent).empty);
         try tx_list.value_ptr.append(self.allocator, owned_event);
         
         // Index by type
-        const type_list = try self.events_by_type.getOrPutValue(event.event_type,
-            std.ArrayList(IndexedEvent){});
+        const type_list = try self.events_by_type.getOrPutValue(self.allocator, event.event_type,
+            std.ArrayList(IndexedEvent).empty);
         try type_list.value_ptr.append(self.allocator, owned_event);
         
         self.event_count += 1;
@@ -171,7 +171,7 @@ pub const Indexer = struct {
     
     /// Query objects with filter
     pub fn queryObjects(self: Self, query: ObjectQuery, cursor: ?core.ObjectID, limit: usize) !PaginatedResult {
-        var results = std.ArrayList(core.ObjectID){};
+        var results = std.ArrayList(core.ObjectID).empty;
         defer results.deinit();
         
         var it = self.object_index.iterator();
@@ -237,7 +237,7 @@ pub const Indexer = struct {
     
     /// Query events with filter
     pub fn queryEvents(self: Self, query: EventQuery, cursor: ?u64, limit: usize) !PaginatedResult {
-        var results = std.ArrayList(IndexedEvent){};
+        var results = std.ArrayList(IndexedEvent).empty;
         defer results.deinit();
         
         var it = self.event_index.iterator();
