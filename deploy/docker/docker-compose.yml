@@ -4,6 +4,7 @@ services:
     container_name: zknot3-validator-1
     hostname: validator-1
     restart: unless-stopped
+    privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
     ports:
       - "9000:9000"
@@ -21,6 +22,7 @@ services:
     container_name: zknot3-validator-2
     hostname: validator-2
     restart: unless-stopped
+    privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
     ports:
       - "9010:9000"
@@ -38,6 +40,7 @@ services:
     container_name: zknot3-validator-3
     hostname: validator-3
     restart: unless-stopped
+    privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
     ports:
       - "9020:9000"
@@ -55,6 +58,7 @@ services:
     container_name: zknot3-validator-4
     hostname: validator-4
     restart: unless-stopped
+    privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
     ports:
       - "9030:9000"
@@ -71,6 +75,7 @@ services:
     image: zknot3:latest
     container_name: zknot3-fullnode
     restart: unless-stopped
+    privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
     ports:
       - "9040:9000"

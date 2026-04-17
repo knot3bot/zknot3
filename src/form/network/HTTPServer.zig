@@ -205,11 +205,67 @@ pub const Response = struct {
             try streamWriteAll(conn, body);
         }
     }
+
+    pub fn toString(self: *const @This(), allocator: std.mem.Allocator) ![]u8 {
+        const status_text = switch (self.status) {
+            .ok => "200 OK",
+            .created => "201 Created",
+            .accepted => "202 Accepted",
+            .no_content => "204 No Content",
+            .bad_request => "400 Bad Request",
+            .unauthorized => "401 Unauthorized",
+            .forbidden => "403 Forbidden",
+            .not_found => "404 Not Found",
+            .method_not_allowed => "405 Method Not Allowed",
+            .request_timeout => "408 Request Timeout",
+            .conflict => "409 Conflict",
+            .payload_too_large => "413 Payload Too Large",
+            .uri_too_long => "414 URI Too Long",
+            .unsupported_media_type => "415 Unsupported Media Type",
+            .internal_server_error => "500 Internal Server Error",
+            .not_implemented => "501 Not Implemented",
+            .bad_gateway => "502 Bad Gateway",
+            .service_unavailable => "503 Service Unavailable",
+            .too_many_requests => "429 Too Many Requests",
+        };
+
+        // Calculate upper bound for response size
+        var headers_size: usize = 0;
+        var headers_it = self.headers.iterator();
+        while (headers_it.next()) |entry| {
+            headers_size += entry.key_ptr.*.len + 2 + entry.value_ptr.*.len + 2;
+        }
+        const body_len = if (self.body) |b| b.len else 0;
+        const total_size = 64 + headers_size + body_len;
+
+        const buf = try allocator.alloc(u8, total_size);
+        errdefer allocator.free(buf);
+
+        var pos: usize = 0;
+        const line1 = try std.fmt.bufPrint(buf[pos..], "HTTP/1.1 {s}\r\n", .{status_text});
+        pos += line1.len;
+
+        headers_it = self.headers.iterator();
+        while (headers_it.next()) |entry| {
+            const h = try std.fmt.bufPrint(buf[pos..], "{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            pos += h.len;
+        }
+
+        if (self.body) |body| {
+            const cl = try std.fmt.bufPrint(buf[pos..], "Content-Length: {}\r\n\r\n{s}", .{ body.len, body });
+            pos += cl.len;
+        } else {
+            const cl = try std.fmt.bufPrint(buf[pos..], "Content-Length: 0\r\n\r\n", .{});
+            pos += cl.len;
+        }
+
+        return buf[0..pos];
+    }
 };
 
 /// Simple HTTP server with routing
     // Extract the request path from a raw HTTP request
-    fn extractPath(request: []const u8) []const u8 {
+    pub fn extractPath(request: []const u8) []const u8 {
         // Find the space after the method to locate path start
         const space_idx = std.mem.indexOf(u8, request, " ") orelse return "";
         const path_start = space_idx + 1;
@@ -221,7 +277,7 @@ pub const Response = struct {
     }
 
     // Parse Content-Length header from a raw HTTP request
-    fn parseContentLength(request: []const u8) ?usize {
+    pub fn parseContentLength(request: []const u8) ?usize {
         const header = "Content-Length: ";
         const start = std.mem.indexOf(u8, request, header) orelse return null;
         const value_start = start + header.len;
@@ -230,7 +286,7 @@ pub const Response = struct {
     }
 
     // Extract HTTP body using Content-Length if available
-    fn extractBody(request: []const u8) ?[]const u8 {
+    pub fn extractBody(request: []const u8) ?[]const u8 {
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return null;
         const body = request[body_start + 4 ..];
         if (parseContentLength(request)) |content_len| {

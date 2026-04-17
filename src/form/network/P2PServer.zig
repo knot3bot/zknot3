@@ -24,16 +24,18 @@ fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
 
 fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
     var reader = stream.reader(@import("io_instance").io, &.{});
-    return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
+    return reader.interface.readSliceShort(buf) catch |err| {
+        if (err == error.ReadFailed) return reader.err.?;
+        return error.WouldBlock;
     };
 }
 
 fn streamReadVec(stream: std.Io.net.Stream, buf: []u8) !usize {
     var reader = stream.reader(@import("io_instance").io, &.{});
     var data: [1][]u8 = .{buf};
-    return reader.interface.readVec(&data) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
+    return reader.interface.readVec(&data) catch |err| {
+        if (err == error.ReadFailed) return reader.err.?;
+        return error.WouldBlock;
     };
 }
 

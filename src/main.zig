@@ -4,13 +4,17 @@
 //! Supports various command-line options for configuration.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const app = @import("app.zig");
 const Node = app.Node;
 const Config = app.Config;
 const ConfigWithBuffer = app.ConfigWithBuffer;
 const ConfigModule = @import("app/Config.zig");
 const NodeDependencies = app.NodeDependencies;
-const HTTPServer = @import("form/network/HTTPServer.zig").HTTPServer;
+const HTTPServer = if (builtin.os.tag == .linux)
+    @import("form/network/AsyncHTTPServer.zig").AsyncHTTPServer
+else
+    @import("form/network/HTTPServer.zig").HTTPServer;
 const ConsensusIntegration = @import("form/consensus/ConsensusIntegration.zig").ConsensusIntegration;
 const Log = @import("app/Log.zig");
 
@@ -300,19 +304,23 @@ pub fn main(init: std.process.Init) !void {
     Log.info("\nPress Ctrl+C to stop.", .{});
     // Event loop - accept and handle HTTP and P2P connections
     while (running.load(.seq_cst)) {
-        // Accept and handle HTTP connection
-        if (http_server.listener) |_| {
-            if (http_server.accept()) |conn| {
-                http_server.handleConnection(conn) catch |err| {
-                    Log.err("[MAIN] HTTP handleConnection error: {s}", .{@errorName(err)});
-                };
-            } else |err| {
-                if (err != error.WouldBlock) {
-                    Log.err("[MAIN] HTTP accept error: {s}", .{@errorName(err)});
-                    continue;
+        // On non-Linux, accept and handle HTTP connection in main loop.
+        // On Linux, AsyncHTTPServer runs in a dedicated io_uring thread.
+        if (builtin.os.tag != .linux) {
+            if (http_server.listener) |_| {
+                if (http_server.accept()) |conn| {
+                    http_server.handleConnection(conn) catch |err| {
+                        Log.err("[MAIN] HTTP handleConnection error: {s}", .{@errorName(err)});
+                    };
+                } else |err| {
+                    if (err != error.WouldBlock) {
+                        Log.err("[MAIN] HTTP accept error: {s}", .{@errorName(err)});
+                        continue;
+                    }
                 }
             }
         }
+        // Accept P2P connection if enabled
         // Accept P2P connection if enabled
         if (node.getP2PServer()) |p2p| {
             p2p.acceptOne() catch |err| {

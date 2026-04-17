@@ -11,12 +11,12 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install Zig 0.15.1 (pre-built for aarch64 Linux)
-RUN curl -fsSL https://ziglang.org/download/0.15.1/zig-aarch64-linux-0.15.1.tar.xz | tar xJ --strip-components=1 -C /opt
+# Download and install Zig 0.16.0 (pre-built for aarch64 Linux)
+RUN curl -fsSL https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz | tar xJ --strip-components=1 -C /opt
 
 # Add Zig to PATH
 
-# Add Zig to PATH
+
 ENV PATH="/opt:$PATH"
 
 # Copy source code

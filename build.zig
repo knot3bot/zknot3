@@ -67,6 +67,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
+    formal_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
 
     const formal_exporter = b.addExecutable(.{
         .name = "zknot3-formal-export",
@@ -103,6 +104,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
+    profiler_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
     const profiler = b.addExecutable(.{
         .name = "zknot3-profiler",
         .root_module = profiler_module,
@@ -116,6 +118,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
+    fast_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
     const release_fast = b.addExecutable(.{
         .name = "zknot3-node-fast",
         .root_module = fast_module,
@@ -129,6 +132,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
         .link_libc = true,
     });
+    safe_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
     const release_safe = b.addExecutable(.{
         .name = "zknot3-node-safe",
         .root_module = safe_module,
@@ -142,6 +146,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
+    debug_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
     const debug_exe = b.addExecutable(.{
         .name = "zknot3-node-debug",
         .root_module = debug_module,
