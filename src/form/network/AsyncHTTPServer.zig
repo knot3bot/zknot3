@@ -546,8 +546,9 @@ pub const AsyncHTTPServer = struct {
                     _ = try response.withJSONContentType();
                     return try response.toString(self.allocator);
                 };
-                defer self.allocator.free(json);
-                response.body = json;
+                // Allocate a copy with self.allocator so it stays valid until response is sent
+                const json_copy = try self.allocator.dupe(u8, json);
+                response.body = json_copy;
                 _ = try response.withJSONContentType();
             } else {
                 response.status = .not_found;
