@@ -189,10 +189,6 @@ pub const Interpreter = struct {
     fn executeInstruction(self: *Self, instr: Bytecode.Instruction) !void {
         switch (instr.opcode) {
             .nop => {},
-            .ret => {
-                self.pc = self.instructions.len;
-                return;
-            },
             .branch => {
                 if (instr.payload.len >= 2) {
                     self.pc = @as(usize, std.mem.readInt(u16, instr.payload[0..2], .big));
@@ -456,8 +452,27 @@ pub const Interpreter = struct {
             .move_resource => {
                 if (instr.payload.len >= 1) {
                     const local_idx = instr.payload[0];
+                    // TODO: Implement local variable support
                     _ = local_idx;
                 }
+            },
+            .call => {
+                if (instr.payload.len >= 2) {
+                    const func_offset = @as(usize, std.mem.readInt(u16, instr.payload[0..2], .big));
+                    _ = func_offset;
+                    // TODO: Implement function call support
+                }
+            },
+            .call_indirect => {
+                if (self.stack.items.len >= 1) {
+                    const func_ptr = self.stack.pop().?;
+                    _ = func_ptr;
+                    // TODO: Implement indirect function call support
+                }
+            },
+            .ret => {
+                self.pc = self.instructions.len;
+                return;
             },
             .move_to_sender => {
                 const resource = self.stack.pop().?;
@@ -520,10 +535,13 @@ pub const Interpreter = struct {
             },
             .vec_push => {
                 if (self.stack.items.len >= 2) {
-                    _ = self.stack.pop().?;
+                    const value = self.stack.pop().?;
                     const vec = self.stack.pop().?;
                     if (vec.tag == .vector) {
-                        try self.stack.append(self.allocator, vec);
+                        var new_vec = try self.allocator.alloc(Value, vec.data.vector.len + 1);
+                        @memcpy(new_vec[0..vec.data.vector.len], vec.data.vector);
+                        new_vec[vec.data.vector.len] = value;
+                        try self.stack.append(self.allocator, Value{ .tag = .vector, .data = .{ .vector = new_vec } });
                     }
                 }
             },
@@ -532,6 +550,9 @@ pub const Interpreter = struct {
                     const vec = self.stack.pop().?;
                     if (vec.tag == .vector and vec.data.vector.len > 0) {
                         try self.stack.append(self.allocator, vec.data.vector[vec.data.vector.len - 1]);
+                        const new_vec = try self.allocator.alloc(Value, vec.data.vector.len - 1);
+                        @memcpy(new_vec, vec.data.vector[0 .. vec.data.vector.len - 1]);
+                        try self.stack.append(self.allocator, Value{ .tag = .vector, .data = .{ .vector = new_vec } });
                     }
                 }
             },
@@ -543,11 +564,37 @@ pub const Interpreter = struct {
                     for (0..count) |_| {
                         try elems.append(self.allocator, self.stack.pop().?);
                     }
+                    // Reverse to maintain order since we popped from stack
+                    std.mem.reverse(Value, elems.items);
                     const vec = try elems.toOwnedSlice(self.allocator);
                     try self.stack.append(self.allocator, Value{ .tag = .vector, .data = .{ .vector = vec } });
                 }
             },
-            else => {},
+            .vec_unpack => {
+                if (self.stack.items.len >= 1) {
+                    const vec = self.stack.pop().?;
+                    if (vec.tag == .vector) {
+                        for (vec.data.vector) |elem| {
+                            try self.stack.append(self.allocator, elem);
+                        }
+                    }
+                }
+            },
+            .vec_borrow => {
+                if (self.stack.items.len >= 2) {
+                    const index = self.stack.pop().?;
+                    const vec = self.stack.pop().?;
+                    if (vec.tag == .vector and index.tag == .integer) {
+                        const idx = @as(usize, @intCast(index.data.int));
+                        if (idx < vec.data.vector.len) {
+                            try self.stack.append(self.allocator, vec.data.vector[idx]);
+                        } else {
+                            return error.IndexOutOfBounds;
+                        }
+                    }
+                }
+            },
+            else => {}
         }
     }
 

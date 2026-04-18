@@ -133,32 +133,63 @@ pub const MemTable = struct {
             return error.MemTableFull;
         }
 
-        try self.entries.append(self.allocator, .{
+        const new_entry = KeyValue{
             .key = try self.allocator.dupe(u8, key),
             .value = try self.allocator.dupe(u8, value),
             .seq = seq,
             .deleted = false,
-        });
+        };
         self.bloom.add(key);
         self.size += entry_size;
 
-        // Sort by key + seq descending
-        std.mem.sort(KeyValue, self.entries.items, {}, struct {
-            fn lessThan(_: void, a: KeyValue, b: KeyValue) bool {
-                return a.lessThan(b);
+        // Find the correct position for insertion using binary search
+        var low: usize = 0;
+        var high: usize = self.entries.items.len;
+
+        while (low < high) {
+            const mid = (low + high) / 2;
+            const entry = self.entries.items[mid];
+            
+            if (new_entry.lessThan(entry)) {
+                high = mid;
+            } else {
+                low = mid + 1;
             }
-        }.lessThan);
+        }
+
+        try self.entries.insert(self.allocator, low, new_entry);
     }
 
     pub fn get(self: *Self, key: []const u8) ?[]const u8 {
         // Bloom filter check first
         if (!self.bloom.contains(key)) return null;
 
-        for (self.entries.items) |entry| {
-            if (std.mem.eql(u8, entry.key, key) and !entry.deleted) {
-                return entry.value;
+        // Binary search for efficiency
+        var low: usize = 0;
+        var high: usize = self.entries.items.len;
+
+        while (low < high) {
+            const mid = (low + high) / 2;
+            const entry = self.entries.items[mid];
+            const cmp = std.mem.lessThan(u8, entry.key, key);
+            
+            if (cmp) {
+                low = mid + 1;
+            } else {
+                high = mid;
             }
         }
+
+        if (low < self.entries.items.len and std.mem.eql(u8, self.entries.items[low].key, key)) {
+            // Find first non-deleted entry with this key (considering sequence numbers)
+            var idx = low;
+            while (idx < self.entries.items.len and std.mem.eql(u8, self.entries.items[idx].key, key)) : (idx += 1) {
+                if (!self.entries.items[idx].deleted) {
+                    return self.entries.items[idx].value;
+                }
+            }
+        }
+        
         return null;
     }
 
@@ -182,11 +213,51 @@ pub const MemTable = struct {
     }
 };
 
-/// SSTable index entry
+/// SSTable index entry with optimization for binary search
 pub const SSTableIndexEntry = struct {
     key: []u8,
     offset: u64,
     size: u32,
+
+    /// Comparison function for binary search
+    pub fn lessThan(self: @This(), other: @This()) bool {
+        return std.mem.lessThan(u8, self.key, other.key);
+    }
+
+    /// Equality check for key matching
+    pub fn eql(self: @This(), other_key: []const u8) bool {
+        return std.mem.eql(u8, self.key, other_key);
+    }
+};
+
+/// Index structure with binary search optimization
+pub const SSTableIndex = struct {
+    entries: []const SSTableIndexEntry,
+    sorted: bool = false,
+
+    /// Binary search for key
+    pub fn binarySearch(self: *const SSTableIndex, key: []const u8) ?usize {
+        if (!self.sorted) return null;
+
+        var low: usize = 0;
+        var high: usize = self.entries.len;
+
+        while (low < high) {
+            const mid = (low + high) / 2;
+            const entry = self.entries[mid];
+            
+            if (std.mem.lessThan(u8, entry.key, key)) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+
+        if (low < self.entries.len and std.mem.eql(u8, self.entries[low].key, key)) {
+            return low;
+        }
+        return null;
+    }
 };
 
 /// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
@@ -347,42 +418,32 @@ pub const SSTable = struct {
     }
 
     pub fn read(self: *Self, key: []const u8) !?[]const u8 {
-        // Binary search in index
-        var low: usize = 0;
-        var high: usize = self.index.items.len;
+        // Create optimized index wrapper for binary search
+        const index = SSTableIndex{
+            .entries = self.index.items,
+            .sorted = true,
+        };
 
-        while (low < high) {
-            const mid = (low + high) / 2;
-            const cmp = std.mem.lessThan(u8, self.index.items[mid].key, key);
-            if (cmp) {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
+        if (index.binarySearch(key)) |idx| {
+            const idx_entry = self.index.items[idx];
+            
+            // Seek and read value
+            try self.file.seekTo(idx_entry.offset);
+
+            // Read header (key_len + val_len + deleted)
+            var header_buf: [12]u8 = undefined;
+            _ = try self.file.readAll(&header_buf);
+
+            const val_len = std.mem.readInt(u32, header_buf[4..8], .big);
+            _ = header_buf[8]; // deleted flag
+
+            // Read value (allocate exactly what we need)
+            const value_buf = try self.allocator.alloc(u8, val_len);
+            errdefer self.allocator.free(value_buf);
+            _ = try self.file.readAll(value_buf);
+            return value_buf;
         }
-
-        if (low < self.index.items.len) {
-            const idx_entry = self.index.items[low];
-            if (std.mem.eql(u8, idx_entry.key, key)) {
-                // Seek and read value
-                try self.file.seekTo(idx_entry.offset);
-
-                // Read header (key_len + val_len + deleted)
-                var header_buf: [12]u8 = undefined;
-                _ = try self.file.readAll(&header_buf);
-
-                const key_len_read = std.mem.readInt(u32, header_buf[0..4], .big);
-                const val_len = std.mem.readInt(u32, header_buf[4..8], .big);
-                _ = header_buf[8]; // deleted flag
-                _ = key_len_read; // Already validated by index match
-
-                // Read value (allocate exactly what we need)
-                const value_buf = try self.allocator.alloc(u8, val_len);
-                errdefer self.allocator.free(value_buf);
-                _ = try self.file.readAll(value_buf);
-                return value_buf;
-            }
-        }
+        
         return null;
     }
 
@@ -688,7 +749,8 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
     }
 
     /// Recover from WAL - replay uncommitted transactions
-    pub fn recover(self: *Self) !void {
+    /// Recover from WAL - replay uncommitted transactions with options
+    pub fn recoverWithOptions(self: *Self, options: WAL_module.RecoveryOptions) !WAL_module.RecoveryResult {
         if (self.wal) |*wal| {
             const State = struct {
                 lsm: *Self,
@@ -715,8 +777,14 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
                 }
             }.cb;
 
-            try wal.replay(&callback, &state);
+            return try wal.replayWithOptions(&callback, &state, options);
         }
+        return .{ .records_replayed = 0, .corrupted_records = 0, .errors = 0 };
+    }
+
+    /// Recover from WAL with default options
+    pub fn recover(self: *Self) !WAL_module.RecoveryResult {
+        return self.recoverWithOptions(.{});
     }
 
     pub fn nextSequence(self: *Self) u64 {
@@ -743,7 +811,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
             return value;
         }
 
-        // Check SSTables (newest first)
+        // Check SSTables (newest first) with optimized index
         for (self.sstables.items) |sst| {
             if (sst.bloom.contains(key)) {
                 if (try sst.read(key)) |value| {
@@ -894,8 +962,7 @@ test "LSMTree + WAL recover after crash" {
         defer tree.deinit();
 
         // Recover from WAL
-        try tree.recover();
-
+        _ = try tree.recover();
         // Verify all data is restored from WAL
         const val1 = try tree.get("key1");
         try std.testing.expect(val1 != null);
@@ -938,8 +1005,7 @@ test "LSMTree WAL delete replay" {
         var tree = try LSMTree.init(allocator, .{ .sst_dir = test_dir });
         defer tree.deinit();
 
-        try tree.recover();
-
+        _ = try tree.recover();
         // Key should not exist after delete was replayed
         const val = try tree.get("key1");
         try std.testing.expect(val == null);

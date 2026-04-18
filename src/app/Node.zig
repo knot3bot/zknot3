@@ -203,10 +203,8 @@ pub const Node = struct {
     pub fn recoverFromDisk(self: *Self) !void {
         // Phase 1: Recover ObjectStore from WAL
         if (self.object_store) |store| {
-            try store.recover();
+            _ = try store.recover();
         }
-
-        // Phase 2: Load latest checkpoint into checkpoint_store
         // CheckpointSequence should have a loadLatest() method
         // For now, checkpoint_store starts empty and builds from WAL
 

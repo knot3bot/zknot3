@@ -82,10 +82,11 @@ pub const Instruction = struct {
         vec_pack = 0x93,
         vec_unpack = 0x94,
         vec_swap = 0x95,
+        vec_borrow = 0x96,
 
         // Function call
         call = 0xA0,
-
+        call_indirect = 0xA1,
         // Unknown/Invalid
         invalid = 0xFF,
     };

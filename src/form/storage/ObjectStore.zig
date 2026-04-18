@@ -10,7 +10,7 @@ const std = @import("std");
 const core = @import("../../core.zig");
 const LSMTree = @import("LSMTree.zig");
 const IOUring = @import("IOUring.zig");
-
+const WAL_module = @import("WAL.zig");
 /// Object stored in the object store
 pub const Object = struct {
     id: core.ObjectID,
@@ -152,9 +152,14 @@ pub const ObjectStore = struct {
         self.allocator.destroy(self);
     }
 
-    /// Recover object store from WAL
-    pub fn recover(self: *Self) !void {
-        try self.lsm.recover();
+    /// Recover object store from WAL with recovery options
+    pub fn recoverWithOptions(self: *Self, options: WAL_module.RecoveryOptions) !WAL_module.RecoveryResult {
+        return try self.lsm.recoverWithOptions(options);
+    }
+
+    /// Recover object store from WAL with default options
+    pub fn recover(self: *Self) !WAL_module.RecoveryResult {
+        return self.recoverWithOptions(.{});
     }
 
     /// Get object by ID

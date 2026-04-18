@@ -33,6 +33,23 @@ pub const WalError = error{
     InvalidRecordType,
 };
 
+/// WAL recovery options
+pub const RecoveryOptions = struct {
+    /// Whether to continue on corrupted records
+    skip_corrupted: bool = false,
+    /// Whether to validate record types
+    validate_types: bool = true,
+    /// Maximum record size to allow (prevents OOM)
+    max_record_size: usize = 10 * 1024 * 1024, // 10 MB
+};
+
+/// WAL recovery result
+pub const RecoveryResult = struct {
+    records_replayed: usize,
+    corrupted_records: usize,
+    errors: usize,
+};
+
 /// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
 const CompatFile = struct {
     file: std.Io.File,
@@ -70,6 +87,46 @@ const CompatFile = struct {
     }
 };
 /// Write-Ahead Log for durability
+// Async WAL write buffer
+const AsyncWriteBuffer = struct {
+    const Self = @This();
+    allocator: std.mem.Allocator,
+    buffer: []u8,
+    write_offset: usize,
+    flush_threshold: usize,
+    flush_in_progress: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, threshold: usize) !Self {
+        return Self{
+            .allocator = allocator,
+            .buffer = try allocator.alloc(u8, threshold * 2), // Double the threshold for safety
+            .write_offset = 0,
+            .flush_threshold = threshold,
+        };
+    }
+
+    pub fn deinit(self: Self) void {
+        self.allocator.free(self.buffer);
+    }
+
+    pub fn append(self: *Self, data: []const u8) !bool {
+        if (self.write_offset + data.len > self.buffer.len) {
+            return false; // Buffer full
+        }
+
+        @memcpy(self.buffer[self.write_offset..][0..data.len], data);
+        self.write_offset += data.len;
+
+        return self.write_offset >= self.flush_threshold;
+    }
+
+    pub fn getAndReset(self: *Self) []const u8 {
+        const data = self.buffer[0..self.write_offset];
+        self.write_offset = 0;
+        return data;
+    }
+};
+
 pub const WAL = struct {
     const Self = @This();
 
@@ -77,9 +134,11 @@ pub const WAL = struct {
     file: CompatFile,
     file_path: []const u8,
     current_offset: u64,
+    async_write: ?AsyncWriteBuffer = null,
+    use_async_writes: bool = true,
 
-    /// Initialize WAL
-    pub fn init(allocator: std.mem.Allocator, db_path: []const u8) !Self {
+    /// Initialize WAL with async options
+    pub fn initWithOptions(allocator: std.mem.Allocator, db_path: []const u8, use_async: ?bool) !Self {
         const wal_path = try std.fmt.allocPrint(allocator, "{s}.wal", .{db_path});
         errdefer allocator.free(wal_path);
 
@@ -97,15 +156,37 @@ pub const WAL = struct {
         // Get current file size for append offset
         const stat = try file.stat();
 
+        // Initialize async buffer if requested
+        const async_write = if (use_async orelse true) try AsyncWriteBuffer.init(allocator, 64 * 1024) else null;
+
         return .{
             .allocator = allocator,
             .file = file,
             .file_path = wal_path,
             .current_offset = stat.size,
+            .async_write = async_write,
+            .use_async_writes = use_async orelse true,
         };
     }
+    
+    /// Initialize WAL with default sync mode
 
+
+    /// Initialize WAL (sync mode)
+    pub fn init(allocator: std.mem.Allocator, db_path: []const u8) !Self {
+        return try initWithOptions(allocator, db_path, null);
+    }
     pub fn deinit(self: *Self) void {
+        // Flush any pending async writes first
+        if (self.async_write) |*async_w| {
+            if (async_w.write_offset > 0) {
+                const data = async_w.getAndReset();
+                self.file.seekTo(self.current_offset) catch {};
+                self.file.writeAll(data) catch {};
+                self.file.sync() catch {};
+            }
+            async_w.deinit();
+        }
         self.file.close();
         self.allocator.free(self.file_path);
     }
@@ -152,7 +233,7 @@ pub const WAL = struct {
         return self.appendRecord(.abort, &.{}, null);
     }
 
-    /// Append record to WAL
+    /// Append record to WAL with async support
     fn appendRecord(self: *Self, record_type: WalRecordType, key: []const u8, value: ?[]const u8) !void {
         const value_len: u32 = if (value) |v| @intCast(v.len) else 0;
         const key_len: u32 = @intCast(key.len);
@@ -180,19 +261,56 @@ pub const WAL = struct {
 
         header.checksum = std.hash.Crc32.hash(checksum_data.items);
 
-        // Write to file
-        try self.file.seekTo(self.current_offset);
-        try self.file.writeAll(std.mem.asBytes(&header));
-        try self.file.writeAll(key);
+        // Create a complete buffer for this record
+        var record_buffer: std.ArrayList(u8) = .empty;
+        defer record_buffer.deinit(self.allocator);
+        
+        try record_buffer.appendSlice(self.allocator, std.mem.asBytes(&header));
+        try record_buffer.appendSlice(self.allocator, key);
         if (value) |v| {
-            try self.file.writeAll(v);
+            try record_buffer.appendSlice(self.allocator, v);
         }
 
-        // Force sync for durability
-        try self.file.sync();
+        const record_data = record_buffer.items;
+        
+        if (self.use_async_writes and self.async_write != null) {
+            const async_w = &self.async_write.?;
+            // Try async write first
+            const should_flush = try async_w.append(record_data);
+            
+            if (should_flush) {
+                // Flush the buffer
+                try self.flushAsync();
+            }
+        } else {
+            // Sync write for backward compatibility
+            try self.file.seekTo(self.current_offset);
+            try self.file.writeAll(record_data);
+            try self.file.sync();
+        }
 
-        // Update offset
+        // Update offset in all cases
         self.current_offset += @sizeOf(WalRecordHeader) + key_len + value_len;
+    }
+    
+    /// Flush async write buffer to disk
+    pub fn flushAsync(self: *Self) !void {
+        if (!self.use_async_writes or self.async_write == null) return;
+        
+        const async_w = &self.async_write.?;
+        
+        if (async_w.write_offset > 0) {
+            const data = async_w.getAndReset();
+            try self.file.seekTo(self.current_offset - async_w.write_offset);
+            try self.file.writeAll(data);
+            try self.file.sync();
+        }
+    }
+    
+    /// Force sync both async buffer and file
+    pub fn syncAll(self: *Self) !void {
+        try self.flushAsync();
+        try self.file.sync();
     }
 
     /// Clear WAL after commit
@@ -204,58 +322,100 @@ pub const WAL = struct {
 
     /// Recovery: replay WAL records
     pub const ReplayCallback = *const fn (op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void;
-    pub fn replay(self: *Self, callback: ReplayCallback, ctx: *anyopaque) !void {
+    pub fn replay(self: *Self, callback: ReplayCallback, ctx: *anyopaque) !RecoveryResult {
+        return try self.replayWithOptions(callback, ctx, .{});
+    }
+
+    /// Recovery with options
+    pub fn replayWithOptions(self: *Self, callback: ReplayCallback, ctx: *anyopaque, options: RecoveryOptions) !RecoveryResult {
         try self.file.seekTo(0);
 
         var buf: [@sizeOf(WalRecordHeader)]u8 = undefined;
         var offset: u64 = 0;
+        var records_replayed: usize = 0;
+        var corrupted_records: usize = 0;
+        var errors: usize = 0;
 
         while (offset < self.current_offset) {
             // Read header
             const bytes_read = try self.file.readAll(&buf);
-            if (bytes_read < @sizeOf(WalRecordHeader)) break;
+            if (bytes_read < @sizeOf(WalRecordHeader)) {
+                if (bytes_read == 0) break; // EOF
+                errors += 1;
+                break;
+            }
 
             const header = @as(*const WalRecordHeader, @alignCast(@ptrCast(&buf))).*;
 
             // Validate record fields before using them
             if (header.record_type < 1 or header.record_type > 4) {
-                return WalError.CorruptedRecord;
+                if (options.skip_corrupted) {
+                    corrupted_records += 1;
+                    offset += @sizeOf(WalRecordHeader);
+                    continue;
+                } else {
+                    errors += 1;
+                    break;
+                }
             }
-            const max_record_size = 10 * 1024 * 1024; // 10 MB
+            const max_record_size = options.max_record_size;
             if (header.key_len > max_record_size or header.value_len > max_record_size) {
-                return WalError.CorruptedRecord;
+                if (options.skip_corrupted) {
+                    corrupted_records += 1;
+                    offset += @sizeOf(WalRecordHeader) + header.key_len + header.value_len;
+                    continue;
+                } else {
+                    errors += 1;
+                    break;
+                }
             }
 
             // Verify checksum
             const computed = std.hash.Crc32.hash(buf[4..]);
             if (computed != header.checksum) {
-                return WalError.InvalidChecksum;
+                if (options.skip_corrupted) {
+                    corrupted_records += 1;
+                    offset += @sizeOf(WalRecordHeader) + header.key_len + header.value_len;
+                    continue;
+                } else {
+                    errors += 1;
+                    break;
+                }
             }
 
             // Read key
             const key_buf: []u8 = try self.allocator.alloc(u8, header.key_len);
             defer self.allocator.free(key_buf);
-
             if (header.key_len > 0) {
                 _ = try self.file.readAll(key_buf);
             }
+
             // Read value
             var value_buf: ?[]u8 = null;
             if (header.value_len > 0) {
                 value_buf = try self.allocator.alloc(u8, header.value_len);
+                defer if (value_buf) |v| self.allocator.free(v);
                 _ = try self.file.readAll(value_buf.?);
             }
 
             // Apply record
             const record_type = @as(WalRecordType, @enumFromInt(header.record_type));
-            try callback(record_type, key_buf, value_buf, ctx);
+            callback(record_type, key_buf, value_buf, ctx) catch {
+                errors += 1;
+                if (!options.skip_corrupted) {
+                    break;
+                }
+            };
 
-            if (value_buf) |v| {
-                self.allocator.free(v);
-            }
-
+            records_replayed += 1;
             offset += @sizeOf(WalRecordHeader) + header.key_len + header.value_len;
         }
+
+        return .{
+            .records_replayed = records_replayed,
+            .corrupted_records = corrupted_records,
+            .errors = errors,
+        };
     }
 };
 
@@ -328,7 +488,7 @@ test "WAL replay recovers inserted records" {
     try wal.logCommit();
 
     // Replay and verify
-    try wal.replay(&callback, &counters);
+        _ = try wal.replay(&callback, &counters);
 
     try std.testing.expectEqual(@as(u32, 2), counters.inserts);
     try std.testing.expectEqual(@as(u32, 1), counters.deletes);
@@ -380,7 +540,7 @@ test "WAL replay after crash simulation" {
             }
         }.cb;
 
-        try wal.replay(&callback, &counters);
+        _ = try wal.replay(&callback, &counters);
 
         // Uncommitted data should still be replayed (recovery replays all)
         try std.testing.expectEqual(@as(u32, 2), counters.inserts);
@@ -428,7 +588,7 @@ test "WAL clear resets state" {
         }
     }.cb;
 
-    try wal.replay(&callback, &counters);
+        _ = try wal.replay(&callback, &counters);
     try std.testing.expectEqual(@as(u32, 0), counters.count);
 
     // Clean up

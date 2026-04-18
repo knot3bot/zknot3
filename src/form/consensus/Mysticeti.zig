@@ -4,6 +4,7 @@ const std = @import("std");
 const core = @import("../../core.zig");
 const Quorum = @import("Quorum.zig");
 const Signature = @import("../../property/Signature.zig").Ed25519;
+const MysticetiSerialization = @import("MysticetiSerialization.zig");
 
 pub const Round = struct {
     value: u64,
@@ -386,6 +387,281 @@ pub const Mysticeti = struct {
             }
         }
         return highest;
+    }
+
+    /// Serialize a block using optimized protocol
+    pub fn serializeBlock(block: Block, allocator: std.mem.Allocator) ![]u8 {
+        return MysticetiSerialization.serializeBlock(block, allocator);
+    }
+
+    /// Deserialize a block using optimized protocol
+    pub fn deserializeBlock(data: []const u8, allocator: std.mem.Allocator) !Block {
+        return MysticetiSerialization.deserializeBlock(data, allocator);
+    }
+
+    /// Serialize blocks in batch for efficient transmission
+    pub fn serializeBlocksBatch(blocks: []const Block, allocator: std.mem.Allocator) ![]u8 {
+        return MysticetiSerialization.serializeBlocksBatch(blocks, allocator);
+    }
+
+    /// Deserialize blocks from batch transmission
+    pub fn deserializeBlocksBatch(data: []const u8, allocator: std.mem.Allocator) ![]Block {
+        return MysticetiSerialization.deserializeBlocksBatch(data, allocator);
+    }
+
+    /// Serialize a vote using optimized protocol
+    pub fn serializeVote(vote: Vote, allocator: std.mem.Allocator) ![]u8 {
+        return MysticetiSerialization.serializeVote(vote, allocator);
+    }
+
+    /// Deserialize a vote using optimized protocol
+    pub fn deserializeVote(data: []const u8, allocator: std.mem.Allocator) !Vote {
+        return MysticetiSerialization.deserializeVote(data, allocator);
+    }
+
+    /// Serialize votes in batch for efficient transmission
+    pub fn serializeVotesBatch(votes: []const Vote, allocator: std.mem.Allocator) ![]u8 {
+        return MysticetiSerialization.serializeVotesBatch(votes, allocator);
+    }
+
+    /// Deserialize votes from batch transmission
+    pub fn deserializeVotesBatch(data: []const u8, allocator: std.mem.Allocator) ![]Vote {
+        return MysticetiSerialization.deserializeVotesBatch(data, allocator);
+    }
+
+    /// Serialize a commit certificate
+    pub fn serializeCommitCertificate(cert: CommitCertificate, allocator: std.mem.Allocator) ![]u8 {
+        return MysticetiSerialization.serializeCommitCertificate(cert, allocator);
+    }
+
+    /// Deserialize a commit certificate
+    pub fn deserializeCommitCertificate(data: []const u8, allocator: std.mem.Allocator) !CommitCertificate {
+        return MysticetiSerialization.deserializeCommitCertificate(data, allocator);
+    }
+
+    /// Batch process votes for efficiency
+    pub fn processVotesBatch(self: *Self, votes: []const Vote) !void {
+        // Create a work queue for parallel processing
+        const threads = std.math.min(8, votes.len);
+        const chunk_size = (votes.len + threads - 1) / threads;
+
+        // Spawn worker threads
+        var thread_handles: [8]std.Thread = undefined;
+        var thread_count: usize = 0;
+
+        for (0..threads) |thread_idx| {
+            const start = thread_idx * chunk_size;
+            const end = std.math.min((thread_idx + 1) * chunk_size, votes.len);
+            
+            if (start >= votes.len) break;
+
+            const thread_slice = votes[start..end];
+            
+            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
+                fn worker(self_ptr: *Self, slice: []const Vote) !void {
+                    for (slice) |vote| {
+                        try self_ptr.processVote(vote);
+                    }
+                }
+            }.worker, .{ self, thread_slice });
+            
+            thread_count += 1;
+        }
+
+        // Wait for all threads to finish
+        for (0..thread_count) |i| {
+            thread_handles[i].join();
+        }
+    }
+
+    /// Check if a block has reached quorum for commit
+    pub fn hasQuorum(self: *Self, block: *Block) bool {
+        const stake = self.computeStake(&block.votes);
+        const threshold = (self.total_stake * 2) / 3 + 1;
+        return stake >= threshold;
+    }
+
+    /// Get all blocks that have reached quorum for commit
+    pub fn getQuorumBlocks(self: *Self) ![]*Block {
+        var quorum_blocks = try std.ArrayList(*Block).initCapacity(self.allocator, 10);
+        errdefer quorum_blocks.deinit();
+
+        // Collect all blocks into a list first
+        var all_blocks = try std.ArrayList(*Block).initCapacity(self.allocator, 100);
+        errdefer all_blocks.deinit();
+
+        var round_it = self.dag.iterator();
+        while (round_it.next()) |round_entry| {
+            var block_it = round_entry.value_ptr.iterator();
+            while (block_it.next()) |block_entry| {
+                try all_blocks.append(block_entry.value_ptr);
+            }
+        }
+
+        // Check quorum in parallel
+        const threads = std.math.min(8, all_blocks.items.len);
+        const chunk_size = (all_blocks.items.len + threads - 1) / threads;
+
+        const channel = try std.Thread.Channel([]*Block).init(self.allocator, threads);
+        defer channel.deinit();
+
+        var thread_handles: [8]std.Thread = undefined;
+        var thread_count: usize = 0;
+
+        for (0..threads) |thread_idx| {
+            const start = thread_idx * chunk_size;
+            const end = std.math.min((thread_idx + 1) * chunk_size, all_blocks.items.len);
+            
+            if (start >= all_blocks.items.len) break;
+
+            const thread_slice = all_blocks.items[start..end];
+            
+            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
+                fn worker(self_ptr: *Self, slice: []*Block, sender: std.Thread.Channel([]*Block).Sender) !void {
+                    var local_blocks = try std.ArrayList(*Block).initCapacity(self_ptr.allocator, slice.len);
+                    errdefer local_blocks.deinit();
+
+                    for (slice) |block| {
+                        if (self_ptr.hasQuorum(block)) {
+                            try local_blocks.append(block);
+                        }
+                    }
+
+                    try sender.send(local_blocks.toOwnedSlice());
+                }
+            }.worker, .{ self, thread_slice, channel.sender() });
+            
+            thread_count += 1;
+        }
+
+        for (0..thread_count) |_| {
+            const blocks = channel.receive();
+            errdefer self.allocator.free(blocks);
+            
+            for (blocks) |block| {
+                try quorum_blocks.append(block);
+            }
+            
+            self.allocator.free(blocks);
+        }
+
+        for (0..thread_count) |i| {
+            thread_handles[i].join();
+        }
+
+        return quorum_blocks.toOwnedSlice();
+    }
+
+    /// Efficient block lookup by digest
+    pub fn findBlockByDigest(self: *Self, digest: [32]u8) ?*Block {
+        var round_it = self.dag.iterator();
+        while (round_it.next()) |round_entry| {
+            var block_it = round_entry.value_ptr.iterator();
+            while (block_it.next()) |block_entry| {
+                if (std.mem.eql(u8, &block_entry.value_ptr.digest, &digest)) {
+                    return block_entry.value_ptr;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Try to commit multiple blocks in parallel for efficiency
+    pub fn tryCommitMultiple(self: *Self, rounds_blocks: []struct { round: Round, block_digest: [32]u8 }) ![]CommitCertificate {
+        var certificates = try std.ArrayList(CommitCertificate).initCapacity(self.allocator, rounds_blocks.len);
+        errdefer certificates.deinit();
+
+        // Create a work queue for parallel processing
+        const threads = std.math.min(8, rounds_blocks.len);
+        const chunk_size = (rounds_blocks.len + threads - 1) / threads;
+
+        // Use a channel to communicate results between threads
+        const channel = try std.Thread.Channel([]CommitCertificate).init(self.allocator, threads);
+        defer channel.deinit();
+
+        // Spawn worker threads
+        var thread_handles: [8]std.Thread = undefined;
+        var thread_count: usize = 0;
+
+        for (0..threads) |thread_idx| {
+            const start = thread_idx * chunk_size;
+            const end = std.math.min((thread_idx + 1) * chunk_size, rounds_blocks.len);
+            
+            if (start >= rounds_blocks.len) break;
+
+            const thread_slice = rounds_blocks[start..end];
+            
+            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
+                fn worker(self_ptr: *Self, slice: []const struct { round: Round, block_digest: [32]u8 }, sender: std.Thread.Channel([]CommitCertificate).Sender) !void {
+                    var local_certs = try std.ArrayList(CommitCertificate).initCapacity(self_ptr.allocator, slice.len);
+                    errdefer local_certs.deinit();
+
+                    for (slice) |rb| {
+                        if (try self_ptr.tryCommit(rb.round, rb.block_digest)) |cert| {
+                            try local_certs.append(cert);
+                        }
+                    }
+
+                    try sender.send(local_certs.toOwnedSlice());
+                }
+            }.worker, .{ self, thread_slice, channel.sender() });
+            
+            thread_count += 1;
+        }
+
+        // Collect results from all threads
+        for (0..thread_count) |_| {
+            const certs = channel.receive();
+            errdefer self.allocator.free(certs);
+            
+            for (certs) |cert| {
+                try certificates.append(cert);
+            }
+            
+            self.allocator.free(certs);
+        }
+
+        // Wait for all threads to finish
+        for (0..thread_count) |i| {
+            thread_handles[i].join();
+        }
+
+        return certificates.toOwnedSlice();
+    }
+
+    /// Receive and process a batch of votes for efficiency
+    pub fn receiveVotesBatch(self: *Self, votes: []const Vote) !void {
+        // Create a work queue for parallel processing
+        const threads = std.math.min(8, votes.len);
+        const chunk_size = (votes.len + threads - 1) / threads;
+
+        // Spawn worker threads
+        var thread_handles: [8]std.Thread = undefined;
+        var thread_count: usize = 0;
+
+        for (0..threads) |thread_idx| {
+            const start = thread_idx * chunk_size;
+            const end = std.math.min((thread_idx + 1) * chunk_size, votes.len);
+            
+            if (start >= votes.len) break;
+
+            const thread_slice = votes[start..end];
+            
+            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
+                fn worker(self_ptr: *Self, slice: []const Vote) !void {
+                    for (slice) |vote| {
+                        try self_ptr.receiveVote(vote);
+                    }
+                }
+            }.worker, .{ self, thread_slice });
+            
+            thread_count += 1;
+        }
+
+        // Wait for all threads to finish
+        for (0..thread_count) |i| {
+            thread_handles[i].join();
+        }
     }
 
     pub fn getReferences(self: Self) ![]const Round {

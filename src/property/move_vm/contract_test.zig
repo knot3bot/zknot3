@@ -241,3 +241,121 @@ test "Move VM: Knot3 token balance simulation" {
     try std.testing.expect(result.success);
     try std.testing.expectEqual(@as(i64, 800), result.return_value.?.data.int);
 }
+test "Move VM: ERC20-like token contract - total supply" {
+    const allocator = std.testing.allocator;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+
+    // Bytecode: return total supply (1000000)
+    const bytecode = &.{ 
+        0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x40, // 1000000
+        0x01, // ret
+    };
+
+    var verifier = BytecodeVerifier.init(allocator);
+    var module = try verifier.verify(bytecode);
+    defer module.deinit(allocator);
+
+    const result = try interpreter.execute(module);
+    try std.testing.expect(result.success);
+    try std.testing.expect(result.return_value != null);
+    try std.testing.expect(result.return_value.?.tag == .integer);
+    try std.testing.expectEqual(@as(i64, 1000000), result.return_value.?.data.int);
+}
+
+
+test "Move VM: ERC20-like token contract - balanceOf" {
+    const allocator = std.testing.allocator;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+
+    // Bytecode: return balance of address (0x1234... = 500)
+    const bytecode = &.{ 
+        0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // 500
+        0x01, // ret
+    };
+
+    var verifier = BytecodeVerifier.init(allocator);
+    var module = try verifier.verify(bytecode);
+    defer module.deinit(allocator);
+
+    const result = try interpreter.execute(module);
+    try std.testing.expect(result.success);
+    try std.testing.expect(result.return_value != null);
+    try std.testing.expect(result.return_value.?.tag == .integer);
+    try std.testing.expectEqual(@as(i64, 500), result.return_value.?.data.int);
+}
+
+
+test "Move VM: ERC20-like token contract - transfer" {
+    const allocator = std.testing.allocator;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+
+    // Bytecode: sender_balance = 500; amount = 200; new_balance = sender_balance - amount
+    const bytecode = &.{ 
+        0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // sender_balance = 500
+        0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, // amount = 200
+        0x41, // subtract
+        0x01, // ret
+    };
+
+    var verifier = BytecodeVerifier.init(allocator);
+    var module = try verifier.verify(bytecode);
+    defer module.deinit(allocator);
+
+    const result = try interpreter.execute(module);
+    try std.testing.expect(result.success);
+    try std.testing.expect(result.return_value != null);
+    try std.testing.expect(result.return_value.?.tag == .integer);
+    try std.testing.expectEqual(@as(i64, 300), result.return_value.?.data.int);
+}
+
+
+test "Move VM: ERC20-like token contract - approve and transferFrom" {
+    const allocator = std.testing.allocator;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+
+    // Bytecode: allowance = 1000; amount = 500; remaining = allowance - amount
+    const bytecode = &.{ 
+        0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE8, // allowance = 1000
+        0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // amount = 500
+        0x41, // subtract
+        0x01, // ret
+    };
+
+    var verifier = BytecodeVerifier.init(allocator);
+    var module = try verifier.verify(bytecode);
+    defer module.deinit(allocator);
+
+    const result = try interpreter.execute(module);
+    try std.testing.expect(result.success);
+    try std.testing.expect(result.return_value != null);
+    try std.testing.expect(result.return_value.?.tag == .integer);
+    try std.testing.expectEqual(@as(i64, 500), result.return_value.?.data.int);
+}
