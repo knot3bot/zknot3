@@ -16,6 +16,17 @@ services:
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   zknot3-validator-2:
     image: zknot3:latest
@@ -34,6 +45,17 @@ services:
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   zknot3-validator-3:
     image: zknot3:latest
@@ -52,6 +74,17 @@ services:
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   zknot3-validator-4:
     image: zknot3:latest
@@ -70,6 +103,17 @@ services:
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.5
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   zknot3-fullnode:
     image: zknot3:latest
@@ -90,6 +134,17 @@ services:
       - zknot3-validator-4
     networks:
       zknot3-net:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   zknot3-data-1:
