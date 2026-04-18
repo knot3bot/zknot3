@@ -14,8 +14,8 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # 配置
-ZKNOT3_BIN="${ZKNOT3_BIN:-zknot3}"
-ZKNOT3_CONFIG="${ZKNOT3_CONFIG:-/etc/zknot3/config.toml}"
+ZKNOT3_BIN="${ZKNOT3_BIN:-zknot3-node}"
+ZKNOT3_CONFIG="${ZKNOT3_CONFIG:-/etc/zknot3/config.json}"
 ZKNOT3_DATA="${ZKNOT3_DATA:-/var/lib/zknot3}"
 
 # 日志函数
@@ -80,8 +80,10 @@ show_version() {
     echo "${CYAN}zknot3 CLI${NC} v1.0.0"
     if command -v "$ZKNOT3_BIN" &> /dev/null; then
         echo "Node binary: $ZKNOT3_BIN"
+        echo "Node version:"
+        "$ZKNOT3_BIN" --version 2>/dev/null || echo "N/A"
     else
-        log_warning "zknot3 二进制文件未找到"
+        log_warning "zknot3-node 二进制文件未找到"
     fi
 }
 
@@ -261,7 +263,13 @@ health_check() {
     # 提取 RPC 端口
     local rpc_port=9000
     if [ -f "$ZKNOT3_CONFIG" ]; then
-        rpc_port=$(grep -A 5 -B 0 "rpc_port" "$ZKNOT3_CONFIG" 2>/dev/null | grep -o "[0-9]\+" | head -1 || echo 9000)
+        # 尝试从 JSON 配置提取
+        if command -v python3 &> /dev/null; then
+            rpc_port=$(python3 -c "import json; f=open('$ZKNOT3_CONFIG'); c=json.load(f); print(c.get('network',{}).get('rpc_port',9000))" 2>/dev/null || echo 9000)
+        else
+            # 简单 grep
+            rpc_port=$(grep -A 5 -B 0 "rpc_port" "$ZKNOT3_CONFIG" 2>/dev/null | grep -o "[0-9]\+" | head -1 || echo 9000)
+        fi
     fi
     
     log_debug "RPC 端口: $rpc_port"
@@ -310,7 +318,7 @@ config_manage() {
                 return 1
             fi
             log_info "验证配置文件..."
-            # 基本验证
+            # 基本验证 - 检查是否有必要字段
             if grep -q "rpc_port" "$ZKNOT3_CONFIG" && grep -q "data_dir" "$ZKNOT3_CONFIG"; then
                 log_success "配置文件有效"
             else

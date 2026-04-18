@@ -33,6 +33,7 @@ ZIG_VERSION="0.16.0"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/zknot3"
 CONFIG_DIR="/etc/zknot3"
+BINARY_NAME="zknot3-node"
 
 # 显示帮助信息
 show_help() {
@@ -91,7 +92,7 @@ check_dependencies() {
     fi
     
     # 检查 librocksdb
-    if ! ldconfig -p | grep -q librocksdb; then
+    if ! ldconfig -p 2>/dev/null | grep -q librocksdb; then
         missing_deps+=("librocksdb-dev")
     fi
     
@@ -171,7 +172,8 @@ build_zknot3() {
         install_zig
     fi
     
-    # ReleaseSafe 构建
+    # ReleaseSafe 构建（推荐用于生产）
+    log_info "使用 ReleaseSafe 模式构建..."
     zig build -Doptimize=ReleaseSafe
     
     log_success "zknot3 构建完成"
@@ -188,20 +190,30 @@ install_zknot3() {
     
     # 复制二进制文件
     if [ -f "zig-out/bin/zknot3-node-safe" ]; then
-        cp "zig-out/bin/zknot3-node-safe" "$INSTALL_DIR/zknot3"
-        chmod +x "$INSTALL_DIR/zknot3"
-    elif [ -f "zig-out/bin/zknot3" ]; then
-        cp "zig-out/bin/zknot3" "$INSTALL_DIR/zknot3"
-        chmod +x "$INSTALL_DIR/zknot3"
+        cp "zig-out/bin/zknot3-node-safe" "$INSTALL_DIR/$BINARY_NAME"
+        chmod +x "$INSTALL_DIR/$BINARY_NAME"
+        log_success "已安装: $INSTALL_DIR/$BINARY_NAME"
+    elif [ -f "zig-out/bin/zknot3-node-fast" ]; then
+        cp "zig-out/bin/zknot3-node-fast" "$INSTALL_DIR/$BINARY_NAME"
+        chmod +x "$INSTALL_DIR/$BINARY_NAME"
+        log_success "已安装: $INSTALL_DIR/$BINARY_NAME"
+    elif [ -f "zig-out/bin/$BINARY_NAME" ]; then
+        cp "zig-out/bin/$BINARY_NAME" "$INSTALL_DIR/$BINARY_NAME"
+        chmod +x "$INSTALL_DIR/$BINARY_NAME"
+        log_success "已安装: $INSTALL_DIR/$BINARY_NAME"
     else
         log_error "未找到编译的二进制文件，请先构建"
         exit 1
     fi
     
-    # 复制配置文件
+    # 复制配置文件 (支持 JSON 和 TOML)
     if [ -f "deploy/config/production.toml" ]; then
         cp "deploy/config/production.toml" "$CONFIG_DIR/config.toml"
-        log_success "配置文件已复制到 $CONFIG_DIR"
+        log_success "TOML 配置已复制到 $CONFIG_DIR"
+    fi
+    if [ -f "deploy/docker/configs/validator-1.json" ]; then
+        cp "deploy/docker/configs/validator-1.json" "$CONFIG_DIR/config.json"
+        log_success "JSON 配置已复制到 $CONFIG_DIR"
     fi
     
     # 设置权限
@@ -225,9 +237,9 @@ uninstall_zknot3() {
     fi
     
     # 删除二进制文件
-    if [ -f "$INSTALL_DIR/zknot3" ]; then
-        rm "$INSTALL_DIR/zknot3"
-        log_success "已删除: $INSTALL_DIR/zknot3"
+    if [ -f "$INSTALL_DIR/$BINARY_NAME" ]; then
+        rm "$INSTALL_DIR/$BINARY_NAME"
+        log_success "已删除: $INSTALL_DIR/$BINARY_NAME"
     fi
     
     # 删除配置文件（可选）
@@ -263,34 +275,39 @@ setup_completion() {
         local comp_dir="$HOME/.zsh/completions"
         mkdir -p "$comp_dir"
         
-        cat > "$comp_dir/_zknot3" << 'EOF'
-#compdef zknot3
+        cat > "$comp_dir/_$BINARY_NAME" << 'EOF'
+#compdef zknot3-node
 
-_zknot3() {
+_zknot3-node() {
     local -a commands
     commands=(
-        'start:Start the zknot3 node'
-        'stop:Stop the zknot3 node'
-        'status:Check node status'
-        'config:Configuration management'
-        'help:Show help'
+        '--help:Show help message'
+        '--version:Show version information'
+        '--dev:Start in development mode'
+        '--validator:Enable validator mode'
+        '--config:Load configuration from file'
+        '--rpc-port:Set RPC server port'
+        '--p2p-port:Set P2P server port'
+        '--log-level:Set log level'
+        '--data-dir:Set data directory'
     )
     
     _arguments -C \
-        '1: :->command' \
-        '*:: :->args'
-    
-    case $state in
-        command)
-            _describe 'command' commands
-            ;;
-    esac
+        '(-h --help)'{-h,--help}'[Show help message]' \
+        '(-v --version)'{-v,--version}'[Show version information]' \
+        '(-d --dev)'{-d,--dev}'[Start in development mode]' \
+        '--validator[Enable validator mode]' \
+        '(-c --config)'{-c,--config}'[Load configuration from file]:file:_files' \
+        '--rpc-port[Set RPC server port]:port:_numbers' \
+        '--p2p-port[Set P2P server port]:port:_numbers' \
+        '--log-level[Set log level]:level:(error warn info debug trace)' \
+        '--data-dir[Set data directory]:directory:_directories'
 }
 
-_zknot3 "$@"
+_zknot3-node "$@"
 EOF
         
-        log_success "Zsh 补全已安装到 $comp_dir/_zknot3"
+        log_success "Zsh 补全已安装到 $comp_dir/_$BINARY_NAME"
         log_info "请添加 'fpath+=($comp_dir)' 到你的 ~/.zshrc"
         
     elif [ -n "$BASH_VERSION" ]; then
@@ -301,27 +318,39 @@ EOF
             mkdir -p "$comp_dir"
         fi
         
-        cat > "$comp_dir/zknot3" << 'EOF'
-_zknot3() {
+        cat > "$comp_dir/$BINARY_NAME" << 'EOF'
+_zknot3-node() {
     local cur prev opts
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
-    commands="start stop status config help"
+    opts="--help --version --dev --validator --config --rpc-port --p2p-port --log-level --data-dir"
     
     case "${prev}" in
-        zknot3)
-            COMPREPLY=( $(compgen -W "${commands}" -- ${cur}) )
+        --config)
+            COMPREPLY=( $(compgen -f -- ${cur}) )
+            return 0
+            ;;
+        --data-dir)
+            COMPREPLY=( $(compgen -d -- ${cur}) )
+            return 0
+            ;;
+        --log-level)
+            COMPREPLY=( $(compgen -W "error warn info debug trace" -- ${cur}) )
+            return 0
+            ;;
+        zknot3-node)
+            COMPREPLY=( $(compgen -W "${opts}" -- ${cur}) )
             return 0
             ;;
     esac
 }
-complete -F _zknot3 zknot3
+complete -F _zknot3-node zknot3-node
 EOF
         
-        log_success "Bash 补全已安装到 $comp_dir/zknot3"
-        log_info "请添加 'source $comp_dir/zknot3' 到你的 ~/.bashrc"
+        log_success "Bash 补全已安装到 $comp_dir/$BINARY_NAME"
+        log_info "请添加 'source $comp_dir/$BINARY_NAME' 到你的 ~/.bashrc"
     fi
 }
 
@@ -411,10 +440,10 @@ main() {
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo
     log_info "使用方法:"
-    echo "  zknot3 --config $CONFIG_DIR/config.toml"
+    echo "  $BINARY_NAME --config $CONFIG_DIR/config.toml"
     echo
     log_info "查看帮助:"
-    echo "  zknot3 --help"
+    echo "  $BINARY_NAME --help"
     echo
 }
 
