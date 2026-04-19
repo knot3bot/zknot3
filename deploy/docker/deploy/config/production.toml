@@ -1,0 +1,58 @@
+# Production Configuration for zknot3 Validator Node
+
+[network]
+bind_address = "0.0.0.0"
+rpc_port = 9000
+p2p_enabled = true
+p2p_address = "0.0.0.0"
+p2p_port = 8080
+max_connections = 1024
+connection_timeout = 30
+
+[consensus]
+validator_enabled = true
+min_validator_stake = 1000000000    # 1 KNOT3
+min_validators = 4
+target_validators = 100
+max_validators = 500
+epoch_duration_secs = 86400          # 24 hours
+quorum_threshold = 200             # basis points (2/3)
+
+[storage]
+data_dir = "/var/lib/zknot3"
+object_store_path = "objects"
+checkpoint_store_path = "checkpoints"
+cache_size = 10737418240           # 10GB
+enable_compaction = true
+compaction_interval_secs = 3600     # 1 hour
+
+[vm]
+max_gas_budget = 10000000
+min_gas_price = 1000
+max_bytecode_size = 65536
+base_instruction_gas = 1
+storage_gas_per_byte = 10
+
+[authority]
+# Configure with your validator keys
+address = "127.0.0.1"
+port = 8080
+signing_key = null                  # Set via environment or secret
+network_key = null                  # Set via environment or secret
+stake = 0                           # Set actual stake amount
+name = "Validator"
+description = "zknot3 Production Validator"
+
+[metrics]
+enabled = true
+scrape_interval_secs = 15
+enable_profiling = false
+profile_interval_secs = 60
+
+[logging]
+level = 2                           # 0=err, 1=warn, 2=info, 3=debug, 4=trace
+enable_file = true
+file_path = "/var/log/zknot3/zknot3.log"
+enable_stderr = true
+structured = false
+ansi_colors = true

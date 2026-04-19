@@ -11,12 +11,11 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install Zig 0.16.0 (pre-built for aarch64 Linux)
-RUN curl -fsSL https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz | tar xJ --strip-components=1 -C /opt
+# Copy Zig tarball from build context (pre-downloaded)
+COPY zig-bin/zig-aarch64-linux-0.16.0.tar.xz /tmp/zig.tar.xz
+RUN tar xJf /tmp/zig.tar.xz --strip-components=1 -C /opt && rm /tmp/zig.tar.xz
 
 # Add Zig to PATH
-
-
 ENV PATH="/opt:$PATH"
 
 # Copy source code
@@ -39,26 +38,18 @@ RUN apt-get update && apt-get install -y \
 # Copy binary from build stage
 COPY --from=builder /src/zig-out/bin/zknot3-node-safe /usr/local/bin/zknot3
 
-# Create non-root user
-RUN useradd -m -s /bin/bash zknot3
-
 # Create data directory
-RUN mkdir -p /var/lib/zknot3 && chown zknot3:zknot3 /var/lib/zknot3
+RUN mkdir -p /var/lib/zknot3
 
 # Copy default config
 COPY deploy/config/production.toml /var/lib/zknot3/config.toml
-COPY deploy/config/production.toml /etc/zknot3/config.toml
 
 # Set working directory
 WORKDIR /var/lib/zknot3
-
-# Switch to non-root user (disabled for debugging)
-# USER zknot3
 
 # Expose ports
 EXPOSE 9000 8080 8081
 
 # Run
 ENTRYPOINT ["/usr/local/bin/zknot3"]
-CMD ["--config", "/etc/zknot3/config.toml"]
-HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 CMD curl -fs http://localhost:8080/health || exit 1
+CMD ["--config", "/var/lib/zknot3/config.toml"]
