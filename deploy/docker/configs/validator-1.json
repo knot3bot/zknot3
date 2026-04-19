@@ -7,9 +7,9 @@
     "p2p_port": 8080,
     "local_peer_id": "validator-1",
     "bootstrap_peers": [
-      "validator-2:8080",
-      "validator-3:8080",
-      "validator-4:8080"
+      "172.20.0.3:8080",
+      "172.20.0.4:8080",
+      "172.20.0.5:8080"
     ],
     "max_connections": 256
   },

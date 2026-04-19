@@ -324,7 +324,9 @@ pub fn main(init: std.process.Init) !void {
         // Accept P2P connection if enabled
         if (node.getP2PServer()) |p2p| {
             p2p.acceptOne() catch |err| {
-                if (err != error.WouldBlock) {
+                // WouldBlock = no connection pending (expected)
+                // Unexpected = io_uring returns this when no connection ready instead of WouldBlock
+                if (err != error.WouldBlock and err != error.Unexpected) {
                     Log.err("[MAIN] P2P acceptOne error: {s}", .{@errorName(err)});
                 }
             };
