@@ -567,12 +567,12 @@ pub const AsyncHTTPServer = struct {
                     return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}").toString(self.allocator);
                 };
 
-const id_val = parsed.value.object.get("id") orelse null;
-const id_str: []const u8 = if (id_val != null and id_val.* == .integer) blk: {
-    const v = id_val.*.integer;
-    break :blk std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch "null";
-} else "null";
-defer if (id_val != null and id_val.* == .integer) self.allocator.free(id_str);
+                const id_val = parsed.value.object.get("id") orelse null;
+                const id_str: []const u8 = if (id_val != null and id_val.* == .integer) blk: {
+                    const v = id_val.*.integer;
+                    break :blk std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch "null";
+                } else "null";
+                defer if (id_val != null and id_val.* == .integer) self.allocator.free(id_str);
 
                 // Route to method handler
                 const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_getObject"))
