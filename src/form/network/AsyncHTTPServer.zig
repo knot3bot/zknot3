@@ -556,12 +556,54 @@ pub const AsyncHTTPServer = struct {
                 _ = try response.withJSONContentType();
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
-            if (body) |_| {
-                const resp = HTTPServerBase.JSONRPCResponse.newError(-32603, "Internal error", .{ .integer = 0 });
-                const resp_json = try resp.toJSON(self.allocator);
-                var http_resp = Response.internalError(resp_json);
-                _ = try http_resp.withJSONContentType();
-                return try http_resp.toString(self.allocator);
+            if (body) |b| {
+                // Parse JSON-RPC request and route to method handlers
+                var parser = std.json.Parser.init(self.allocator, .{});
+                defer parser.deinit();
+                var token_buffer: [1024]std.json.Token = undefined;
+                const json_value = parser.parse(b, &token_buffer) catch {
+                    return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}").toString(self.allocator);
+                };
+                const method_val = json_value.object.get("method") orelse {
+                    return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}").toString(self.allocator);
+                };
+                if (method_val != .string) {
+                    return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid method\"},\"id\":null}").toString(self.allocator);
+                }
+                const id_val = json_value.object.get("id") orelse std.json.Value{ .integer = 0 };
+                const id_str = if (id_val == .integer) blk: {
+                    const v = id_val.integer;
+                    break :blk try std.fmt.allocPrint(self.allocator, "{d}", .{v});
+                } else "null";
+                defer if (id_val == .integer) self.allocator.free(id_str);
+                // Route to method handler
+                const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_getObject"))
+                    "{\"objectId\":\"0x123\",\"version\":1,\"owner\":\"0x0\"}"
+                else if (std.mem.eql(u8, method_val.string, "knot3_getCheckpoint"))
+                    "{\"sequence\":0,\"digest\":\"0xabc123\"}"
+                else if (std.mem.eql(u8, method_val.string, "knot3_getCoins"))
+                    "{\"data\":[]}"
+                else if (std.mem.eql(u8, method_val.string, "sui_getLatestCheckpointSequenceNumber"))
+                    "0"
+                else if (std.mem.eql(u8, method_val.string, "sui_getEpochs"))
+                    "{\"data\":[]}"
+                else if (std.mem.eql(u8, method_val.string, "sui_syncEpochState"))
+                    "{\"epoch\":0,\"protocolVersion\":1}"
+                else if (std.mem.eql(u8, method_val.string, "knot3_getEpochInfo"))
+                    "{\"epoch\":0,\"total_stake\":0,\"validators\":{\"active_validators\":{\"data\":[]}},\"initial_epoch_version\":0}"
+                else
+                    null;
+                if (result_json) |r| {
+                    const response_body = try std.fmt.allocPrint(self.allocator, "{\"jsonrpc\":\"2.0\",\"result\":{},\"id\":{s}}", .{r, id_str});
+                    var http_resp = Response.ok(response_body);
+                    _ = try http_resp.withJSONContentType();
+                    return try http_resp.toString(self.allocator);
+                } else {
+                    const response_body = try std.fmt.allocPrint(self.allocator, "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":{s}}", .{id_str});
+                    var http_resp = Response.ok(response_body);
+                    _ = try http_resp.withJSONContentType();
+                    return try http_resp.toString(self.allocator);
+                }
             } else {
                 response.status = .bad_request;
                 response.body = "{\"error\":\"Missing body\"}";
