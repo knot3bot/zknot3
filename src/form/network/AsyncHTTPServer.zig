@@ -593,12 +593,17 @@ defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
                     null;
 
                 if (result_json) |r| {
-                    const response_body = try std.fmt.allocPrint(self.allocator, "{\"jsonrpc\":\"2.0\",\"result\":{},\"id\":{s}}", .{r, id_str});
+                    // r is a JSON string literal like "{\"objectId\":\"0x123\"}"
+                    // Use concatenation to avoid format string conflicts
+                    const header = "{\"jsonrpc\":\"2.0\",\"result\":";
+                    const footer = ",\"id\":";
+                    const response_body = try std.mem.concat(self.allocator, u8, &.{ header, r, footer, id_str, "}" });
                     var http_resp = Response.ok(response_body);
                     _ = try http_resp.withJSONContentType();
                     return try http_resp.toString(self.allocator);
                 } else {
-                    const response_body = try std.fmt.allocPrint(self.allocator, "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":{s}}", .{id_str});
+                    const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":";
+                    const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                     var http_resp = Response.ok(response_body);
                     _ = try http_resp.withJSONContentType();
                     return try http_resp.toString(self.allocator);
