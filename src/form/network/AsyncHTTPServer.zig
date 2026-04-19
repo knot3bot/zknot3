@@ -557,25 +557,23 @@ pub const AsyncHTTPServer = struct {
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (body) |b| {
-                // Parse JSON-RPC request and route to method handlers
-                var parser = std.json.Parser.init(self.allocator, .{});
-                defer parser.deinit();
-                var token_buffer: [1024]std.json.Token = undefined;
-                const json_value = parser.parse(b, &token_buffer) catch {
+                // Parse JSON-RPC request using parseFromSlice with Value
+                const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, b, .{ .ignore_unknown_fields = true }) catch {
                     return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}").toString(self.allocator);
                 };
-                const method_val = json_value.object.get("method") orelse {
+                defer parsed.deinit();
+
+                const method_val = parsed.value.object.get("method") orelse {
                     return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}").toString(self.allocator);
                 };
-                if (method_val != .string) {
-                    return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid method\"},\"id\":null}").toString(self.allocator);
-                }
-                const id_val = json_value.object.get("id") orelse std.json.Value{ .integer = 0 };
-                const id_str = if (id_val == .integer) blk: {
-                    const v = id_val.integer;
-                    break :blk try std.fmt.allocPrint(self.allocator, "{d}", .{v});
-                } else "null";
-                defer if (id_val == .integer) self.allocator.free(id_str);
+
+const id_val = parsed.value.object.get("id") orelse null;
+const id_str: []const u8 = if (id_val != null and id_val.* == .integer) blk: {
+    const v = id_val.*.integer;
+    break :blk std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch "null";
+} else "null";
+defer if (id_val != null and id_val.* == .integer) self.allocator.free(id_str);
+
                 // Route to method handler
                 const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_getObject"))
                     "{\"objectId\":\"0x123\",\"version\":1,\"owner\":\"0x0\"}"
@@ -593,6 +591,7 @@ pub const AsyncHTTPServer = struct {
                     "{\"epoch\":0,\"total_stake\":0,\"validators\":{\"active_validators\":{\"data\":[]}},\"initial_epoch_version\":0}"
                 else
                     null;
+
                 if (result_json) |r| {
                     const response_body = try std.fmt.allocPrint(self.allocator, "{\"jsonrpc\":\"2.0\",\"result\":{},\"id\":{s}}", .{r, id_str});
                     var http_resp = Response.ok(response_body);
