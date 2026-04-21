@@ -239,16 +239,11 @@ pub const P2PServer = struct {
         // Set short read timeout so recvMessage doesn't block the event loop
         setPeerTimeout(peer_conn.conn);
 
-        // For legacy mode without auth, generate deterministic peer key
+        // For legacy mode without auth, generate random peer key using CSPRNG
         if (self.validator_key == null) {
             var peer_key: [32]u8 = undefined;
-            std.mem.writeInt(u64, peer_key[0..8], peer_id, .big);
-            const addr_bytes = std.mem.asBytes(&conn.socket.address);
-            const addr_len = @min(addr_bytes.len, 24);
-            @memcpy(peer_key[8..][0..addr_len], addr_bytes[0..addr_len]);
-            if (addr_len < 24) {
-                @memset(peer_key[8 + addr_len ..], 0);
-            }
+            // SECURITY FIX: Use CSPRNG instead of deterministic pointer address
+            @import("io_instance").io.random(std.mem.asBytes(&peer_key));
             peer_conn.peer_key = peer_key;
         }
 
@@ -279,8 +274,8 @@ pub const P2PServer = struct {
 
         if (self.validator_key == null) {
             var peer_key: [32]u8 = undefined;
-            std.mem.writeInt(u64, peer_key[0..8], peer_id, .big);
-            @memset(peer_key[8..], 0);
+            // SECURITY FIX: Use CSPRNG for QUIC peer keys too
+            @import("io_instance").io.random(std.mem.asBytes(&peer_key));
             peer_conn.peer_key = peer_key;
         }
 

@@ -46,20 +46,19 @@ pub const Transaction = struct {
     }
 
     /// Verify the transaction signature
-    /// Returns true if signature is valid or if transaction has no signature (for testing)
+    /// SECURITY: Returns false if no signature is provided.
+    /// Previously returned true for unsigned txs - signature bypass vulnerability!
     pub fn verifySignature(self: Self) bool {
-        // If no signature provided, skip verification (allows testing)
-        const sig = self.signature orelse return true;
+        // SECURITY FIX: No signature = verification FAILS
+        const sig = self.signature orelse return false;
         const pk = self.public_key orelse return false;
 
         const tx_digest = self.digest();
-
         const pub_key = Signature.PublicKey{ .bytes = pk };
         const sig_struct = Signature.Signature{
             .bytes = sig,
             .scheme = .ed25519,
         };
-
         return sig_struct.verify(pub_key, &tx_digest);
     }
 };
