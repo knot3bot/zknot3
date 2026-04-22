@@ -7,3 +7,4 @@ pub const Version = @import("core/VersionLattice.zig").Version;
 pub const Ownership = @import("core/Ownership.zig").Ownership;
 pub const Errors = @import("core/Errors.zig");
 pub const OwnershipTag = @import("core/Ownership.zig").OwnershipTag;
+pub const Bls = @import("core/crypto/Bls.zig");

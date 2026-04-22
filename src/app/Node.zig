@@ -13,11 +13,43 @@ const Mysticeti = @import("../form/consensus/Mysticeti.zig");
 const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
 const P2PServer_module = @import("../form/network/P2PServer.zig");
 const P2PServer = P2PServer_module.P2PServer;
+const TxnAdmission = @import("TxnAdmission.zig");
+const BlockCommit = @import("BlockCommit.zig");
+const BlockExecution = @import("BlockExecution.zig");
+const TxExecutionCoordinator = @import("TxExecutionCoordinator.zig");
+const NodeStatsCoordinator = @import("NodeStatsCoordinator.zig");
+const ConsensusIngressCoordinator = @import("ConsensusIngressCoordinator.zig");
+const NodeLifecycleCoordinator = @import("NodeLifecycleCoordinator.zig");
+const NodeMetricsCoordinator = @import("NodeMetricsCoordinator.zig");
+const ObjectStoreCoordinator = @import("ObjectStoreCoordinator.zig");
+const NodeInfoCoordinator = @import("NodeInfoCoordinator.zig");
+const TxnPoolCoordinator = @import("TxnPoolCoordinator.zig");
+const CommitCoordinator = @import("CommitCoordinator.zig");
+const VoteIngressResult = @import("ConsensusIngressCoordinator.zig").VoteIngressResult;
+const MainnetExtensionHooks = @import("MainnetExtensionHooks.zig");
+const wal_mod = @import("../form/storage/WAL.zig");
+const WAL = wal_mod.WAL;
+const WalRecordType = wal_mod.WalRecordType;
+const SigCrypto = @import("../property/crypto/Signature.zig");
+const Bls = core.Bls;
+
+fn appendM4CheckpointProofSig(
+    allocator: std.mem.Allocator,
+    pairs: *std.ArrayList(MainnetExtensionHooks.ProofSigPair),
+    sk: [32]u8,
+    proof_bytes: []const u8,
+) !void {
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(sk);
+    const pk = kp.public_key.toBytes();
+    var vid: [32]u8 = undefined;
+    var h = std.crypto.hash.Blake3.init(.{});
+    h.update(&pk);
+    h.final(&vid);
+    const sig = try SigCrypto.Ed25519.sign(sk, proof_bytes);
+    try pairs.append(allocator, .{ .validator_id = vid, .signature = sig });
+}
 
 const RuntimeMetrics = @import("../metric/RuntimeMetrics.zig");
-const builtin = @import("builtin");
-
-extern "c" fn sysctl(name: [*]const c_int, namelen: c_uint, oldp: ?*anyopaque, oldlenp: ?*usize, newp: ?*anyopaque, newlen: usize) c_int;
 /// Node state
 pub const NodeState = enum {
     initializing,
@@ -40,6 +72,8 @@ pub const NodeError = error{
     InvalidSequence,
     BlockNotFound,
     QuorumNotReached,
+    InvalidSignature,
+    MissingSigningKey,
 };
 
 /// Node dependencies
@@ -74,6 +108,9 @@ pub const Node = struct {
     txn_pool: *pipeline.TxnPool,
     executor: *pipeline.Executor,
     runtime_metrics: ?*RuntimeMetrics.RuntimeMetricsCollector = null,
+    mainnet_hooks: *MainnetExtensionHooks.Manager,
+    /// M4 protocol WAL (separate from LSM); optional if init fails.
+    m4_wal: ?*WAL = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -100,12 +137,19 @@ pub const Node = struct {
         self_ptr.execution_results = std.AutoArrayHashMapUnmanaged([32]u8, ExecutionResult).empty;
         self_ptr.sender_sequence = std.AutoArrayHashMapUnmanaged([32]u8, u64).empty;
         self_ptr.stats = .{};
-        self_ptr.started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        self_ptr.started_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         self_ptr.p2p_server = null;
         self_ptr.consensus_round = 0;
         self_ptr.txn_pool = txn_pool;
         self_ptr.executor = exec;
         self_ptr.runtime_metrics = try RuntimeMetrics.RuntimeMetricsCollector.init(allocator, 100);
+        self_ptr.mainnet_hooks = try MainnetExtensionHooks.Manager.init(allocator);
+        errdefer self_ptr.mainnet_hooks.deinit();
+        self_ptr.m4_wal = null;
         errdefer {
             self_ptr.runtime_metrics.?.deinit();
             self_ptr.runtime_metrics.?.allocator.destroy(self_ptr.runtime_metrics.?);
@@ -119,6 +163,17 @@ pub const Node = struct {
             config.storage.data_dir,
         );
 
+        const m4_base = try std.fmt.allocPrint(allocator, "{s}/m4_state", .{config.storage.data_dir});
+        defer allocator.free(m4_base);
+        if (WAL.init(allocator, m4_base)) |wal_val| {
+            const m4_wal_ptr = try allocator.create(WAL);
+            m4_wal_ptr.* = wal_val;
+            self_ptr.m4_wal = m4_wal_ptr;
+            self_ptr.mainnet_hooks.setM4Wal(m4_wal_ptr);
+        } else |err| {
+            Log.warn("M4 WAL init failed: {s}", .{@errorName(err)});
+        }
+
         if (config.network.p2p_enabled) {
             const p2p_config = P2PServer_module.P2PServerConfig{
                 .bind_address = config.network.p2p_address,
@@ -126,6 +181,11 @@ pub const Node = struct {
                 .bootstrap_peers = config.network.bootstrap_peers,
                 .dial_bootstrap = true,
                 .validator_key = config.authority.signing_key,
+                .allow_unauthenticated_handshake = config.allow_unauthenticated_p2p,
+                .max_messages_per_second_per_peer = config.network.p2p_max_messages_per_peer_per_second,
+                .max_messages_per_second_per_type = config.network.p2p_max_messages_per_type_per_second,
+                .peer_score_ban_threshold = config.network.p2p_peer_score_ban_threshold,
+                .peer_ban_seconds = config.network.p2p_peer_ban_seconds,
             };
 
             self_ptr.p2p_server = try P2PServer.init(allocator, p2p_config);
@@ -133,7 +193,6 @@ pub const Node = struct {
 
         return self_ptr;
     }
-
 
     pub fn deinit(self: *Self) void {
         self.state = .shutting_down;
@@ -151,6 +210,12 @@ pub const Node = struct {
         self.checkpoint_store.deinit();
         self.txn_pool.deinit();
         self.executor.deinit();
+        self.mainnet_hooks.setM4Wal(null);
+        if (self.m4_wal) |w| {
+            w.deinit();
+            self.allocator.destroy(w);
+        }
+        self.mainnet_hooks.deinit();
         if (self.runtime_metrics) |rm| {
             rm.deinit();
             self.allocator.destroy(rm);
@@ -160,17 +225,7 @@ pub const Node = struct {
     }
 
     pub fn start(self: *Self) !void {
-        if (self.state != .initializing) return error.InvalidState;
-        try self.validateConfig();
-        self.state = .starting;
-        // Recover state from disk before going live
-        try self.recoverFromDisk();
-        // Start P2P server if enabled
-        if (self.p2p_server) |server| {
-            try server.start();
-            Log.info("P2P server listening on 0.0.0.0:{}", .{self.config.network.p2p_port});
-        }
-        self.state = .running;
+        try NodeLifecycleCoordinator.runStart(self);
     }
 
     /// Validate node configuration before starting
@@ -201,30 +256,55 @@ pub const Node = struct {
 
     /// Recover node state from disk (checkpoint + WAL)
     pub fn recoverFromDisk(self: *Self) !void {
-        // Phase 1: Recover ObjectStore from WAL
-        if (self.object_store) |store| {
-            _ = try store.recover();
-        }
-        // CheckpointSequence should have a loadLatest() method
-        // For now, checkpoint_store starts empty and builds from WAL
+        try NodeLifecycleCoordinator.recoverFromDisk(self.object_store);
+    }
 
-        // Phase 3: Recover committed blocks from checkpoint history
-        // This would involve loading block certs from checkpoint store
+    /// Replay M4 extension WAL into `mainnet_hooks` after object-store recovery.
+    /// Temporarily clears `m4_wal` on the hooks so replay does not append duplicate records.
+    pub fn replayMainnetM4Wal(self: *Self) !void {
+        const w = self.m4_wal orelse return;
+        self.mainnet_hooks.setM4Wal(null);
+        defer self.mainnet_hooks.setM4Wal(w);
 
-        Log.info("Node recovered from disk", .{});
+        const Cb = struct {
+            fn onReplay(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) !void {
+                _ = key;
+                const node: *Self = @ptrCast(@alignCast(ctx));
+                switch (op) {
+                    .m4_stake_operation,
+                    .m4_governance_proposal,
+                    .m4_governance_status,
+                    .m4_equivocation_evidence,
+                    .m4_state_snapshot,
+                    .m4_epoch_advance,
+                    .m4_validator_set_rotate,
+                    => {
+                        const payload = value orelse return error.InvalidWalPayload;
+                        try node.mainnet_hooks.replayWalExtension(op, payload);
+                    },
+                    else => {},
+                }
+            }
+        };
+
+        _ = try w.replayWithOptions(Cb.onReplay, self, .{
+            .max_record_type = 20,
+            .validate_types = true,
+            .skip_corrupted = false,
+        });
     }
 
     pub fn getNodeInfo(self: *Self) NodeInfo {
         return .{
             .version = "0.1.0",
             .state = @tagName(self.state),
-            .uptime_seconds = @intCast(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } - self.started_at),
+            .uptime_seconds = NodeMetricsCoordinator.computeUptimeSeconds(self.started_at),
             .object_store_count = self.execution_results.count(),
             .checkpoint_sequence = self.checkpoint_store.getLatestSequence(),
             .pending_transactions = self.getPendingTxnCount(),
             .committed_blocks = self.committed_blocks.count(),
             .consensus_round = self.consensus_round,
-            .blocks_committed_total = self.stats.blocks_committed,
+            .blocks_committed_total = NodeStatsCoordinator.blocksCommitted(&self.stats),
         };
     }
 
@@ -240,21 +320,13 @@ pub const Node = struct {
         blocks_committed_total: u64,
     };
 
-    pub const ValidatorInfo = struct {
-        id: [32]u8,
-        stake: u128,
-        voting_power: u128,
-        is_active: bool,
-    };
+    pub const ValidatorInfo = NodeInfoCoordinator.ValidatorInfo;
 
     pub fn getTriSourceMetrics(self: *Self) RuntimeMetrics.TriSourceMetrics {
         const peer_count = if (self.p2p_server) |p2p| p2p.peerCount() else 0;
         const max_peers = self.config.network.max_connections;
-        const network_util = if (max_peers > 0)
-            @min(1.0, @as(f64, @floatFromInt(peer_count)) / @as(f64, @floatFromInt(max_peers)))
-        else
-            0.0;
-        const storage_util = @min(1.0, @as(f64, @floatFromInt(self.execution_results.count())) / 10000.0);
+        const network_util = NodeMetricsCoordinator.computeNetworkUtil(peer_count, max_peers);
+        const storage_util = NodeMetricsCoordinator.computeStorageUtil(self.execution_results.count());
 
         const resource = RuntimeMetrics.ResourceMetrics{
             .cpu_util = 0.5,
@@ -267,26 +339,14 @@ pub const Node = struct {
             .unique_types = self.execution_results.count(),
             .total_objects = self.execution_results.count() * 2,
             .unique_tx_types = @min(100, self.txn_history.count()),
-            .total_transactions = self.stats.transactions_executed,
+            .total_transactions = NodeStatsCoordinator.txExecuted(&self.stats),
             .ownership_entropy = 2.0,
         };
 
-        var successful: u64 = 0;
-        var total_checked: u64 = 0;
-        var it = self.execution_results.iterator();
-        while (it.next()) |entry| {
-            total_checked += 1;
-            if (entry.value_ptr.status == .success) successful += 1;
-        }
-        const error_rate = if (total_checked > 0)
-            1.0 - (@as(f64, @floatFromInt(successful)) / @as(f64, @floatFromInt(total_checked)))
-        else
-            0.0;
-
-        const tps = if (self.stats.transactions_executed > 0 and self.stats.blocks_committed > 0)
-            @as(f64, @floatFromInt(self.stats.transactions_executed)) / @as(f64, @floatFromInt(self.stats.blocks_committed))
-        else
-            0.0;
+        const summary = NodeMetricsCoordinator.summarizeExecutionResults(&self.execution_results);
+        const error_rate = NodeMetricsCoordinator.computeErrorRate(summary);
+        const stats_snap = NodeStatsCoordinator.snapshot(&self.stats);
+        const tps = NodeMetricsCoordinator.computeTps(stats_snap.transactions_executed, stats_snap.blocks_committed);
 
         const user = RuntimeMetrics.UserMetrics{
             .latency_p50 = 20.0,
@@ -305,71 +365,15 @@ pub const Node = struct {
     }
 
     pub fn getValidatorList(self: *Self, allocator: std.mem.Allocator) ![]ValidatorInfo {
-        if (self.deps.epoch_bridge) |bridge| {
-            const quorum = bridge.quorum;
-            var list = try std.ArrayList(ValidatorInfo).initCapacity(allocator, quorum.members.items.len);
-            errdefer list.deinit(allocator);
-            for (quorum.members.items) |member| {
-                const power = bridge.getValidatorVotingPower(member.id);
-                try list.append(allocator, .{
-                    .id = member.id,
-                    .stake = member.stake,
-                    .voting_power = power,
-                    .is_active = member.is_active,
-                });
-            }
-            return try list.toOwnedSlice(allocator);
-        }
-        return &[_]ValidatorInfo{};
+        return NodeInfoCoordinator.getValidatorList(allocator, self.deps.epoch_bridge);
     }
 
     pub fn getSystemInfo(self: *Self) SystemInfo {
         _ = self;
-        const cpu_count = std.Thread.getCpuCount() catch 1;
-        return .{
-            .cpu_count = cpu_count,
-            .total_memory_bytes = getTotalSystemMemory(),
-            .cpu_usage_percent = 0.0,
-        };
+        return NodeInfoCoordinator.getSystemInfo();
     }
 
-    pub const SystemInfo = struct {
-        cpu_count: usize,
-        total_memory_bytes: u64,
-        cpu_usage_percent: f64,
-    };
-
-    fn getTotalSystemMemory() u64 {
-        if (builtin.target.os.tag == .linux) {
-            var buf: [1024]u8 = undefined;
-            const file = std.Io.Dir.cwd().openFile(@import("io_instance").io, "/proc/meminfo", .{}) catch return 0;
-            defer file.close(@import("io_instance").io);
-            var reader = file.reader(@import("io_instance").io, &.{},);
-            const n = reader.interface.readSliceShort(&buf) catch return 0;
-            const content = buf[0..n];
-            const prefix = "MemTotal:";
-            if (std.mem.indexOf(u8, content, prefix)) |idx| {
-                const line_start = idx + prefix.len;
-                const line_end = std.mem.indexOf(u8, content[line_start..], " kB") orelse return 0;
-                const num_str = std.mem.trim(u8, content[line_start..line_start + line_end], " ");
-                const kb = std.fmt.parseInt(u64, num_str, 10) catch return 0;
-                return kb * 1024;
-            }
-            return 0;
-        } else if (builtin.target.os.tag == .macos) {
-            const CTL_HW: c_int = 6;
-            const HW_MEMSIZE: c_int = 24;
-            const mib = &[_]c_int{ CTL_HW, HW_MEMSIZE };
-            var memsize: u64 = 0;
-            var len: usize = @sizeOf(u64);
-
-            if (sysctl(mib.ptr, mib.len, &memsize, &len, null, 0) == 0) {
-                return memsize;
-            }
-            return 0;
-        }
-        return 0;
-    }
+    pub const SystemInfo = NodeInfoCoordinator.SystemInfo;
 
     pub fn proposeBlock(self: *Self, payload: []const u8) !?*Mysticeti.Block {
         if (self.state != .running) return error.NotRunning;
@@ -386,156 +390,133 @@ pub const Node = struct {
 
     pub fn advanceRound(self: *Self) void {
         self.consensus_round += 1;
-        if (self.consensus_round > self.stats.highest_round) {
-            self.stats.highest_round = self.consensus_round;
-        }
+        NodeStatsCoordinator.onRoundAdvanced(&self.stats, self.consensus_round);
     }
 
     pub fn receiveBlock(self: *Self, block_data: []const u8) !void {
         if (self.state != .running) return error.NotRunning;
-        var block = try Mysticeti.Block.create(
-            .{0} ** 32,
-            Mysticeti.Round{ .value = 0 },
-            block_data,
-            &.{},
+        try ConsensusIngressCoordinator.receiveBlock(
             self.allocator,
+            &self.pending_blocks,
+            &self.committed_blocks,
+            block_data,
         );
-        if (self.pending_blocks.contains(block.digest) or self.committed_blocks.contains(block.digest)) {
-            block.deinit(self.allocator);
-            return;
-        }
-        try self.pending_blocks.put(self.allocator, block.digest, block);
     }
 
-    pub fn receiveVote(self: *Self, vote_data: []const u8) !void {
+    pub fn receiveVote(self: *Self, vote_data: []const u8) !VoteIngressResult {
         if (self.state != .running) return error.NotRunning;
-
-        // Deserialize vote
-        const vote = Mysticeti.Vote.deserialize(self.allocator, vote_data) catch return;
-
-        // Verify vote signature
-        if (!vote.verifySignature()) {
-            Log.warn("Rejected vote with invalid signature from voter", .{});
-            return;
-        }
-
-        // Find the block this vote is for
-        if (self.pending_blocks.getPtr(vote.block_digest)) |block| {
-            // Add vote if not already present from this voter
-            if (!block.votes.contains(vote.voter)) {
-                try block.votes.put(self.allocator, vote.voter, vote);
-            }
-        } else if (self.committed_blocks.getPtr(vote.block_digest)) |block| {
-            // Vote on already committed block - add to committed block's votes too
-            if (!block.votes.contains(vote.voter)) {
-                try block.votes.put(self.allocator, vote.voter, vote);
-            }
-        }
-        // If block not found, vote is orphaned (this is normal in DAG consensus)
+        return try ConsensusIngressCoordinator.receiveVote(
+            self.allocator,
+            &self.pending_blocks,
+            &self.committed_blocks,
+            vote_data,
+        );
     }
-
 
     pub fn tryCommitBlocks(self: *Self) !?Mysticeti.CommitCertificate {
         if (self.state != .running) return error.NotRunning;
-        var it = self.pending_blocks.iterator();
-        while (it.next()) |entry| {
-            const block = entry.value_ptr.*;
-            if (block.votes.count() >= self.config.consensus.vote_quorum) {
-                var exec_results: []ExecutionResult = &[_]ExecutionResult{};
-                var exec_results_owned = false;
-                if (self.executeBlockTransactions(&block)) |results| {
-                    exec_results = results;
-                    exec_results_owned = true;
+
+        const QuorumExecCtx = struct {
+            node: *Self,
+        };
+        var quorum_ctx = QuorumExecCtx{ .node = self };
+        const onQuorumBlock = struct {
+            fn call(ctx: *anyopaque, block: *const Mysticeti.Block) void {
+                const typed_ctx = @as(*QuorumExecCtx, @ptrCast(@alignCast(ctx)));
+                if (typed_ctx.node.executeBlockTransactions(block)) |exec_results| {
+                    typed_ctx.node.allocator.free(exec_results);
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
-                }
-                if (exec_results_owned) {
-                    self.allocator.free(exec_results);
-                }
-                if (self.executeBlockTransactions(&block)) |results| {
-                    exec_results = results;
-                } else |err| {
-                    Log.err("Failed to execute block transactions: {}", .{err});
-                    exec_results = &[_]ExecutionResult{};
-                }
-                self.allocator.free(exec_results);
-
-                const cert = Mysticeti.CommitCertificate{
-                    .block_digest = block.digest,
-                    .round = block.round,
-                    .quorum_stake = @as(u128, @intCast(block.votes.count())) * 1000,
-                    .confidence = 0.95,
-                };
-                if (self.pending_blocks.get(block.digest)) |committed| {
-                    _ = self.pending_blocks.swapRemove(block.digest);
-                    try self.committed_blocks.put(self.allocator, block.digest, committed);
-
-                    // Prune old committed blocks to prevent unbounded growth
-                    while (self.committed_blocks.count() > self.config.consensus.max_committed_blocks) {
-                        const first_key = self.committed_blocks.keys()[0];
-                        if (self.committed_blocks.getPtr(first_key)) |block_ptr| {
-                            block_ptr.*.deinit(self.allocator);
-                        }
-                        _ = self.committed_blocks.swapRemove(first_key);
-                    }
-
-                    if (block.round.value > self.stats.highest_round) {
-                        self.stats.highest_round = block.round.value;
-                    }
-                    self.stats.blocks_committed += 1;
-                    return cert;
                 }
             }
+        }.call;
+
+        if (try CommitCoordinator.tryCommitOne(
+            self.allocator,
+            &self.pending_blocks,
+            &self.committed_blocks,
+            self.config.consensus.vote_quorum,
+            self.config.consensus.max_committed_blocks,
+            onQuorumBlock,
+            &quorum_ctx,
+        )) |outcome| {
+            NodeStatsCoordinator.onBlockCommitted(&self.stats, outcome.promoted_round);
+            return outcome.cert;
         }
+
         return null;
+    }
+
+    /// Drains up to `max_batch` quorum blocks in a single call, invoking
+    /// `on_cert` for each committed certificate. Returns the number of blocks
+    /// committed. Used by the adaptive commit loop to avoid one-by-one
+    /// drain + scheduler hops under bursty load.
+    pub fn tryCommitBlocksBatch(
+        self: *Self,
+        max_batch: usize,
+        on_cert_ctx: *anyopaque,
+        on_cert: *const fn (ctx: *anyopaque, cert: Mysticeti.CommitCertificate) anyerror!void,
+    ) !usize {
+        if (self.state != .running) return error.NotRunning;
+
+        const QuorumExecCtx = struct {
+            node: *Self,
+        };
+        var quorum_ctx = QuorumExecCtx{ .node = self };
+        const onQuorumBlock = struct {
+            fn call(ctx: *anyopaque, block: *const Mysticeti.Block) void {
+                const typed_ctx = @as(*QuorumExecCtx, @ptrCast(@alignCast(ctx)));
+                if (typed_ctx.node.executeBlockTransactions(block)) |exec_results| {
+                    typed_ctx.node.allocator.free(exec_results);
+                } else |err| {
+                    Log.err("Failed to execute block transactions: {}", .{err});
+                }
+            }
+        }.call;
+
+        const OutcomeCtx = struct {
+            node: *Self,
+            user_ctx: *anyopaque,
+            user_cb: *const fn (ctx: *anyopaque, cert: Mysticeti.CommitCertificate) anyerror!void,
+        };
+        var outcome_ctx = OutcomeCtx{
+            .node = self,
+            .user_ctx = on_cert_ctx,
+            .user_cb = on_cert,
+        };
+        const onOutcome = struct {
+            fn call(raw: *anyopaque, outcome: CommitCoordinator.CommitOutcome) anyerror!void {
+                const c = @as(*OutcomeCtx, @ptrCast(@alignCast(raw)));
+                NodeStatsCoordinator.onBlockCommitted(&c.node.stats, outcome.promoted_round);
+                try c.user_cb(c.user_ctx, outcome.cert);
+            }
+        }.call;
+
+        return try CommitCoordinator.tryCommitBatch(
+            self.allocator,
+            &self.pending_blocks,
+            &self.committed_blocks,
+            self.config.consensus.vote_quorum,
+            self.config.consensus.max_committed_blocks,
+            onQuorumBlock,
+            &quorum_ctx,
+            max_batch,
+            onOutcome,
+            &outcome_ctx,
+        );
     }
 
     pub fn executeBlockTransactions(self: *Self, block: *const Mysticeti.Block) ![]ExecutionResult {
         if (self.state != .running) return error.NotRunning;
-        var results = try std.ArrayList(ExecutionResult).initCapacity(self.allocator, 16);
-        errdefer results.deinit(self.allocator);
-
-        // Payload: 32-byte sender addresses packed together
-        const sender_len = 32;
-        var offset: usize = 0;
-
-        while (offset + sender_len <= block.payload.len) : (offset += sender_len) {
-            var sender: [32]u8 = undefined;
-            @memcpy(&sender, block.payload[offset..offset + sender_len]);
-
-            const tx = pipeline.Transaction{
-                .sender = sender,
-                .inputs = &.{},
-                .program = &.{},
-                .gas_budget = 1000,
-                .sequence = 0,
-                .signature = null,
-                .public_key = null,
-            };
-
-            const result = self.executor.execute(tx) catch |err| {
-                try results.append(self.allocator, .{
-                    .digest = sender,
-                    .status = if (err == error.OutOfGas) .out_of_gas else .invalid_bytecode,
-                    .gas_used = 0,
-                    .output_objects = &.{},
-                });
-                continue;
-            };
-
-            try results.append(self.allocator, result);
-
-            const receipt = pipeline.TransactionReceipt{
-                .digest = result.digest,
-                .status = if (result.status == .success) .executed else .failed,
-                .gas_used = result.gas_used,
-                .sender = sender,
-            };
-            try self.txn_history.put(self.allocator, result.digest, receipt);
-        }
-
-        self.stats.transactions_executed += results.items.len;
-        return try results.toOwnedSlice(self.allocator);
+        var ctx = BlockExecution.ExecuteContext{
+            .allocator = self.allocator,
+            .executor = self.executor,
+            .txn_history = &self.txn_history,
+        };
+        const results = try BlockExecution.executePayloadTransactions(&ctx, block.payload);
+        const gas_sum = NodeStatsCoordinator.gasSum(results);
+        NodeStatsCoordinator.onTransactionsExecuted(&self.stats, results.len, gas_sum);
+        return results;
     }
 
     pub fn commitBlock(self: *Self, block: *const Mysticeti.Block) !?ExecutionResult {
@@ -551,8 +532,6 @@ pub const Node = struct {
             .output = &.{},
         };
         try self.execution_results.put(self.allocator, block.digest, summary);
-        self.stats.transactions_executed += @intCast(results.len);
-        self.stats.total_gas_used += total_gas;
         return summary;
     }
 
@@ -572,58 +551,70 @@ pub const Node = struct {
         parallelism: usize = 0,
     };
 
-    pub const NodeStats = struct {
-        transactions_executed: u64 = 0,
-        total_gas_used: u64 = 0,
-        blocks_committed: u64 = 0,
-        highest_round: u64 = 0,
-    };
+    // NodeStats uses atomic counters so that the commit loop (writer) and
+    // metrics/HTTP handlers (readers) can race without torn reads or data
+    // races. All reads go through `NodeStatsCoordinator.snapshot` /
+    // `NodeStatsCoordinator.<field>` helpers.
+    pub const NodeStats = NodeStatsCoordinator.NodeStatsAtomic;
 
-pub fn executeTransaction(self: *Self, tx: pipeline.Transaction) !ExecutionResult {
-if (self.state != .running) return error.NotRunning;
-        const digest = tx.digest();
+    fn txAdmissionContext(self: *Self) TxnAdmission.Context {
+        return .{
+            .is_running = self.state == .running,
+            .txn_history = &self.txn_history,
+            .execution_results = &self.execution_results,
+            .sender_sequence = &self.sender_sequence,
+            .max_nonce_ahead = 32,
+        };
+    }
 
-        // Replay protection: reject already-executed transactions
-        if (self.txn_history.contains(digest) or self.execution_results.contains(digest)) {
-            return error.TransactionAlreadyExecuted;
-        }
+    fn hasSeenTransaction(self: *Self, digest: [32]u8) bool {
+        const ctx = self.txAdmissionContext();
+        return TxnAdmission.hasSeenTransaction(&ctx, digest);
+    }
 
-        // Sequence number check
-        const expected_sequence = self.sender_sequence.get(tx.sender) orelse 0;
-        if (tx.sequence != expected_sequence) {
-            return error.InvalidSequence;
-        }
-const result = ExecutionResult{
-.digest = digest,
-.status = .success,
-.gas_used = tx.gas_budget / 2,
-.output = &.{},
-};
-try self.execution_results.put(self.allocator, digest, result);
-const receipt = pipeline.TransactionReceipt{
-.digest = digest,
-.status = .success,
-.gas_used = result.gas_used,
-.sender = tx.sender,
-};
-        try self.txn_history.put(self.allocator, digest, receipt);
+    fn validateIncomingTransaction(self: *Self, tx: pipeline.Transaction) NodeError![32]u8 {
+        const ctx = self.txAdmissionContext();
+        return TxnAdmission.validateIncomingTransaction(&ctx, tx) catch |err| switch (err) {
+            error.NotRunning => error.NotRunning,
+            error.InvalidSignature => error.InvalidSignature,
+            error.TransactionAlreadyExecuted => error.TransactionAlreadyExecuted,
+            error.NonceTooOld => error.InvalidSequence,
+            error.NonceTooNew => error.InvalidSequence,
+        };
+    }
 
-        // Increment sender sequence
-        try self.sender_sequence.put(self.allocator, tx.sender, expected_sequence + 1);
-self.stats.transactions_executed += 1;
-self.stats.total_gas_used += result.gas_used;
-return result;
-}
+    fn txExecContext(self: *Self) TxExecutionCoordinator.Context {
+        return .{
+            .allocator = self.allocator,
+            .execution_results = &self.execution_results,
+            .txn_history = &self.txn_history,
+            .sender_sequence = &self.sender_sequence,
+        };
+    }
+
+    pub fn executeTransaction(self: *Self, tx: pipeline.Transaction) !ExecutionResult {
+        if (self.state != .running) return error.NotRunning;
+        var ctx = self.txExecContext();
+        const result = TxExecutionCoordinator.executeOne(&ctx, tx) catch |err| switch (err) {
+            error.TransactionAlreadyExecuted => return error.TransactionAlreadyExecuted,
+            error.InvalidSequence => return error.InvalidSequence,
+            else => return err,
+        };
+        NodeStatsCoordinator.onTransactionsExecuted(&self.stats, 1, result.gas_used);
+        return result;
+    }
 
     pub fn executeTransactionBatch(self: *Self, txs: []const pipeline.Transaction) ![]ExecutionResult {
         if (self.state != .running) return error.NotRunning;
-        var results = std.ArrayList(ExecutionResult).init(self.allocator);
-        errdefer results.deinit();
-        for (txs) |tx| {
-            const result = try self.executeTransaction(tx);
-            try results.append(result);
-        }
-        return results.toOwnedSlice();
+        var ctx = self.txExecContext();
+        const results = TxExecutionCoordinator.executeBatch(&ctx, txs) catch |err| switch (err) {
+            error.TransactionAlreadyExecuted => return error.TransactionAlreadyExecuted,
+            error.InvalidSequence => return error.InvalidSequence,
+            else => return err,
+        };
+        const gas_sum = NodeStatsCoordinator.gasSum(results);
+        NodeStatsCoordinator.onTransactionsExecuted(&self.stats, results.len, gas_sum);
+        return results;
     }
 
     pub fn getTransactionReceipt(self: *Self, digest: [32]u8) ?pipeline.TransactionReceipt {
@@ -635,41 +626,41 @@ return result;
     }
 
     pub fn getExecutorStats(self: *Self) ExecutorStats {
-        return ExecutorStats{
-            .transactions_executed = self.stats.transactions_executed,
-            .total_gas_used = self.stats.total_gas_used,
-            .parallelism = self.config.parallel_execution,
+        const snap = NodeStatsCoordinator.snapshot(&self.stats);
+        const stats = NodeMetricsCoordinator.buildExecutorStats(
+            snap.transactions_executed,
+            snap.total_gas_used,
+            self.config.parallel_execution,
+        );
+        return .{
+            .transactions_executed = stats.transactions_executed,
+            .total_gas_used = stats.total_gas_used,
+            .parallelism = stats.parallelism,
         };
     }
 
-pub fn submitTransaction(self: *Self, tx: pipeline.Transaction, gas_price: u64) !void {
-        if (self.state != .running) return error.NotRunning;
-        const digest = tx.digest();
-        if (self.txn_history.contains(digest) or self.execution_results.contains(digest)) {
-            return error.TransactionAlreadyExecuted;
-        }
-try self.txn_pool.add(tx, gas_price);
-}
+    pub fn submitTransaction(self: *Self, tx: pipeline.Transaction, gas_price: u64) !TxnAdmission.SubmitDecision {
+        const admission = self.txAdmissionContext();
+        const decision = try TxnAdmission.validateForSubmit(&admission, tx);
+        if (decision == .duplicate) return .duplicate;
+        self.txn_pool.add(tx, gas_price) catch |err| switch (err) {
+            error.DuplicateTransaction => return .duplicate,
+            else => return err,
+        };
+        return .accepted;
+    }
 
     pub fn getTxnPoolStats(self: *Self) TxnPoolStats {
-        const stats = self.txn_pool.stats();
-        return TxnPoolStats{
-            .pending = stats.pool_size,
-            .executing = 0,
-            .received_total = stats.received_total,
-            .executed_total = stats.executed_total,
-        };
+        return TxnPoolCoordinator.getTxnPoolStats(self.txn_pool);
     }
 
-
     pub fn cleanupExpiredTransactions(self: *Self) usize {
-        return self.txn_pool.removeExpired();
+        return TxnPoolCoordinator.cleanupExpiredTransactions(self.txn_pool);
     }
 
     pub fn getPendingTxnCount(self: *Self) usize {
-            return self.txn_pool.stats().pool_size;
-        }
-
+        return TxnPoolCoordinator.getPendingTxnCount(self.txn_pool);
+    }
 
     pub fn getCommittedBlock(self: *Self, hash: [32]u8) ?Mysticeti.Block {
         return self.committed_blocks.get(hash);
@@ -679,42 +670,162 @@ try self.txn_pool.add(tx, gas_price);
         return self.state == .running;
     }
 
+    /// M4 reserved hook: submit stake/unstake/reward/slash operation envelope.
+    pub fn submitStakeOperation(self: *Self, input: MainnetExtensionHooks.StakeOperationInput) !u64 {
+        return self.mainnet_hooks.submitStakeOperation(input);
+    }
+
+    /// M4 reserved hook: submit governance proposal envelope.
+    pub fn submitGovernanceProposal(self: *Self, input: MainnetExtensionHooks.GovernanceProposalInput) !u64 {
+        return self.mainnet_hooks.submitGovernanceProposal(input);
+    }
+
+    /// M4 checkpoint proof with Ed25519 signature(s) from `authority.signing_key` plus `checkpoint_proof_extra_signing_seeds`.
+    pub fn buildCheckpointProof(self: *Self, req: MainnetExtensionHooks.CheckpointProofRequest) !MainnetExtensionHooks.CheckpointProof {
+        const M = MainnetExtensionHooks;
+        const state_root = try self.mainnet_hooks.computeStateRoot();
+        const msg = M.m4ProofSigningMessage(state_root, req.sequence, req.object_id);
+        const proof_bytes = try self.allocator.dupe(u8, &msg);
+        errdefer self.allocator.free(proof_bytes);
+
+        const primary = self.config.authority.signing_key orelse return error.MissingSigningKey;
+
+        var pairs = std.ArrayList(M.ProofSigPair).empty;
+        defer pairs.deinit(self.allocator);
+
+        try appendM4CheckpointProofSig(self.allocator, &pairs, primary, proof_bytes);
+        for (self.config.authority.checkpoint_proof_extra_signing_seeds) |sk| {
+            if (std.mem.eql(u8, &sk, &primary)) continue;
+            try appendM4CheckpointProofSig(self.allocator, &pairs, sk, proof_bytes);
+        }
+
+        const signatures = try M.encodeProofSignatureList(self.allocator, pairs.items);
+        errdefer self.allocator.free(signatures);
+
+        var bls_pubkeys = std.ArrayList(Bls.PublicKey).empty;
+        var bls_sigs = std.ArrayList(Bls.Signature).empty;
+        defer bls_pubkeys.deinit(self.allocator);
+        defer bls_sigs.deinit(self.allocator);
+        var bls_bitmap = std.ArrayList(u8).empty;
+        defer bls_bitmap.deinit(self.allocator);
+
+        if (self.config.authority.bls_signing_seed) |seed| {
+            const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+            const bls_material = kp.public_key.toBytes();
+            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(bls_material));
+            try bls_sigs.append(self.allocator, Bls.sign(bls_material, proof_bytes));
+            try bls_bitmap.append(self.allocator, 1);
+        }
+        for (self.config.authority.extra_bls_signing_seeds) |seed| {
+            const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+            const bls_material = kp.public_key.toBytes();
+            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(bls_material));
+            try bls_sigs.append(self.allocator, Bls.sign(bls_material, proof_bytes));
+            try bls_bitmap.append(self.allocator, 1);
+        }
+        if (bls_pubkeys.items.len == 0) {
+            // Keep legacy config compatible by deriving BLS signers from Ed25519 seeds.
+            const kp_primary = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(primary);
+            const primary_material = kp_primary.public_key.toBytes();
+            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(primary_material));
+            try bls_sigs.append(self.allocator, Bls.sign(primary_material, proof_bytes));
+            try bls_bitmap.append(self.allocator, 1);
+            for (self.config.authority.checkpoint_proof_extra_signing_seeds) |seed| {
+                const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+                const bls_material = kp.public_key.toBytes();
+                try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(bls_material));
+                try bls_sigs.append(self.allocator, Bls.sign(bls_material, proof_bytes));
+                try bls_bitmap.append(self.allocator, 1);
+            }
+        }
+
+        const bls_sig_arr = Bls.aggregateSig(bls_sigs.items);
+        const bls_signature = try self.allocator.dupe(u8, &bls_sig_arr);
+        errdefer self.allocator.free(bls_signature);
+        const bls_signer_bitmap = try bls_bitmap.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(bls_signer_bitmap);
+
+        return .{
+            .sequence = req.sequence,
+            .object_id = req.object_id,
+            .state_root = state_root,
+            .proof_bytes = proof_bytes,
+            .signatures = signatures,
+            .bls_signature = bls_signature,
+            .bls_signer_bitmap = bls_signer_bitmap,
+        };
+    }
+
+    pub fn freeCheckpointProof(self: *Self, proof: MainnetExtensionHooks.CheckpointProof) void {
+        self.allocator.free(proof.proof_bytes);
+        self.allocator.free(proof.signatures);
+        self.allocator.free(proof.bls_signature);
+        self.allocator.free(proof.bls_signer_bitmap);
+    }
+
+    pub fn applyEquivocationEvidence(
+        self: *Self,
+        validator: [32]u8,
+        delegator: [32]u8,
+        round: u64,
+        evidence_payload: []const u8,
+        slash_amount: u64,
+    ) !bool {
+        return self.mainnet_hooks.applyEquivocationEvidence(
+            validator,
+            delegator,
+            round,
+            evidence_payload,
+            slash_amount,
+        );
+    }
+
+    /// M4: validator stake tracked by mainnet hooks (after WAL replay / live ops).
+    pub fn getM4ValidatorStake(self: *const Self, validator: [32]u8) u64 {
+        return self.mainnet_hooks.getValidatorStake(validator);
+    }
+
+    /// M4: cumulative slash amount applied through mainnet hooks.
+    pub fn getM4TotalSlashed(self: *const Self) u64 {
+        return self.mainnet_hooks.getTotalSlashed();
+    }
+
+    pub fn getM4CurrentEpoch(self: *const Self) u64 {
+        return self.mainnet_hooks.getCurrentEpoch();
+    }
+
+    pub fn getM4ValidatorSetHash(self: *const Self) [32]u8 {
+        return self.mainnet_hooks.getValidatorSetHash();
+    }
+
     /// Get an object from the object store
     pub fn getObject(self: *Self, id: core.ObjectID) !?ObjectStore.Object {
-        if (self.object_store) |store| {
-            return try store.get(id);
-        }
-        return error.ObjectStoreNotAvailable;
+        return ObjectStoreCoordinator.getObject(self.object_store, id) catch |err| switch (err) {
+            error.ObjectStoreNotAvailable => error.ObjectStoreNotAvailable,
+            else => err,
+        };
     }
 
     /// Put an object into the object store
     pub fn putObject(self: *Self, object: ObjectStore.Object) !void {
-        if (self.object_store) |store| {
-            try store.put(object);
-            return;
-        }
-        return error.ObjectStoreNotAvailable;
+        return ObjectStoreCoordinator.putObject(self.object_store, object) catch |err| switch (err) {
+            error.ObjectStoreNotAvailable => error.ObjectStoreNotAvailable,
+            else => err,
+        };
     }
 
     /// Delete an object from the object store
     pub fn deleteObject(self: *Self, id: core.ObjectID) !void {
-        if (self.object_store) |store| {
-            store.delete(id);
-            return;
-        }
-        return error.ObjectStoreNotAvailable;
+        return ObjectStoreCoordinator.deleteObject(self.object_store, id) catch |err| switch (err) {
+            error.ObjectStoreNotAvailable => error.ObjectStoreNotAvailable,
+            else => err,
+        };
     }
 };
 
-    pub const TxnPoolStats = struct {
-        pending: usize,
-        executing: usize,
-        received_total: u64 = 0,
-        executed_total: u64 = 0,
-    };
+pub const TxnPoolStats = TxnPoolCoordinator.TxnPoolStats;
 
 const ExecutionResult = @import("../pipeline/Executor.zig").ExecutionResult;
-
 
 test "Node initialization" {
     const allocator = std.testing.allocator;
@@ -781,4 +892,49 @@ test "Node start calls recoverFromDisk" {
 
     node.stop();
     try std.testing.expect(node.state == .stopped);
+}
+
+test "Node mainnet extension hooks execute protocol state transitions" {
+    const allocator = std.testing.allocator;
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.authority.signing_key = [_]u8{0x77} ** 32;
+    config.authority.stake = 1_000_000_000;
+    const deps = NodeDependencies{};
+    const node = try Node.init(allocator, config, deps);
+    defer node.deinit();
+
+    const stake_id = try node.submitStakeOperation(.{
+        .validator = [_]u8{1} ** 32,
+        .delegator = [_]u8{2} ** 32,
+        .amount = 100,
+        .action = .stake,
+    });
+    try std.testing.expectEqual(@as(u64, 1), stake_id);
+
+    const proposal_id = try node.submitGovernanceProposal(.{
+        .proposer = [_]u8{3} ** 32,
+        .title = "reserve-governance",
+        .description = "M4 placeholder",
+        .kind = .parameter_change,
+    });
+    try std.testing.expectEqual(@as(u64, 1), proposal_id);
+
+    const slash_id = try node.submitStakeOperation(.{
+        .validator = [_]u8{1} ** 32,
+        .delegator = [_]u8{2} ** 32,
+        .amount = 10,
+        .action = .slash,
+        .metadata = "test-equivocation",
+    });
+    try std.testing.expectEqual(@as(u64, 2), slash_id);
+
+    const proof = try node.buildCheckpointProof(.{
+        .sequence = 1,
+        .object_id = [_]u8{4} ** 32,
+    });
+    defer node.freeCheckpointProof(proof);
+    try std.testing.expectEqual(@as(u64, 1), proof.sequence);
+    try std.testing.expectEqual(@as(usize, 80), proof.proof_bytes.len);
+    try std.testing.expect(std.mem.startsWith(u8, proof.signatures, "k3s1"));
 }

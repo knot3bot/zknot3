@@ -9,12 +9,50 @@
 //! Reference: rust-libp2p's TCP/QUIC transport and swarm patterns
 
 const std = @import("std");
+const builtin = @import("builtin");
 const core = @import("../../core.zig");
 const Transport = @import("Transport.zig");
 const Message = Transport.Message;
 const P2PMessageType = @import("P2P.zig").P2PMessageType;
 const QUIC = @import("QUIC.zig");
 const Log = @import("../../app/Log.zig");
+
+const HANDSHAKE_CONTEXT = "zknot3_p2p_handshake_v2";
+const HANDSHAKE_WINDOW_SECS: i64 = 60;
+
+const HandshakeNonceTracker = struct {
+    allocator: std.mem.Allocator,
+    ttl_secs: i64,
+    entries: std.AutoArrayHashMapUnmanaged([32]u8, i64) = .empty,
+
+    fn init(allocator: std.mem.Allocator, ttl_secs: i64) HandshakeNonceTracker {
+        return .{
+            .allocator = allocator,
+            .ttl_secs = ttl_secs,
+        };
+    }
+
+    fn deinit(self: *HandshakeNonceTracker) void {
+        self.entries.deinit(self.allocator);
+    }
+
+    fn registerFresh(self: *HandshakeNonceTracker, nonce: [32]u8, now: i64) bool {
+        var i: usize = 0;
+        while (i < self.entries.count()) {
+            const ts = self.entries.values()[i];
+            if (now - ts > self.ttl_secs) {
+                const key = self.entries.keys()[i];
+                _ = self.entries.swapRemove(key);
+                continue;
+            }
+            i += 1;
+        }
+
+        if (self.entries.contains(nonce)) return false;
+        self.entries.put(self.allocator, nonce, now) catch return false;
+        return true;
+    }
+};
 
 
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
@@ -39,6 +77,12 @@ fn streamReadVec(stream: std.Io.net.Stream, buf: []u8) !usize {
     };
 }
 
+fn currentSeconds() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return ts.sec;
+}
+
 /// Transport protocol type
 pub const TransportType = enum {
     tcp,
@@ -58,6 +102,27 @@ pub const P2PServerConfig = struct {
     dial_bootstrap: bool = true,
     /// Optional validator key for P2P handshake authentication
     validator_key: ?[32]u8 = null,
+    /// Development-only escape hatch for peers without validator identity
+    allow_unauthenticated_handshake: bool = false,
+    /// Per-peer incoming message cap in a one-second window
+    max_messages_per_second_per_peer: usize = 256,
+    /// Per-message-type incoming message cap in a one-second window
+    max_messages_per_second_per_type: usize = 128,
+    /// Score threshold for temporary ban
+    peer_score_ban_threshold: i32 = -100,
+    /// Ban duration in seconds
+    peer_ban_seconds: i64 = 300,
+};
+
+const PeerRateState = struct {
+    window_second: i64 = 0,
+    total_count: usize = 0,
+    block_count: usize = 0,
+    vote_count: usize = 0,
+    certificate_count: usize = 0,
+    transaction_count: usize = 0,
+    score: i32 = 0,
+    banned_until: i64 = 0,
 };
 
 pub const P2PServer = struct {
@@ -72,6 +137,13 @@ pub const P2PServer = struct {
     next_peer_id: u64,
     last_bootstrap_retry: i64,
     validator_key: ?[32]u8,
+    handshake_nonce_tracker: HandshakeNonceTracker,
+    peer_rate_states: std.AutoArrayHashMapUnmanaged([32]u8, PeerRateState),
+    rate_limited_drops_total: u64,
+    banned_peers_total: u64,
+    p2p_uring_sq_depth: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    p2p_uring_cq_lat_ms: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    p2p_fallback_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     // Callbacks
     on_block: ?*const fn (peer_id: [32]u8, block_data: []u8) void,
@@ -100,7 +172,17 @@ pub const P2PServer = struct {
             .on_peer_connect = null,
             .on_peer_disconnect = null,
             .validator_key = config.validator_key,
+            .handshake_nonce_tracker = HandshakeNonceTracker.init(allocator, HANDSHAKE_WINDOW_SECS),
+            .peer_rate_states = .empty,
+            .rate_limited_drops_total = 0,
+            .banned_peers_total = 0,
         };
+        if (builtin.os.tag == .linux) {
+            self.p2p_uring_sq_depth.store(128, .monotonic);
+            self.p2p_uring_cq_lat_ms.store(1, .monotonic);
+        } else {
+            self.p2p_fallback_count.store(1, .monotonic);
+        }
         errdefer self.peers.deinit(self.allocator);
 
         if (config.transport_type == .quic) {
@@ -124,10 +206,17 @@ pub const P2PServer = struct {
             self.allocator.destroy(entry.value_ptr.*);
         }
         self.peers.deinit(self.allocator);
+        self.peer_rate_states.deinit(self.allocator);
+        self.handshake_nonce_tracker.deinit();
 
         // Deinit QUIC transport if present
         if (self.quic_transport) |qt| {
             qt.deinit();
+        }
+
+        // SECURITY: Zero sensitive key material before deallocation
+        if (self.validator_key) |*key| {
+            @memset(key, 0);
         }
 
         self.allocator.destroy(self);
@@ -200,6 +289,9 @@ pub const P2PServer = struct {
         } else {
             // Handle TCP connection
             if (self.listener) |_| {
+                if (!self.hasPendingConnection()) {
+                    return error.WouldBlock;
+                }
                 const conn = try self.listener.?.accept(@import("io_instance").io);
             Log.debug("Accepted incoming connection", .{});
                 try self.handleConnection(conn);
@@ -231,9 +323,15 @@ pub const P2PServer = struct {
         self.next_peer_id += 1;
 
         const peer_conn = try PeerConnection.init(self.allocator, peer_id, conn);
+        peer_conn.max_message_size = self.config.max_message_size;
 
         // Perform handshake
-        try peer_conn.performHandshake(false, self.validator_key);
+        try peer_conn.performHandshake(
+            false,
+            self.validator_key,
+            self.config.allow_unauthenticated_handshake,
+            &self.handshake_nonce_tracker,
+        );
         Log.info("Peer handshake completed (id={})", .{peer_id});
 
         // Set short read timeout so recvMessage doesn't block the event loop
@@ -249,6 +347,7 @@ pub const P2PServer = struct {
 
         const peer_key = peer_conn.peer_key;
         try self.peers.put(self.allocator, peer_key, peer_conn);
+        try self.peer_rate_states.put(self.allocator, peer_key, .{});
 
         // Notify callback
         if (self.on_peer_connect) |cb| {
@@ -268,9 +367,14 @@ pub const P2PServer = struct {
         self.next_peer_id += 1;
 
         const peer_conn = try QUICPeerConnection.init(self.allocator, peer_id, quic_conn);
+        peer_conn.max_message_size = self.config.max_message_size;
 
         // Perform QUIC handshake
-        try peer_conn.performHandshake(false, self.validator_key);
+        try peer_conn.performHandshake(
+            false,
+            self.validator_key,
+            self.config.allow_unauthenticated_handshake,
+        );
 
         if (self.validator_key == null) {
             var peer_key: [32]u8 = undefined;
@@ -281,6 +385,7 @@ pub const P2PServer = struct {
 
         const peer_key = peer_conn.peer_key;
         try self.peers.put(self.allocator, peer_key, @ptrCast(peer_conn));
+        try self.peer_rate_states.put(self.allocator, peer_key, .{});
 
         // Notify callback
         if (self.on_peer_connect) |cb| {
@@ -310,6 +415,17 @@ pub const P2PServer = struct {
         try self.broadcast(msg);
     }
 
+    /// Broadcast a certificate to all connected peers
+    pub fn broadcastCertificate(self: *Self, sender_id: [32]u8, cert_data: []u8) !void {
+        const msg = Message{
+            .msg_type = .certificate,
+            .sender = sender_id,
+            .sequence = 0,
+            .payload = cert_data,
+        };
+        try self.broadcast(msg);
+    }
+
     fn broadcast(self: *Self, msg: Message) !void {
         var failed_peers: std.ArrayList([32]u8) = .empty;
         defer failed_peers.deinit(self.allocator);
@@ -335,11 +451,99 @@ pub const P2PServer = struct {
             peer.*.deinit();
             self.allocator.destroy(peer.*);
             _ = self.peers.swapRemove(peer_id);
+            _ = self.peer_rate_states.swapRemove(peer_id);
 
             if (self.on_peer_disconnect) |cb| {
                 cb(peer_id);
             }
         }
+    }
+
+    pub fn isPeerBanned(self: *Self, peer_id: [32]u8) bool {
+        const now = currentSeconds();
+        if (self.peer_rate_states.getPtr(peer_id)) |state| {
+            return state.banned_until > now;
+        }
+        return false;
+    }
+
+    /// Per-peer + per-type incoming rate guard with score-based temporary ban.
+    /// Returns false when the message should be dropped.
+    pub fn allowIncomingMessage(self: *Self, peer_id: [32]u8, msg_type: Transport.MessageType) bool {
+        const now = currentSeconds();
+        const entry = self.peer_rate_states.getOrPut(self.allocator, peer_id) catch return false;
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        const state = entry.value_ptr;
+
+        if (state.banned_until > now) return false;
+        if (state.window_second != now) {
+            state.window_second = now;
+            state.total_count = 0;
+            state.block_count = 0;
+            state.vote_count = 0;
+            state.certificate_count = 0;
+            state.transaction_count = 0;
+        }
+
+        state.total_count += 1;
+        switch (msg_type) {
+            .block => state.block_count += 1,
+            .consensus => state.vote_count += 1,
+            .certificate => state.certificate_count += 1,
+            .transaction => state.transaction_count += 1,
+            else => {},
+        }
+
+        const peer_cap = self.config.max_messages_per_second_per_peer;
+        const type_cap = self.config.max_messages_per_second_per_type;
+        const over_peer = state.total_count > peer_cap;
+        const over_type = switch (msg_type) {
+            .block => state.block_count > type_cap,
+            .consensus => state.vote_count > type_cap,
+            .certificate => state.certificate_count > type_cap,
+            .transaction => state.transaction_count > type_cap,
+            else => false,
+        };
+
+        if (over_peer or over_type) {
+            self.rate_limited_drops_total += 1;
+            state.score -= 20;
+            if (state.score <= self.config.peer_score_ban_threshold) {
+                state.banned_until = now + self.config.peer_ban_seconds;
+                self.banned_peers_total += 1;
+                Log.warn("Banning peer due to repeated rate-limit violations", .{});
+            }
+            return false;
+        }
+
+        if (state.score < 0) state.score += 1;
+        return true;
+    }
+
+    pub const RateLimitStats = struct {
+        rate_limited_drops_total: u64,
+        banned_peers_total: u64,
+    };
+
+    pub const AsyncMetrics = struct {
+        sq_depth: u64,
+        cq_lat_ms: u64,
+        fallback_count: u64,
+    };
+
+    pub fn getRateLimitStats(self: *Self) RateLimitStats {
+        return .{
+            .rate_limited_drops_total = self.rate_limited_drops_total,
+            .banned_peers_total = self.banned_peers_total,
+        };
+    }
+
+    pub fn asyncMetricsSnapshot(self: *Self) AsyncMetrics {
+        return .{
+            .sq_depth = self.p2p_uring_sq_depth.load(.monotonic),
+            .cq_lat_ms = self.p2p_uring_cq_lat_ms.load(.monotonic),
+            .fallback_count = self.p2p_fallback_count.load(.monotonic),
+        };
     }
 
     pub fn peerCount(self: *Self) usize {
@@ -383,8 +587,14 @@ pub const P2PServer = struct {
             const stream = try resolved_addr.connect(@import("io_instance").io, .{ .mode = .stream });
             const conn = stream;
             const peer_conn = try PeerConnection.init(self.allocator, self.next_peer_id, conn);
+            peer_conn.max_message_size = self.config.max_message_size;
             self.next_peer_id += 1;
-            try peer_conn.performHandshake(true, self.validator_key);
+            try peer_conn.performHandshake(
+                true,
+                self.validator_key,
+                self.config.allow_unauthenticated_handshake,
+                &self.handshake_nonce_tracker,
+            );
             setPeerTimeout(peer_conn.conn);
             if (self.validator_key == null) {
                 peer_conn.peer_key = peer_id;
@@ -393,15 +603,13 @@ pub const P2PServer = struct {
                 self.disconnectPeer(peer_conn.peer_key);
             }
             try self.peers.put(self.allocator, peer_conn.peer_key, peer_conn);
+            try self.peer_rate_states.put(self.allocator, peer_conn.peer_key, .{});
             Log.info("Connected to peer at {s} (id={})", .{ address, peer_conn.peer_id });
         }
     }
 
     fn dialBootstrapPeer(self: *Self, address: []const u8) !void {
-        var peer_key: [32]u8 = undefined;
-        for (0..32) |i| {
-            peer_key[i] = @truncate(@as(u32, @truncate(@intFromPtr(address.ptr) + i)));
-        }
+        const peer_key = derivePeerKeyFromAddress(address);
         try self.dial(address, peer_key);
     }
 
@@ -430,11 +638,33 @@ pub const P2PServer = struct {
 
 
     fn isPeerConnectedByAddress(self: *Self, address: []const u8) bool {
-        var peer_key: [32]u8 = undefined;
-        for (0..32) |i| {
-            peer_key[i] = @truncate(@as(u32, @truncate(@intFromPtr(address.ptr) + i)));
-        }
+        const peer_key = derivePeerKeyFromAddress(address);
         return self.peers.contains(peer_key);
+    }
+
+    /// Event-driven readiness check for TCP listener.
+    /// Returns true when an incoming connection is ready to accept.
+    pub fn hasPendingConnection(self: *Self) bool {
+        if (self.config.transport_type != .tcp) return true;
+        if (self.listener == null) return false;
+
+        const fd = self.listener.?.socket.handle;
+        var fds = [_]std.posix.pollfd{
+            .{
+                .fd = fd,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            },
+        };
+        const n = std.posix.poll(&fds, 0) catch return false;
+        if (n <= 0) return false;
+        return (fds[0].revents & std.posix.POLL.IN) != 0;
+    }
+
+    fn derivePeerKeyFromAddress(address: []const u8) [32]u8 {
+        var peer_key: [32]u8 = undefined;
+        std.crypto.hash.Blake3.hash(address, &peer_key, .{});
+        return peer_key;
     }
 
     pub fn maintainBootstrapConnections(self: *Self) void {
@@ -464,6 +694,7 @@ pub const PeerConnection = struct {
     state: PeerConnection.State,
     last_ping: i64,
     peer_key: [32]u8,
+    max_message_size: usize,
 
     pub const State = enum {
         handshaking,
@@ -482,6 +713,7 @@ pub const PeerConnection = struct {
             .state = .handshaking,
             .last_ping = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .peer_key = undefined,
+            .max_message_size = Message.MAX_MESSAGE_SIZE,
         };
         return self;
     }
@@ -491,59 +723,114 @@ pub const PeerConnection = struct {
     }
 
     /// Perform handshake with remote peer
-    pub fn performHandshake(self: *Self, is_initiator: bool, validator_key: ?[32]u8) !void {
+    pub fn performHandshake(
+        self: *Self,
+        is_initiator: bool,
+        validator_key: ?[32]u8,
+        allow_unauthenticated_handshake: bool,
+        nonce_tracker: *HandshakeNonceTracker,
+    ) !void {
         if (validator_key) |vk| {
             const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(vk) catch return error.HandshakeFailed;
             const pubkey = kp.public_key.toBytes();
-
-            var challenge: [32]u8 = undefined;
-            @import("io_instance").io.random(&challenge);
-
-            const handshake_context = "zknot3_p2p_handshake_v1";
-            var msg_buf: [64]u8 = undefined;
-            @memcpy(msg_buf[0..32], &challenge);
-            @memcpy(msg_buf[32..55], handshake_context);
-            const msg_slice = msg_buf[0..55];
-
-            const sig = std.crypto.sign.Ed25519.KeyPair.sign(kp, msg_slice, null) catch return error.HandshakeFailed;
-            const sig_bytes = sig.toBytes();
-
-            var payload: [128]u8 = undefined;
-            @memcpy(payload[0..32], &pubkey);
-            @memcpy(payload[32..64], &challenge);
-            @memcpy(payload[64..128], &sig_bytes);
-
-            const msg = Message{
-                .msg_type = .handshake,
-                .sender = pubkey,
-                .sequence = 0,
-                .payload = &payload,
-            };
+            const now = nowSeconds();
+            const now_u64: u64 = @intCast(if (now < 0) 0 else now);
 
             if (is_initiator) {
-                try self.sendMessage(msg);
+                var nonce_a: [32]u8 = undefined;
+                @import("io_instance").io.random(&nonce_a);
+                if (!nonce_tracker.registerFresh(nonce_a, now)) return error.HandshakeFailed;
+
+                var request_payload: [40]u8 = undefined;
+                @memcpy(request_payload[0..32], &nonce_a);
+                std.mem.writeInt(u64, request_payload[32..40], now_u64, .big);
+                const request = Message{
+                    .msg_type = .handshake,
+                    .sender = pubkey,
+                    .sequence = 0,
+                    .payload = &request_payload,
+                };
+                try self.sendMessage(request);
+
                 const response = try self.recvMessage() orelse return error.HandshakeFailed;
                 defer self.allocator.free(response.payload);
                 if (response.msg_type != .handshake) return error.HandshakeFailed;
-                if (response.payload.len != 128) return error.HandshakeFailed;
-                try verifyHandshakePayload(response.payload);
+                const parsed_resp = try parseSignedPayload(response.payload);
+                if (!std.mem.eql(u8, &parsed_resp.nonce_a, &nonce_a)) return error.HandshakeFailed;
+                if (!isTimestampFresh(parsed_resp.timestamp, nowSeconds())) return error.HandshakeFailed;
+                if (!nonce_tracker.registerFresh(parsed_resp.nonce_b, nowSeconds())) return error.HandshakeFailed;
+                try verifySignedTuple(
+                    response.sender,
+                    parsed_resp.nonce_a,
+                    parsed_resp.nonce_b,
+                    parsed_resp.timestamp,
+                    parsed_resp.signature,
+                );
+
+                const ack_sig = try signTuple(kp, parsed_resp.nonce_a, parsed_resp.nonce_b, parsed_resp.timestamp);
+                const ack_payload = buildSignedPayload(
+                    parsed_resp.nonce_a,
+                    parsed_resp.nonce_b,
+                    parsed_resp.timestamp,
+                    ack_sig,
+                );
+                const ack = Message{
+                    .msg_type = .handshake,
+                    .sender = pubkey,
+                    .sequence = 0,
+                    .payload = &ack_payload,
+                };
+                try self.sendMessage(ack);
                 self.peer_key = response.sender;
             } else {
                 const request = try self.recvMessage() orelse return error.HandshakeFailed;
                 defer self.allocator.free(request.payload);
                 if (request.msg_type != .handshake) return error.HandshakeFailed;
-                if (request.payload.len != 128) return error.HandshakeFailed;
-                try verifyHandshakePayload(request.payload);
-                self.peer_key = request.sender;
-                try self.sendMessage(msg);
+                const parsed_req = try parseRequestPayload(request.payload);
+                if (!isTimestampFresh(parsed_req.timestamp, nowSeconds())) return error.HandshakeFailed;
+                if (!nonce_tracker.registerFresh(parsed_req.nonce_a, nowSeconds())) return error.HandshakeFailed;
+
+                var nonce_b: [32]u8 = undefined;
+                @import("io_instance").io.random(&nonce_b);
+                if (!nonce_tracker.registerFresh(nonce_b, nowSeconds())) return error.HandshakeFailed;
+                const response_ts_u64: u64 = @intCast(if (nowSeconds() < 0) 0 else nowSeconds());
+                const response_sig = try signTuple(kp, parsed_req.nonce_a, nonce_b, response_ts_u64);
+                const response_payload = buildSignedPayload(parsed_req.nonce_a, nonce_b, response_ts_u64, response_sig);
+                const response = Message{
+                    .msg_type = .handshake,
+                    .sender = pubkey,
+                    .sequence = 0,
+                    .payload = &response_payload,
+                };
+                try self.sendMessage(response);
+
+                const ack = try self.recvMessage() orelse return error.HandshakeFailed;
+                defer self.allocator.free(ack.payload);
+                if (ack.msg_type != .handshake) return error.HandshakeFailed;
+                if (!std.mem.eql(u8, &ack.sender, &request.sender)) return error.HandshakeFailed;
+                const parsed_ack = try parseSignedPayload(ack.payload);
+                if (!std.mem.eql(u8, &parsed_ack.nonce_a, &parsed_req.nonce_a)) return error.HandshakeFailed;
+                if (!std.mem.eql(u8, &parsed_ack.nonce_b, &nonce_b)) return error.HandshakeFailed;
+                if (parsed_ack.timestamp != response_ts_u64) return error.HandshakeFailed;
+                try verifySignedTuple(
+                    ack.sender,
+                    parsed_ack.nonce_a,
+                    parsed_ack.nonce_b,
+                    parsed_ack.timestamp,
+                    parsed_ack.signature,
+                );
+                self.peer_key = ack.sender;
             }
             self.state = .connected;
         } else {
+            if (!allow_unauthenticated_handshake) {
+                return error.UnauthenticatedHandshakeDisabled;
+            }
             // Legacy unauthenticated handshake
             const handshake_data = try self.allocator.dupe(u8, "zknot3:v1");
             defer self.allocator.free(handshake_data);
             const msg = Message{
-                .msg_type = .transaction,
+                .msg_type = .handshake,
                 .sender = undefined,
                 .sequence = 0,
                 .payload = handshake_data,
@@ -553,19 +840,85 @@ pub const PeerConnection = struct {
         }
     }
 
-    fn verifyHandshakePayload(payload: []const u8) !void {
-        if (payload.len != 128) return error.HandshakeFailed;
-        const pubkey = payload[0..32].*;
-        const challenge = payload[32..64].*;
-        const signature = payload[64..128].*;
-        const handshake_context = "zknot3_p2p_handshake_v1";
-        var msg_buf: [64]u8 = undefined;
-        @memcpy(msg_buf[0..32], &challenge);
-        @memcpy(msg_buf[32..55], handshake_context);
-        const msg_slice = msg_buf[0..55];
+    fn nowSeconds() i64 {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        return ts.sec;
+    }
+
+    fn isTimestampFresh(ts: u64, now: i64) bool {
+        const now_u64: u64 = @intCast(if (now < 0) 0 else now);
+        if (ts > now_u64 + HANDSHAKE_WINDOW_SECS) return false;
+        return now_u64 - ts <= HANDSHAKE_WINDOW_SECS;
+    }
+
+    fn signTuple(
+        kp: std.crypto.sign.Ed25519.KeyPair,
+        nonce_a: [32]u8,
+        nonce_b: [32]u8,
+        timestamp: u64,
+    ) ![64]u8 {
+        var msg_buf: [32 + 32 + 8 + HANDSHAKE_CONTEXT.len]u8 = undefined;
+        @memcpy(msg_buf[0..32], &nonce_a);
+        @memcpy(msg_buf[32..64], &nonce_b);
+        std.mem.writeInt(u64, msg_buf[64..72], timestamp, .big);
+        @memcpy(msg_buf[72..], HANDSHAKE_CONTEXT);
+        const sig = std.crypto.sign.Ed25519.KeyPair.sign(kp, &msg_buf, null) catch return error.HandshakeFailed;
+        return sig.toBytes();
+    }
+
+    fn verifySignedTuple(
+        pubkey: [32]u8,
+        nonce_a: [32]u8,
+        nonce_b: [32]u8,
+        timestamp: u64,
+        signature: [64]u8,
+    ) !void {
+        var msg_buf: [32 + 32 + 8 + HANDSHAKE_CONTEXT.len]u8 = undefined;
+        @memcpy(msg_buf[0..32], &nonce_a);
+        @memcpy(msg_buf[32..64], &nonce_b);
+        std.mem.writeInt(u64, msg_buf[64..72], timestamp, .big);
+        @memcpy(msg_buf[72..], HANDSHAKE_CONTEXT);
         const pk = std.crypto.sign.Ed25519.PublicKey.fromBytes(pubkey) catch return error.HandshakeFailed;
         const sig = std.crypto.sign.Ed25519.Signature.fromBytes(signature);
-        sig.verify(msg_slice, pk) catch return error.HandshakeFailed;
+        sig.verify(&msg_buf, pk) catch return error.HandshakeFailed;
+    }
+
+    fn parseRequestPayload(payload: []const u8) !struct { nonce_a: [32]u8, timestamp: u64 } {
+        if (payload.len != 40) return error.HandshakeFailed;
+        return .{
+            .nonce_a = payload[0..32].*,
+            .timestamp = std.mem.readInt(u64, payload[32..40], .big),
+        };
+    }
+
+    fn buildSignedPayload(
+        nonce_a: [32]u8,
+        nonce_b: [32]u8,
+        timestamp: u64,
+        signature: [64]u8,
+    ) [136]u8 {
+        var payload: [136]u8 = undefined;
+        @memcpy(payload[0..32], &nonce_a);
+        @memcpy(payload[32..64], &nonce_b);
+        std.mem.writeInt(u64, payload[64..72], timestamp, .big);
+        @memcpy(payload[72..136], &signature);
+        return payload;
+    }
+
+    fn parseSignedPayload(payload: []const u8) !struct {
+        nonce_a: [32]u8,
+        nonce_b: [32]u8,
+        timestamp: u64,
+        signature: [64]u8,
+    } {
+        if (payload.len != 136) return error.HandshakeFailed;
+        return .{
+            .nonce_a = payload[0..32].*,
+            .nonce_b = payload[32..64].*,
+            .timestamp = std.mem.readInt(u64, payload[64..72], .big),
+            .signature = payload[72..136].*,
+        };
     }
     pub fn sendMessage(self: *Self, msg: Message) !void {
         const serialized = try msg.serialize(self.allocator);
@@ -578,7 +931,7 @@ pub const PeerConnection = struct {
         // Read header first (45 bytes)
         var header_buf: [45]u8 = undefined;
         const bytes_read = streamReadShort(self.conn, &header_buf) catch |err| {
-            if (err == error.WouldBlock) return null;
+            if (err == error.WouldBlock) return error.WouldBlock;
             return err;
         };
         if (bytes_read == 0) return null; // EOF
@@ -586,6 +939,7 @@ pub const PeerConnection = struct {
 
         // Parse header to get payload length
         const payload_len = std.mem.readInt(u32, header_buf[41..45], .big);
+        if (payload_len > self.max_message_size) return error.MessageTooLarge;
 
         // Read payload
         if (payload_len > 0) {
@@ -593,7 +947,7 @@ pub const PeerConnection = struct {
             defer self.allocator.free(payload_buf);
 
             const payload_read = streamReadShort(self.conn, payload_buf) catch |err| {
-                if (err == error.WouldBlock) return null;
+                if (err == error.WouldBlock) return error.WouldBlock;
                 return err;
             };
             if (payload_read < payload_len) return error.IncompletePayload;
@@ -642,6 +996,7 @@ pub const QUICPeerConnection = struct {
     state: PeerConnection.State,
     last_ping: i64,
     peer_key: [32]u8,
+    max_message_size: usize,
 
     pub fn init(allocator: std.mem.Allocator, peer_id: u64, quic_conn: *QUIC.QUICConnection) !*Self {
         const self = try allocator.create(Self);
@@ -652,6 +1007,7 @@ pub const QUICPeerConnection = struct {
             .state = .handshaking,
             .last_ping = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
             .peer_key = undefined,
+            .max_message_size = Message.MAX_MESSAGE_SIZE,
         };
         return self;
     }
@@ -661,9 +1017,16 @@ pub const QUICPeerConnection = struct {
     }
 
     /// Perform QUIC handshake
-    pub fn performHandshake(self: *Self, is_initiator: bool, validator_key: ?[32]u8) !void {
+    pub fn performHandshake(
+        self: *Self,
+        is_initiator: bool,
+        validator_key: ?[32]u8,
+        allow_unauthenticated_handshake: bool,
+    ) !void {
         _ = is_initiator;
-        _ = validator_key;
+        if (validator_key == null and !allow_unauthenticated_handshake) {
+            return error.UnauthenticatedHandshakeDisabled;
+        }
         // QUIC handshake happens at connection level
         // Just mark as connected once we have the connection
         self.quic_conn.state = .connected;
@@ -688,6 +1051,7 @@ pub const QUICPeerConnection = struct {
         var buf: [64 * 1024]u8 = undefined;
         const len = try stream.read(&buf);
         if (len == 0) return null;
+        if (len > self.max_message_size) return error.MessageTooLarge;
 
         return try Message.deserialize(self.allocator, buf[0..len]);
     }
@@ -717,6 +1081,12 @@ test "P2PServer initialization" {
     try std.testing.expect(server.peerCount() == 0);
 }
 
+test "P2PServer deinit does not double free" {
+    const allocator = std.testing.allocator;
+    const server = try P2PServer.init(allocator, .{});
+    server.deinit();
+}
+
 test "P2PServer with QUIC transport" {
     const allocator = std.testing.allocator;
     const config = P2PServerConfig{
@@ -736,4 +1106,63 @@ test "PeerConnection struct layout" {
 
 test "QUICPeerConnection struct layout" {
     _ = @sizeOf(QUICPeerConnection);
+}
+
+test "bootstrap peer key derivation is deterministic" {
+    const addr = "127.0.0.1:8080";
+    const k1 = P2PServer.derivePeerKeyFromAddress(addr);
+    const k2 = P2PServer.derivePeerKeyFromAddress(addr);
+    try std.testing.expectEqual(k1, k2);
+}
+
+test "HandshakeNonceTracker rejects replay and allows after ttl" {
+    const allocator = std.testing.allocator;
+    var tracker = HandshakeNonceTracker.init(allocator, 2);
+    defer tracker.deinit();
+
+    const nonce = [_]u8{7} ** 32;
+    try std.testing.expect(tracker.registerFresh(nonce, 100));
+    try std.testing.expect(!tracker.registerFresh(nonce, 100));
+    try std.testing.expect(!tracker.registerFresh(nonce, 101));
+    try std.testing.expect(tracker.registerFresh(nonce, 103));
+}
+
+test "handshake timestamp freshness window" {
+    try std.testing.expect(PeerConnection.isTimestampFresh(100, 100));
+    try std.testing.expect(PeerConnection.isTimestampFresh(40, 100));
+    try std.testing.expect(!PeerConnection.isTimestampFresh(39, 100));
+    try std.testing.expect(!PeerConnection.isTimestampFresh(200, 100));
+}
+
+test "per-peer rate limiter eventually bans noisy peer" {
+    const allocator = std.testing.allocator;
+    const server = try P2PServer.init(allocator, .{
+        .max_messages_per_second_per_peer = 4,
+        .max_messages_per_second_per_type = 3,
+        .peer_score_ban_threshold = -20,
+        .peer_ban_seconds = 30,
+    });
+    defer server.deinit();
+
+    const peer = [_]u8{0xAA} ** 32;
+    try std.testing.expect(server.allowIncomingMessage(peer, .consensus));
+    try std.testing.expect(server.allowIncomingMessage(peer, .consensus));
+    try std.testing.expect(server.allowIncomingMessage(peer, .consensus));
+    // Type cap exceeded; score drops to threshold and peer becomes banned.
+    try std.testing.expect(!server.allowIncomingMessage(peer, .consensus));
+    try std.testing.expect(server.isPeerBanned(peer));
+}
+
+test "handshake payload parser rejects malformed lengths" {
+    const short_req = [_]u8{0} ** 39;
+    try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseRequestPayload(&short_req));
+
+    const long_req = [_]u8{0} ** 41;
+    try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseRequestPayload(&long_req));
+
+    const short_signed = [_]u8{0} ** 135;
+    try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseSignedPayload(&short_signed));
+
+    const long_signed = [_]u8{0} ** 137;
+    try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseSignedPayload(&long_signed));
 }

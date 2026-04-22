@@ -114,3 +114,15 @@ This repo contains a **production-ready implementation** of the zknot3 node with
 - **Network I/O**: always set read/write timeouts on sockets to prevent event loop freezes (see `setPeerTimeout` in `P2PServer.zig`)
 - **Peer map safety**: re-validate peer pointers after any callback that might mutate the peers map (see `ConsensusIntegration.processPeerMessages`)
 
+## Learned User Preferences
+
+- 使用中文撰写面向用户的技术说明、审计结论与变更摘要。
+
+## Learned Workspace Facts
+
+- `package.zig.zon` 声明 `minimum_zig_version` 为 `0.15.0`；讨论异步能力时仍会对照较新 Zig 版本的语言级 async/await 与当前代码路径的差异。
+- 存储层 `Checkpoint.verify` 在简化路径下可按 stake 对签名者计数，但不校验 BLS 签名字节；`digest()` 与 `serialize()` 的承诺范围不一致，接入真实共识签名前需统一 canonical commitment。
+- M4 `MainnetExtensionHooks` 的 slash、governance、evidence 等状态主要在内存；`Node.recoverFromDisk` 仅走 `ObjectStore.recover()`，`checkpoint_store` 与 `Config.checkpoint_store_path` 尚未形成 M4 状态的 WAL+checkpoint 恢复闭环。
+- P2P 未认证握手由 `Config.allow_unauthenticated_p2p` 与 `P2PServerConfig.allow_unauthenticated_handshake` 控制，默认关闭；`Config.development()` 与 CLI `--dev` 会打开以便本地或旧 peer 兼容。
+- 面向公网负载时，主循环与共识侧倾向于：限制每轮 `accept` 批量、对多 peer 合并 `poll`、对每轮消息处理设全局限额并做轮转扫描，以降低单连接饥饿与突发连接对共识处理的挤占。
+

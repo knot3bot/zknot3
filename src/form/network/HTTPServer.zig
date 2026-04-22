@@ -5,6 +5,8 @@ const Dashboard = @import("../../app/ui/Dashboard.zig");
 const Node = @import("../../app/Node.zig").Node;
 const pipeline = @import("../../pipeline.zig");
 const Log = @import("../../app/Log.zig");
+const MainnetExtensionHooks = app.MainnetExtensionHooks;
+const M4RpcParams = @import("M4RpcParams.zig");
 
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
     var writer = stream.writer(@import("io_instance").io, &.{});
@@ -297,6 +299,49 @@ pub const Response = struct {
         return body;
     }
 
+    fn hexNibble(c: u8) ?u8 {
+        return switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => null,
+        };
+    }
+
+    fn parseHexFixed(comptime N: usize, src: []const u8) ?[N]u8 {
+        if (src.len != N * 2) return null;
+        var out: [N]u8 = undefined;
+        var i: usize = 0;
+        while (i < N) : (i += 1) {
+            const hi = hexNibble(src[i * 2]) orelse return null;
+            const lo = hexNibble(src[i * 2 + 1]) orelse return null;
+            out[i] = (hi << 4) | lo;
+        }
+        return out;
+    }
+
+    pub const SubmitTxFields = struct {
+        sender: [32]u8,
+        public_key: [32]u8,
+        signature: [64]u8,
+        sequence: u64,
+    };
+
+    pub fn parseSubmitTransactionBody(body: []const u8) ?SubmitTxFields {
+        if (body.len < 256) return null;
+        var sequence: u64 = 0;
+        if (body.len > 256) {
+            if (body[256] != ':') return null;
+            sequence = std.fmt.parseInt(u64, body[257..], 10) catch return null;
+        }
+        return .{
+            .sender = parseHexFixed(32, body[0..64]) orelse return null,
+            .public_key = parseHexFixed(32, body[64..128]) orelse return null,
+            .signature = parseHexFixed(64, body[128..256]) orelse return null,
+            .sequence = sequence,
+        };
+    }
+
 
 pub const HTTPServer = struct {
     const Self = @This();
@@ -577,43 +622,39 @@ pub const HTTPServer = struct {
         } else if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) {
             // POST /tx -> Submit transaction
             if (self.node) |node| {
-                var sender: [32]u8 = .{0} ** 32;
-                if (extractBody(request)) |body| {
-                    // Simple hex parse: expect 64 hex chars for 32-byte sender
-                    if (body.len >= 64) {
-                        var i: usize = 0;
-                        while (i < 32) : (i += 1) {
-                            const hi = switch (body[i * 2]) {
-                                '0'...'9' => |c| c - '0',
-                                'a'...'f' => |c| c - 'a' + 10,
-                                'A'...'F' => |c| c - 'A' + 10,
-                                else => break,
-                            };
-                            const lo = switch (body[i * 2 + 1]) {
-                                '0'...'9' => |c| c - '0',
-                                'a'...'f' => |c| c - 'a' + 10,
-                                'A'...'F' => |c| c - 'A' + 10,
-                                else => break,
-                            };
-                            sender[i] = (@as(u8, hi) << 4) | @as(u8, lo);
-                        }
-                    }
+                const body = extractBody(request) orelse {
+                    var bad_resp = Response.badRequest("{\"error\":\"Missing body\"}");
+                    _ = try bad_resp.withJSONContentType();
+                    try bad_resp.send(conn);
+                    return;
+                };
+                // Body format: 64(sender)+64(pubkey)+128(signature) hex chars.
+                if (body.len < 256) {
+                    var bad_resp = Response.badRequest("{\"error\":\"Body must contain sender+public_key+signature hex\"}");
+                    _ = try bad_resp.withJSONContentType();
+                    try bad_resp.send(conn);
+                    return;
                 }
+                const parsed = parseSubmitTransactionBody(body) orelse {
+                    var bad_resp = Response.badRequest("{\"error\":\"Invalid sender/public_key/signature hex\"}");
+                    _ = try bad_resp.withJSONContentType();
+                    try bad_resp.send(conn);
+                    return;
+                };
                 const tx = pipeline.Transaction{
-                    .sender = sender,
+                    .sender = parsed.sender,
                     .inputs = &.{},
                     .program = &.{},
                     .gas_budget = 1000,
-                    .sequence = 0,
+                    .sequence = parsed.sequence,
+                    .signature = parsed.signature,
+                    .public_key = parsed.public_key,
                 };
-                node.submitTransaction(tx, 1000) catch |err| {
+                const submit = node.submitTransaction(tx, 1000) catch |err| {
                     const response = switch (err) {
                         error.NotRunning, error.PoolFull => Response.serviceUnavailable("{\"error\":\"Service unavailable - try again later\"}"),
-                        error.TransactionAlreadyExecuted, error.DuplicateTransaction => Response{
-                            .status = .conflict,
-                            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
-                            .body = "{\"error\":\"Transaction already known\"}",
-                        },
+                        error.InvalidSignature => Response.badRequest("{\"error\":\"Invalid transaction signature\"}"),
+                        error.NonceTooOld, error.NonceTooNew => Response.badRequest("{\"error\":\"Invalid transaction nonce\"}"),
                         error.GasPriceTooLow => Response.badRequest("{\"error\":\"Gas price too low\"}"),
                         else => Response.internalError("{\"error\":\"Failed to submit transaction\"}"),
                     };
@@ -622,7 +663,11 @@ pub const HTTPServer = struct {
                     try resp.send(conn);
                     return;
                 };
-                var response = Response.ok("{\"success\":true}");
+                const ok_body = if (submit == .duplicate)
+                    "{\"success\":true,\"duplicate\":true}"
+                else
+                    "{\"success\":true,\"duplicate\":false}";
+                var response = Response.ok(ok_body);
                 _ = try response.withJSONContentType();
                 try response.send(conn);
             } else {
@@ -650,12 +695,201 @@ pub const HTTPServer = struct {
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (extractBody(request)) |body| {
-                _ = body;
-                const resp = JSONRPCResponse.newError(-32603, "Internal error", .{ .integer = 0 });
-                const resp_json = try resp.toJSON(self.allocator);
-                var http_resp = Response.internalError(resp_json);
-                _ = try http_resp.withJSONContentType();
-                try http_resp.send(conn);
+                const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{ .ignore_unknown_fields = true }) catch {
+                    var bad = Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}");
+                    _ = try bad.withJSONContentType();
+                    try bad.send(conn);
+                    return;
+                };
+                defer parsed.deinit();
+                const method_val = parsed.value.object.get("method") orelse {
+                    var bad = Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}");
+                    _ = try bad.withJSONContentType();
+                    try bad.send(conn);
+                    return;
+                };
+
+                const id_str = blk: {
+                    if (parsed.value.object.get("id")) |id_val| {
+                        if (id_val == .integer) {
+                            break :blk std.fmt.allocPrint(self.allocator, "{d}", .{id_val.integer}) catch "1";
+                        }
+                        if (id_val == .string) {
+                            break :blk std.fmt.allocPrint(self.allocator, "\"{s}\"", .{id_val.string}) catch "\"1\"";
+                        }
+                    }
+                    break :blk "1";
+                };
+
+                const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_submitStakeOperation")) blk: {
+                    const node = self.node orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const input = M4RpcParams.parseStakeOperationInput(params_val) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_submitStakeOperation params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const operation_id = node.submitStakeOperation(input) catch |err| {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
+                            @errorName(err),
+                            "\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"status\":\"accepted\",\"operationId\":{d}}}", .{operation_id});
+                } else if (std.mem.eql(u8, method_val.string, "knot3_submitGovernanceProposal")) blk: {
+                    const node = self.node orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const input = M4RpcParams.parseGovernanceProposalInput(params_val) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_submitGovernanceProposal params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const proposal_id = node.submitGovernanceProposal(input) catch |err| {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
+                            @errorName(err),
+                            "\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
+                } else if (std.mem.eql(u8, method_val.string, "knot3_getCheckpointProof")) blk: {
+                    const node = self.node orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const req = M4RpcParams.parseCheckpointProofRequest(params_val) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getCheckpointProof params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const proof = node.buildCheckpointProof(req) catch |err| {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
+                            @errorName(err),
+                            "\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType();
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    defer node.freeCheckpointProof(proof);
+                    const proof_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.proof_bytes);
+                    defer self.allocator.free(proof_hex);
+                    const sig_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.signatures);
+                    defer self.allocator.free(sig_hex);
+                    break :blk try std.fmt.allocPrint(
+                        self.allocator,
+                        "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
+                        .{ proof.sequence, proof.state_root, proof_hex, sig_hex },
+                    );
+                } else null;
+                if (result_json) |r| {
+                    const response_body = try std.mem.concat(self.allocator, u8, &.{ "{\"jsonrpc\":\"2.0\",\"result\":", r, ",\"id\":", id_str, "}" });
+                    var ok_resp = Response.ok(response_body);
+                    _ = try ok_resp.withJSONContentType();
+                    try ok_resp.send(conn);
+                } else {
+                    const response_body = try std.mem.concat(self.allocator, u8, &.{
+                        "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":",
+                        id_str,
+                        "}",
+                    });
+                    var nf = Response.ok(response_body);
+                    _ = try nf.withJSONContentType();
+                    try nf.send(conn);
+                }
             } else {
                 var response = Response.badRequest("{\"error\":\"Missing body\"}");
                 _ = try response.withJSONContentType();
@@ -693,4 +927,29 @@ test "JSON-RPC response error" {
     const response = JSONRPCResponse.newError(-32600, "Invalid request", .{ .integer = 1 });
     try std.testing.expect(response.err != null);
     try std.testing.expectEqual(@as(i32, -32600), response.err.?.code);
+}
+
+test "parseSubmitTransactionBody parses valid fixed hex payload" {
+    var body: [256]u8 = undefined;
+    @memset(&body, '0');
+    body[63] = '1'; // sender last nibble
+    body[127] = '2'; // pubkey last nibble
+    body[255] = 'a'; // signature last nibble
+
+    const maybe_parsed = parseSubmitTransactionBody(&body);
+    try std.testing.expect(maybe_parsed != null);
+    const parsed = maybe_parsed.?;
+    try std.testing.expect(parsed.sender[31] == 0x01);
+    try std.testing.expect(parsed.public_key[31] == 0x02);
+    try std.testing.expect(parsed.signature[63] == 0x0a);
+}
+
+test "parseSubmitTransactionBody rejects malformed payload" {
+    const short = "abcd";
+    try std.testing.expect(parseSubmitTransactionBody(short) == null);
+
+    var invalid: [256]u8 = undefined;
+    @memset(&invalid, '0');
+    invalid[10] = 'z';
+    try std.testing.expect(parseSubmitTransactionBody(&invalid) == null);
 }

@@ -10,6 +10,9 @@ const std = @import("std");
 const core = @import("../core.zig");
 const ObjectStore = @import("../form/storage/ObjectStore.zig");
 const Checkpoint = @import("../form/storage/Checkpoint.zig");
+const Node = @import("Node.zig").Node;
+const MainnetExtensionHooks = @import("MainnetExtensionHooks.zig");
+const M4RpcParams = @import("../form/network/M4RpcParams.zig");
 const ObjectID = core.ObjectID;
 const Version = core.Version;
 
@@ -102,15 +105,15 @@ pub const Schema = struct {
         };
 
         // Build Knot3-compatible schema
-        try self.buildSuiSchema();
+        try self.buildKnot3Schema();
 
         return self;
     }
 
     /// Build Knot3-compatible GraphQL schema
-    fn buildSuiSchema(self: *Self) !void {
-        // Register SuiObject type
-        try self.registerObject("SuiObject", &.{
+    fn buildKnot3Schema(self: *Self) !void {
+        // Register Knot3Object type
+        try self.registerObject("Knot3Object", &.{
             .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveObjectId },
             .{ .name = "version", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectVersion },
             .{ .name = "owner", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveObjectOwner },
@@ -120,7 +123,7 @@ pub const Schema = struct {
             .{ .name = "balance", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectBalance },
         }, &.{});
 
-        // Register SuiCheckpoint type
+        // Register Knot3Checkpoint type
         try self.registerObject("Checkpoint", &.{
             .{ .name = "sequence", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointSequence },
             .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointDigest },
@@ -128,8 +131,8 @@ pub const Schema = struct {
             .{ .name = "transactions", .type = .{ .kind = .List, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointTxs },
         }, &.{});
 
-        // Register SuiTransaction type
-        try self.registerObject("SuiTransaction", &.{
+        // Register Knot3Transaction type
+        try self.registerObject("Knot3Transaction", &.{
             .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveTxDigest },
             .{ .name = "sender", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveTxSender },
             .{ .name = "gasBudget", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxGasBudget },
@@ -146,9 +149,29 @@ pub const Schema = struct {
             .{ .name = "previousTransaction", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCoinPrevTx },
         }, &.{});
 
+        // M4 mainnet extension types
+        try self.registerObject("StakeOperationReceipt", &.{
+            .{ .name = "status", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveStakeOpStatus },
+            .{ .name = "operationId", .type = m4_gql_nn.int_req, .args = &.{}, .resolve = resolveStakeOpId },
+        }, &.{});
+
+        try self.registerObject("GovernanceProposalReceipt", &.{
+            .{ .name = "status", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveGovStatus },
+            .{ .name = "proposalId", .type = m4_gql_nn.int_req, .args = &.{}, .resolve = resolveGovProposalId },
+        }, &.{});
+
+        try self.registerObject("CheckpointProof", &.{
+            .{ .name = "sequence", .type = m4_gql_nn.int_req, .args = &.{}, .resolve = resolveProofSequence },
+            .{ .name = "stateRoot", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofStateRoot },
+            .{ .name = "proof", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofBytes },
+            .{ .name = "signatures", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofSignatures },
+            .{ .name = "blsSignature", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofBlsSignature },
+            .{ .name = "blsSignerBitmap", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofBlsSignerBitmap },
+        }, &.{});
+
         // Build query type with root fields
         try self.registerObject("Query", &.{
-            .{ .name = "knot3_getObject", .type = .{ .kind = .Object, .named_type = "SuiObject", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getObject", .type = .{ .kind = .Object, .named_type = "Knot3Object", .of_type = null }, .args = &.{
                 .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetObject },
             .{ .name = "knot3_getCheckpoint", .type = .{ .kind = .Object, .named_type = "Checkpoint", .of_type = null }, .args = &.{
@@ -160,12 +183,34 @@ pub const Schema = struct {
                 },
                 .{ .name = "coinType", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetCoins },
-            .{ .name = "knot3_getTransactionBlock", .type = .{ .kind = .Object, .named_type = "SuiTransaction", .of_type = null }, .args = &.{
+            .{ .name = "knot3_getTransactionBlock", .type = .{ .kind = .Object, .named_type = "Knot3Transaction", .of_type = null }, .args = &.{
                 .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetTransaction },
-            .{ .name = "sui_queryEvents", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{
+            .{ .name = "knot3_queryEvents", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{
                 .{ .name = "query", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
             }, .resolve = resolveQueryEvents },
+            .{ .name = "knot3_getCheckpointProof", .type = m4_gql_nn.checkpoint_proof_req, .args = &.{
+                .{ .name = "sequence", .type = m4_gql_nn.int_req, .default_value = null },
+                .{ .name = "objectId", .type = m4_gql_nn.id_req, .default_value = null },
+            }, .resolve = resolveGetCheckpointProof },
+        }, &.{});
+
+        // Mutation root for M4 write-like hooks with typed inputs.
+        try self.registerObject("Mutation", &.{
+            .{ .name = "knot3_submitStakeOperation", .type = m4_gql_nn.stake_receipt_req, .args = &.{
+                .{ .name = "validator", .type = m4_gql_nn.id_req, .default_value = null },
+                .{ .name = "delegator", .type = m4_gql_nn.id_req, .default_value = null },
+                .{ .name = "amount", .type = m4_gql_nn.int_req, .default_value = null },
+                .{ .name = "action", .type = m4_gql_nn.string_req, .default_value = null },
+                .{ .name = "metadata", .type = m4_gql_nn.string_req, .default_value = null },
+            }, .resolve = resolveSubmitStakeOperation },
+            .{ .name = "knot3_submitGovernanceProposal", .type = m4_gql_nn.gov_receipt_req, .args = &.{
+                .{ .name = "proposer", .type = m4_gql_nn.id_req, .default_value = null },
+                .{ .name = "title", .type = m4_gql_nn.string_req, .default_value = null },
+                .{ .name = "description", .type = m4_gql_nn.string_req, .default_value = null },
+                .{ .name = "kind", .type = m4_gql_nn.string_req, .default_value = null },
+                .{ .name = "activationEpoch", .type = m4_gql_nn.int_opt, .default_value = null },
+            }, .resolve = resolveSubmitGovernanceProposal },
         }, &.{});
     }
 
@@ -194,6 +239,33 @@ pub const Schema = struct {
         try self.types.put(self.allocator, name, type_def);
     }
 
+    /// Render `TypeRef` as GraphQL SDL type syntax (e.g. `Int!`, `[ID!]!`).
+    pub fn formatTypeRefSdl(allocator: std.mem.Allocator, ref: TypeRef) std.mem.Allocator.Error![]u8 {
+        var buf = std.ArrayList(u8).empty;
+        errdefer buf.deinit(allocator);
+        try formatTypeRefSdlAppend(allocator, &buf, ref);
+        return try buf.toOwnedSlice(allocator);
+    }
+
+    fn formatTypeRefSdlAppend(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), ref: TypeRef) std.mem.Allocator.Error!void {
+        switch (ref.kind) {
+            .NonNull => {
+                try formatTypeRefSdlAppend(allocator, buf, ref.of_type.?.*);
+                try buf.append(allocator, '!');
+            },
+            .List => {
+                try buf.append(allocator, '[');
+                if (ref.of_type) |inner| {
+                    try formatTypeRefSdlAppend(allocator, buf, inner.*);
+                } else {
+                    try buf.appendSlice(allocator, ref.named_type);
+                }
+                try buf.appendSlice(allocator, "]");
+            },
+            else => try buf.appendSlice(allocator, ref.named_type),
+        }
+    }
+
     pub fn deinit(self: *Self) void {
         // Clean up allocated types
         var it = self.types.iterator();
@@ -205,11 +277,30 @@ pub const Schema = struct {
     }
 };
 
+/// Stable `TypeRef` graph for M4 fields that are non-null in SDL (`!`).
+const m4_gql_nn = struct {
+    const int_s = Schema.TypeRef{ .kind = .Scalar, .named_type = "Int", .of_type = null };
+    const id_s = Schema.TypeRef{ .kind = .Scalar, .named_type = "ID", .of_type = null };
+    const string_s = Schema.TypeRef{ .kind = .Scalar, .named_type = "String", .of_type = null };
+    const cp_o = Schema.TypeRef{ .kind = .Object, .named_type = "CheckpointProof", .of_type = null };
+    const sr_o = Schema.TypeRef{ .kind = .Object, .named_type = "StakeOperationReceipt", .of_type = null };
+    const gr_o = Schema.TypeRef{ .kind = .Object, .named_type = "GovernanceProposalReceipt", .of_type = null };
+
+    pub const int_req: Schema.TypeRef = .{ .kind = .NonNull, .named_type = "Int", .of_type = &int_s };
+    pub const id_req: Schema.TypeRef = .{ .kind = .NonNull, .named_type = "ID", .of_type = &id_s };
+    pub const string_req: Schema.TypeRef = .{ .kind = .NonNull, .named_type = "String", .of_type = &string_s };
+    pub const checkpoint_proof_req: Schema.TypeRef = .{ .kind = .NonNull, .named_type = "CheckpointProof", .of_type = &cp_o };
+    pub const stake_receipt_req: Schema.TypeRef = .{ .kind = .NonNull, .named_type = "StakeOperationReceipt", .of_type = &sr_o };
+    pub const gov_receipt_req: Schema.TypeRef = .{ .kind = .NonNull, .named_type = "GovernanceProposalReceipt", .of_type = &gr_o };
+    pub const int_opt: Schema.TypeRef = int_s;
+};
+
 /// Resolver context for field resolution
 pub const ResolverContext = struct {
     allocator: std.mem.Allocator,
     object_store: ?*ObjectStore,
     checkpoint_store: ?*Checkpoint,
+    node: ?*Node = null,
 };
 
 /// Argument value
@@ -217,6 +308,15 @@ pub const ArgValue = struct {
     name: []const u8,
     value: []const u8,
 };
+
+comptime {
+    std.debug.assert(@sizeOf(ArgValue) == @sizeOf(M4RpcParams.PlainArg));
+    std.debug.assert(@alignOf(ArgValue) == @alignOf(M4RpcParams.PlainArg));
+}
+
+fn asPlainArgs(args: []const ArgValue) []const M4RpcParams.PlainArg {
+    return @as([*]const M4RpcParams.PlainArg, @ptrCast(@alignCast(args.ptr)))[0..args.len];
+}
 
 /// GraphQL value
 pub const Value = struct {
@@ -420,6 +520,106 @@ fn resolveQueryEvents(ctx: *const ResolverContext, args: []const ArgValue) anyer
     _ = ctx;
     _ = args;
     return stringValue("[]");
+}
+
+fn resolveStakeOpStatus(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("accepted");
+}
+
+fn resolveStakeOpId(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return intValue(1);
+}
+
+fn resolveGovStatus(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("accepted");
+}
+
+fn resolveGovProposalId(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return intValue(1);
+}
+
+fn resolveProofSequence(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return intValue(0);
+}
+
+fn resolveProofBytes(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("");
+}
+
+fn resolveProofSignatures(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("");
+}
+
+fn resolveProofStateRoot(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("");
+}
+
+fn resolveProofBlsSignature(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("");
+}
+
+fn resolveProofBlsSignerBitmap(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    _ = ctx;
+    _ = args;
+    return stringValue("");
+}
+
+fn resolveGetCheckpointProof(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    const node = ctx.node orelse return error.NodeNotConfigured;
+    const req = M4RpcParams.parseCheckpointProofFromPlainArgs(asPlainArgs(args)) catch return error.InvalidParams;
+    const proof = try node.buildCheckpointProof(req);
+    defer node.freeCheckpointProof(proof);
+    const proof_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.proof_bytes);
+    const signatures_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.signatures);
+    const bls_signature_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.bls_signature);
+    const bls_bitmap_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.bls_signer_bitmap);
+    const state_root_text = try std.fmt.allocPrint(ctx.allocator, "{x}", .{proof.state_root});
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    try obj.put(ctx.allocator, "sequence", intValue(@intCast(proof.sequence)));
+    try obj.put(ctx.allocator, "stateRoot", stringValue(state_root_text));
+    try obj.put(ctx.allocator, "proof", stringValue(proof_text));
+    try obj.put(ctx.allocator, "signatures", stringValue(signatures_text));
+    try obj.put(ctx.allocator, "blsSignature", stringValue(bls_signature_text));
+    try obj.put(ctx.allocator, "blsSignerBitmap", stringValue(bls_bitmap_text));
+    return objectValue(obj);
+}
+
+fn resolveSubmitStakeOperation(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    const node = ctx.node orelse return error.NodeNotConfigured;
+    const input = M4RpcParams.parseStakeOperationFromPlainArgs(asPlainArgs(args)) catch return error.InvalidParams;
+    const operation_id = try node.submitStakeOperation(input);
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    try obj.put(ctx.allocator, "status", stringValue("accepted"));
+    try obj.put(ctx.allocator, "operationId", intValue(@intCast(operation_id)));
+    return objectValue(obj);
+}
+
+fn resolveSubmitGovernanceProposal(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
+    const node = ctx.node orelse return error.NodeNotConfigured;
+    const input = M4RpcParams.parseGovernanceProposalFromPlainArgs(asPlainArgs(args)) catch return error.InvalidParams;
+    const proposal_id = try node.submitGovernanceProposal(input);
+    var obj = std.StringArrayHashMapUnmanaged(Value).empty;
+    try obj.put(ctx.allocator, "status", stringValue("accepted"));
+    try obj.put(ctx.allocator, "proposalId", intValue(@intCast(proposal_id)));
+    return objectValue(obj);
 }
 
 /// GraphQL query
@@ -706,7 +906,7 @@ test "GraphQL schema initialization" {
     defer schema.deinit();
 
     try std.testing.expect(schema.types.count() > 0);
-    try std.testing.expect(schema.types.contains("SuiObject"));
+    try std.testing.expect(schema.types.contains("Knot3Object"));
     try std.testing.expect(schema.types.contains("Checkpoint"));
 }
 
@@ -746,6 +946,7 @@ test "GraphQL compiler executes query" {
         .allocator = allocator,
         .object_store = null,
         .checkpoint_store = null,
+        .node = null,
     };
 
     const query = "{ knot3_getCheckpoint(id: 1) { sequence digest } }";
@@ -769,4 +970,58 @@ test "GraphQL serialize object value" {
     const json = buf.items;
     try std.testing.expect(std.mem.indexOf(u8, json, "\"id\":\"0x1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"count\":42") != null);
+}
+
+test "GraphQL M4 resolvers call node hooks" {
+    const Config = @import("Config.zig").Config;
+    const NodeDependencies = @import("Node.zig").NodeDependencies;
+    const allocator = std.testing.allocator;
+    const hex64 = "0000000000000000000000000000000000000000000000000000000000000000";
+    const hex64_b = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    const config = try allocator.create(Config);
+    defer allocator.destroy(config);
+    config.* = Config.default();
+
+    const node = try Node.init(allocator, config, NodeDependencies{});
+    defer node.deinit();
+
+    const ctx = ResolverContext{
+        .allocator = allocator,
+        .object_store = null,
+        .checkpoint_store = null,
+        .node = node,
+    };
+
+    const stake_args = [_]ArgValue{
+        .{ .name = "validator", .value = hex64 },
+        .{ .name = "delegator", .value = hex64_b },
+        .{ .name = "amount", .value = "10" },
+        .{ .name = "action", .value = "stake" },
+        .{ .name = "metadata", .value = "gql-test" },
+    };
+    const stake_1 = try resolveSubmitStakeOperation(&ctx, &stake_args);
+    const stake_2 = try resolveSubmitStakeOperation(&ctx, &stake_args);
+    const stake_1_id = stake_1.object.?.get("operationId").?.int.?;
+    const stake_2_id = stake_2.object.?.get("operationId").?.int.?;
+    try std.testing.expectEqual(@as(i64, 1), stake_1_id);
+    try std.testing.expectEqual(@as(i64, 2), stake_2_id);
+
+    const gov_args = [_]ArgValue{
+        .{ .name = "proposer", .value = hex64 },
+        .{ .name = "title", .value = "t" },
+        .{ .name = "description", .value = "d" },
+        .{ .name = "kind", .value = "parameter_change" },
+    };
+    const gov = try resolveSubmitGovernanceProposal(&ctx, &gov_args);
+    const proposal_id = gov.object.?.get("proposalId").?.int.?;
+    try std.testing.expectEqual(@as(i64, 1), proposal_id);
+
+    const proof_args = [_]ArgValue{
+        .{ .name = "sequence", .value = "9" },
+        .{ .name = "objectId", .value = hex64 },
+    };
+    const proof = try resolveGetCheckpointProof(&ctx, &proof_args);
+    const proof_seq = proof.object.?.get("sequence").?.int.?;
+    try std.testing.expectEqual(@as(i64, 9), proof_seq);
 }

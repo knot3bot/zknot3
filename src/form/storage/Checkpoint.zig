@@ -8,6 +8,18 @@
 const std = @import("std");
 const core = @import("../../core.zig");
 const ValidatorSet = @import("../consensus/Validator.zig").ValidatorSet;
+const Sig = @import("../../property/crypto/Signature.zig");
+const Bls = core.Bls;
+
+pub const BlsValidator = struct {
+    validator_id: [32]u8,
+    public_key: Bls.PublicKey,
+    voting_power: u64,
+};
+
+pub const BlsValidatorSet = struct {
+    validators: []const BlsValidator,
+};
 
 /// Checkpoint data structure
 pub const Checkpoint = struct {
@@ -16,8 +28,11 @@ pub const Checkpoint = struct {
     previous_digest: [32]u8,
     object_changes: []const ObjectChange,
     state_root: [32]u8,
-    /// Validator signatures: validator_id -> BLS signature
-    signatures: std.AutoArrayHashMapUnmanaged([32]u8, [96]u8),
+    /// Validator signatures: validator_id -> Ed25519 signature (64 bytes).
+    /// BLS aggregate signatures may be added later without changing validator_id keys.
+    signatures: std.AutoArrayHashMapUnmanaged([32]u8, [64]u8),
+    bls_signature: ?Bls.Signature = null,
+    bls_signer_bitmap: ?[]const u8 = null,
 
     const Self = @This();
 
@@ -82,6 +97,18 @@ pub const Checkpoint = struct {
         return dig;
     }
 
+    /// Canonical commitment bytes signed by validators (Blake3 of `serialize` payload).
+    /// Excludes signature map entries; bind checkpoint body only.
+    pub fn signingCommitment(self: Self, allocator: std.mem.Allocator) ![32]u8 {
+        const ser = try self.serialize(allocator);
+        defer allocator.free(ser);
+        var out: [32]u8 = undefined;
+        var ctx = std.crypto.hash.Blake3.init(.{});
+        ctx.update(ser);
+        ctx.final(&out);
+        return out;
+    }
+
     /// Verify checkpoint integrity and consensus
     /// Returns true if:
     /// 1. State root matches recomputed value from object_changes
@@ -92,6 +119,7 @@ pub const Checkpoint = struct {
         allocator: std.mem.Allocator,
         previous_checkpoint: ?*const Self,
         validator_set: ?*const ValidatorSet,
+        bls_validator_set: ?*const BlsValidatorSet,
     ) !bool {
         // 1. Verify state root matches recomputed value
         const computed_root = try verifyStateRoot(self.object_changes, allocator);
@@ -111,31 +139,60 @@ pub const Checkpoint = struct {
             }
         }
 
-        // 3. Verify signatures meet quorum
+        // 3. Verify Ed25519 signatures meet quorum (stake-weighted)
         if (validator_set) |vset| {
             if (self.signatures.count() == 0) return false;
 
+            const msg = try self.signingCommitment(allocator);
             const total_stake = vset.totalStake();
+            if (total_stake == 0) return false;
             // Quorum threshold is 2/3+ of total stake
             const quorum_threshold = (total_stake * 2) / 3 + 1;
             var stake_sum: u64 = 0;
             var it = self.signatures.iterator();
             while (it.next()) |entry| {
                 if (vset.get(entry.key_ptr.*)) |validator| {
-                    // Skip BLS verification in simplified build
-                    stake_sum += validator.stake.votingPower();
+                    if (Sig.Ed25519.verify(validator.stake.public_key, &msg, entry.value_ptr.*)) {
+                        stake_sum += validator.stake.votingPower();
+                    }
                 }
             }
             // Require quorum stake for commit
             if (stake_sum < quorum_threshold) return false;
         }
 
+        // 4. Optional BLS aggregate verification (same quorum threshold).
+        if (bls_validator_set) |bvset| {
+            const sig = self.bls_signature orelse return false;
+            const bitmap = self.bls_signer_bitmap orelse return false;
+            if (bvset.validators.len == 0) return false;
+            var total_power: u64 = 0;
+            for (bvset.validators) |v| total_power += v.voting_power;
+            if (total_power == 0) return false;
+            const quorum_threshold = (total_power * 2) / 3 + 1;
+            var selected = std.ArrayList(Bls.PublicKey).empty;
+            defer selected.deinit(allocator);
+            var power: u64 = 0;
+            const n = @min(bitmap.len, bvset.validators.len);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (bitmap[i] != 0) {
+                    try selected.append(allocator, bvset.validators[i].public_key);
+                    power += bvset.validators[i].voting_power;
+                }
+            }
+            if (selected.items.len == 0 or power < quorum_threshold) return false;
+            const agg_pk = Bls.aggregatePk(selected.items);
+            const msg = try self.signingCommitment(allocator);
+            if (!Bls.verifyAggregated(&msg, agg_pk, sig)) return false;
+        }
+
         return true;
     }
 
     /// Add a signature from a validator
-    pub fn addSignature(self: *Self, validator_id: [32]u8, signature: [96]u8) !void {
-        try self.signatures.put(self.allocator, validator_id, signature);
+    pub fn addSignature(self: *Self, allocator: std.mem.Allocator, validator_id: [32]u8, signature: [64]u8) !void {
+        try self.signatures.put(allocator, validator_id, signature);
     }
 
     /// Deinitialize checkpoint and free resources
@@ -285,6 +342,126 @@ test "Checkpoint verify state root" {
     defer cp.deinit(allocator);
 
     // Verify should pass with no previous checkpoint and no validator set
-    const is_valid = try cp.verify(allocator, null, null);
+    const is_valid = try cp.verify(allocator, null, null, null);
     try std.testing.expect(is_valid);
+}
+
+test "Checkpoint verify fails on previous digest mismatch" {
+    const allocator = std.testing.allocator;
+
+    const changes_prev = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("obj_prev"),
+            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .status = .created,
+        },
+    };
+    var prev = try Checkpoint.create(7, [_]u8{0} ** 32, &changes_prev, allocator);
+    defer prev.deinit(allocator);
+
+    const changes_cur = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("obj_cur"),
+            .version = .{ .seq = 2, .causal = [_]u8{1} ** 16 },
+            .status = .modified,
+        },
+    };
+    // Intentionally wrong previous digest.
+    var current = try Checkpoint.create(8, [_]u8{9} ** 32, &changes_cur, allocator);
+    defer current.deinit(allocator);
+
+    const is_valid = try current.verify(allocator, &prev, null, null);
+    try std.testing.expect(!is_valid);
+}
+
+test "Checkpoint verify fails on non-continuous sequence" {
+    const allocator = std.testing.allocator;
+
+    const changes_prev = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("seq_prev"),
+            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .status = .created,
+        },
+    };
+    var prev = try Checkpoint.create(11, [_]u8{0} ** 32, &changes_prev, allocator);
+    defer prev.deinit(allocator);
+
+    const changes_cur = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("seq_cur"),
+            .version = .{ .seq = 2, .causal = [_]u8{2} ** 16 },
+            .status = .modified,
+        },
+    };
+    var current = try Checkpoint.create(13, prev.digest(), &changes_cur, allocator);
+    defer current.deinit(allocator);
+
+    const is_valid = try current.verify(allocator, &prev, null, null);
+    try std.testing.expect(!is_valid);
+}
+
+test "Checkpoint verify accepts BLS quorum over signingCommitment" {
+    const allocator = std.testing.allocator;
+
+    const changes = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("bls_obj"),
+            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .status = .created,
+        },
+    };
+
+    var cp = try Checkpoint.create(1, [_]u8{0} ** 32, &changes, allocator);
+    defer cp.deinit(allocator);
+
+    const sk1 = [_]u8{0x31} ** 32;
+    const sk2 = [_]u8{0x32} ** 32;
+    const msg = try cp.signingCommitment(allocator);
+    const sig1 = Bls.sign(sk1, &msg);
+    const sig2 = Bls.sign(sk2, &msg);
+    cp.bls_signature = Bls.aggregateSig(&[_]Bls.Signature{ sig1, sig2 });
+    const bitmap = [_]u8{ 1, 1, 0 };
+    cp.bls_signer_bitmap = &bitmap;
+
+    const vset = BlsValidatorSet{
+        .validators = &[_]BlsValidator{
+            .{ .validator_id = [_]u8{0x01} ** 32, .public_key = Bls.derivePublicKey(sk1), .voting_power = 400 },
+            .{ .validator_id = [_]u8{0x02} ** 32, .public_key = Bls.derivePublicKey(sk2), .voting_power = 400 },
+            .{ .validator_id = [_]u8{0x03} ** 32, .public_key = Bls.derivePublicKey([_]u8{0x33} ** 32), .voting_power = 400 },
+        },
+    };
+
+    try std.testing.expect(try cp.verify(allocator, null, null, &vset));
+}
+
+test "Checkpoint verify rejects BLS bitmap below quorum threshold" {
+    const allocator = std.testing.allocator;
+
+    const changes = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("bls_obj_low"),
+            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .status = .created,
+        },
+    };
+
+    var cp = try Checkpoint.create(1, [_]u8{0} ** 32, &changes, allocator);
+    defer cp.deinit(allocator);
+
+    const sk1 = [_]u8{0x41} ** 32;
+    const msg = try cp.signingCommitment(allocator);
+    cp.bls_signature = Bls.aggregateSig(&[_]Bls.Signature{Bls.sign(sk1, &msg)});
+    const bitmap = [_]u8{ 1, 0, 0 };
+    cp.bls_signer_bitmap = &bitmap;
+
+    const vset = BlsValidatorSet{
+        .validators = &[_]BlsValidator{
+            .{ .validator_id = [_]u8{0x01} ** 32, .public_key = Bls.derivePublicKey(sk1), .voting_power = 400 },
+            .{ .validator_id = [_]u8{0x02} ** 32, .public_key = Bls.derivePublicKey([_]u8{0x42} ** 32), .voting_power = 400 },
+            .{ .validator_id = [_]u8{0x03} ** 32, .public_key = Bls.derivePublicKey([_]u8{0x43} ** 32), .voting_power = 400 },
+        },
+    };
+
+    try std.testing.expect(!try cp.verify(allocator, null, null, &vset));
 }

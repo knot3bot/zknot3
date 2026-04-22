@@ -1,0 +1,85 @@
+# Production Configuration (Conservative)
+# Prioritizes consensus safety under hostile network load.
+
+[network]
+bind_address = "0.0.0.0"
+rpc_port = 9000
+p2p_enabled = true
+p2p_address = "0.0.0.0"
+p2p_port = 8080
+max_connections = 1024
+connection_timeout = 30
+
+[consensus]
+# Safe default: production profile does not auto-enable validator role
+# until operator injects keys/stake and explicitly flips this on.
+validator_enabled = false
+min_validator_stake = 1000000000
+min_validators = 4
+target_validators = 100
+max_validators = 500
+epoch_duration_secs = 86400
+quorum_threshold = 200
+vote_quorum = 3
+round_interval_secs = 2
+max_txs_per_block = 50
+max_committed_blocks = 10000
+
+# Conservative message scheduling
+max_messages_per_tick = 192
+max_block_messages_per_tick = 56
+max_vote_messages_per_tick = 96
+max_certificate_messages_per_tick = 28
+max_transaction_messages_per_tick = 12
+per_peer_batch_limit = 3
+
+pending_tx_medium_threshold = 256
+pending_tx_high_threshold = 2048
+medium_tx_budget_boost = 16
+high_tx_budget_boost = 32
+near_round_vote_budget_boost = 32
+near_round_certificate_budget_boost = 24
+near_round_block_budget_boost = 8
+
+min_block_messages_per_tick = 32
+min_vote_messages_per_tick = 64
+min_certificate_messages_per_tick = 16
+min_transaction_messages_per_tick = 8
+
+[storage]
+data_dir = "/var/lib/zknot3"
+object_store_path = "objects"
+checkpoint_store_path = "checkpoints"
+cache_size = 10737418240
+enable_compaction = true
+compaction_interval_secs = 3600
+
+[vm]
+max_gas_budget = 10000000
+min_gas_price = 1000
+max_bytecode_size = 65536
+base_instruction_gas = 1
+storage_gas_per_byte = 10
+
+[authority]
+address = "127.0.0.1"
+port = 8080
+signing_key = null
+network_key = null
+stake = 0
+name = "Validator"
+description = "zknot3 Production Validator"
+
+[metrics]
+enabled = true
+scrape_interval_secs = 15
+enable_profiling = false
+profile_interval_secs = 60
+
+[logging]
+level = 2
+enable_file = true
+file_path = "/var/log/zknot3/zknot3.log"
+enable_stderr = true
+structured = true
+ansi_colors = true

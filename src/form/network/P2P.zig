@@ -160,7 +160,7 @@ pub const P2PNode = struct {
     pub fn init(allocator: std.mem.Allocator, local_peer_id: [32]u8) !*@This() {
         const transport = try Transport.Transport.init(allocator, .{});
         const peer_manager = try PeerManager.init(allocator, transport, local_peer_id);
-        const server = try P2PServer.init(allocator, .{});
+        const server = try P2PServer.init(allocator, .{ .allow_unauthenticated_handshake = true });
 
         const self = try allocator.create(@This());
         self.* = .{
@@ -183,7 +183,7 @@ pub const P2PNode = struct {
 
         const transport = try Transport.Transport.init(allocator, .{});
         const peer_manager = try PeerManager.init(allocator, transport, peer_id);
-        const server = try P2PServer.init(allocator, .{});
+        const server = try P2PServer.init(allocator, .{ .allow_unauthenticated_handshake = true });
 
         const self = try allocator.create(@This());
         self.* = .{

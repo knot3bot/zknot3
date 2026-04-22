@@ -3,6 +3,7 @@
 const std = @import("std");
 const app = @import("../../app.zig");
 const Node = app.Node;
+const NodeStatsCoordinator = @import("../NodeStatsCoordinator.zig");
 
 pub const NodeInfoResponse = struct {
     version: []const u8,
@@ -60,15 +61,15 @@ pub const ConsensusStatusResponse = struct {
     quorum_reached: bool,
 
     pub fn fromNode(node: *Node) @This() {
-        const committed = node.stats.blocks_committed;
+        const snap = NodeStatsCoordinator.snapshot(&node.stats);
         const has_quorum = if (node.committed_blocks.count() > 0) blk: {
             const values = node.committed_blocks.values();
             const latest = values[values.len - 1];
             break :blk latest.votes.count() >= node.config.consensus.vote_quorum;
         } else false;
         return .{
-            .current_round = node.stats.highest_round,
-            .highest_committed_block = committed,
+            .current_round = snap.highest_round,
+            .highest_committed_block = snap.blocks_committed,
             .active_validators = if (node.deps.epoch_bridge) |bridge|
                 @intCast(bridge.quorum.members.items.len)
             else
@@ -85,7 +86,7 @@ pub const TxnStatsResponse = struct {
 
     pub fn fromNode(node: *Node) @This() {
         const pool_stats = node.getTxnPoolStats();
-        const total = node.stats.transactions_executed;
+        const total = NodeStatsCoordinator.txExecuted(&node.stats);
         return .{
             .pending = pool_stats.pending,
             .executing = pool_stats.executing,

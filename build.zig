@@ -3,6 +3,20 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const tsan = b.option(bool, "tsan", "Enable thread-sanitizer oriented test profile") orelse false;
+    _ = tsan;
+    const blst_dep = b.dependency("blst", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const blst_mod = blst_dep.module("blst");
+
+    const WireImports = struct {
+        fn attach(module: *std.Build.Module, bld: *std.Build, dep_mod: *std.Build.Module) void {
+            module.addAnonymousImport("io_instance", .{ .root_source_file = bld.path("src/io_instance.zig") });
+            module.addImport("blst", dep_mod);
+        }
+    };
 
     // Main library module
     const root_module = b.createModule(.{
@@ -11,7 +25,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    root_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(root_module, b, blst_mod);
 
     // Static library
     const lib = b.addLibrary(.{
@@ -31,7 +45,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
-    test_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(test_module, b, blst_mod);
 
     // Unit tests
     const unit_tests = b.addTest(.{
@@ -67,7 +81,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
-    formal_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(formal_module, b, blst_mod);
 
     const formal_exporter = b.addExecutable(.{
         .name = "zknot3-formal-export",
@@ -104,7 +118,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
-    profiler_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(profiler_module, b, blst_mod);
     const profiler = b.addExecutable(.{
         .name = "zknot3-profiler",
         .root_module = profiler_module,
@@ -118,7 +132,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
-    fast_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(fast_module, b, blst_mod);
     const release_fast = b.addExecutable(.{
         .name = "zknot3-node-fast",
         .root_module = fast_module,
@@ -132,7 +146,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
         .link_libc = true,
     });
-    safe_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(safe_module, b, blst_mod);
     const release_safe = b.addExecutable(.{
         .name = "zknot3-node-safe",
         .root_module = safe_module,
@@ -146,7 +160,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
-    debug_module.addAnonymousImport("io_instance", .{ .root_source_file = b.path("src/io_instance.zig") });
+    WireImports.attach(debug_module, b, blst_mod);
     const debug_exe = b.addExecutable(.{
         .name = "zknot3-node-debug",
         .root_module = debug_module,

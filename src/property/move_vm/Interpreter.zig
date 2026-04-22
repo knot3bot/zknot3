@@ -190,41 +190,36 @@ pub const Interpreter = struct {
         switch (instr.opcode) {
             .nop => {},
             .branch => {
-                if (instr.payload.len >= 2) {
+                if (instr.payload.len < 2) return error.InvalidInstructionPayload;
+                self.pc = @as(usize, std.mem.readInt(u16, instr.payload[0..2], .big));
+                return;
+            },
+            .branch_if => {
+                if (self.stack.items.len < 1) return error.StackUnderflow;
+                if (instr.payload.len < 2) return error.InvalidInstructionPayload;
+                const cond = self.stack.pop().?;
+                if (cond.tag != .boolean) return error.TypeMismatch;
+                if (cond.data.bool) {
                     self.pc = @as(usize, std.mem.readInt(u16, instr.payload[0..2], .big));
                     return;
                 }
             },
-            .branch_if => {
-                if (self.stack.items.len >= 1) {
-                    const cond = self.stack.pop().?;
-                    if (cond.tag == .boolean and cond.data.bool) {
-                        if (instr.payload.len >= 2) {
-                            self.pc = @as(usize, std.mem.readInt(u16, instr.payload[0..2], .big));
-                            return;
-                        }
-                    }
-                }
-            },
             .pop => {
-                if (self.stack.items.len > 0) {
-                    _ = self.stack.pop().?;
-                }
+                if (self.stack.items.len == 0) return error.StackUnderflow;
+                _ = self.stack.pop().?;
             },
             .dup => {
-                if (self.stack.items.len > 0) {
-                    const top = self.stack.pop().?;
-                    try self.stack.append(self.allocator, top);
-                    try self.stack.append(self.allocator, top);
-                }
+                if (self.stack.items.len == 0) return error.StackUnderflow;
+                const top = self.stack.pop().?;
+                try self.stack.append(self.allocator, top);
+                try self.stack.append(self.allocator, top);
             },
             .swap => {
-                if (self.stack.items.len >= 2) {
-                    const a = self.stack.pop().?;
-                    const b = self.stack.pop().?;
-                    try self.stack.append(self.allocator, a);
-                    try self.stack.append(self.allocator, b);
-                }
+                if (self.stack.items.len < 2) return error.StackUnderflow;
+                const a = self.stack.pop().?;
+                const b = self.stack.pop().?;
+                try self.stack.append(self.allocator, a);
+                try self.stack.append(self.allocator, b);
             },
             .ld_const => {
                 if (instr.payload.len >= 8) {
@@ -450,25 +445,13 @@ pub const Interpreter = struct {
                 }
             },
             .move_resource => {
-                if (instr.payload.len >= 1) {
-                    const local_idx = instr.payload[0];
-                    // TODO: Implement local variable support
-                    _ = local_idx;
-                }
+                return error.UnimplementedInstruction;
             },
             .call => {
-                if (instr.payload.len >= 2) {
-                    const func_offset = @as(usize, std.mem.readInt(u16, instr.payload[0..2], .big));
-                    _ = func_offset;
-                    // TODO: Implement function call support
-                }
+                return error.UnimplementedInstruction;
             },
             .call_indirect => {
-                if (self.stack.items.len >= 1) {
-                    const func_ptr = self.stack.pop().?;
-                    _ = func_ptr;
-                    // TODO: Implement indirect function call support
-                }
+                return error.UnimplementedInstruction;
             },
             .ret => {
                 self.pc = self.instructions.len;
@@ -594,7 +577,7 @@ pub const Interpreter = struct {
                     }
                 }
             },
-            else => {}
+            else => return error.UnsupportedOpcode,
         }
     }
 
@@ -633,4 +616,46 @@ test "Interpreter basic execution" {
     try std.testing.expect(result.success);
     try std.testing.expect(result.return_value.?.tag == .boolean);
     try std.testing.expect(result.return_value.?.data.bool == true);
+}
+
+test "Interpreter fails safely on unimplemented instruction" {
+    const allocator = std.testing.allocator;
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = Resource.ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+
+    const module = Bytecode.VerifiedModule{
+        .name = "test_unimplemented",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .call, .payload = &[_]u8{ 0, 1 } },
+        },
+        .local_count = 0,
+    };
+
+    try std.testing.expectError(error.UnimplementedInstruction, interpreter.execute(module));
+}
+
+test "Interpreter returns stack underflow instead of crashing" {
+    const allocator = std.testing.allocator;
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = Resource.ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+
+    const module = Bytecode.VerifiedModule{
+        .name = "test_stack_underflow",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .pop, .payload = &.{} },
+        },
+        .local_count = 0,
+    };
+
+    try std.testing.expectError(error.StackUnderflow, interpreter.execute(module));
 }

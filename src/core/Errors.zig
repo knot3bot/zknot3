@@ -218,15 +218,15 @@ pub const RPCErrorCodeMap = struct {
             -32603 => return StorageError.ReadError,       // internal_error
             
             // Knot3 特定错误
-            -32001 => return CoreError.ObjectNotFound,     // sui_object_not_found
-            -32002 => return CoreError.TransferError,      // sui_object_not_deliverable
-            -32003 => return MoveVMError.MoveAbort,        // sui_move_abort
-            -32004 => return MoveVMError.InvalidBytecode,  // sui_move_verification_error
-            -32005 => return CoreError.ObjectNotFound,     // sui_package_not_found
-            -32006 => return CoreError.ObjectNotFound,     // sui_module_not_found
-            -32007 => return CoreError.ObjectNotFound,     // sui_function_not_found
-            -32008 => return CoreError.InvalidObjectID,    // sui_invalid_transaction
-            -32009 => return CryptoError.InvalidSignature, // sui_invalid_signature
+            -32001 => return CoreError.ObjectNotFound,     // knot3_object_not_found
+            -32002 => return CoreError.TransferError,      // knot3_object_not_deliverable
+            -32003 => return MoveVMError.MoveAbort,        // knot3_move_abort
+            -32004 => return MoveVMError.InvalidBytecode,  // knot3_move_verification_error
+            -32005 => return CoreError.ObjectNotFound,     // knot3_package_not_found
+            -32006 => return CoreError.ObjectNotFound,     // knot3_module_not_found
+            -32007 => return CoreError.ObjectNotFound,     // knot3_function_not_found
+            -32008 => return CoreError.InvalidObjectID,    // knot3_invalid_transaction
+            -32009, -32010 => return CryptoError.InvalidSignature, // knot3_invalid_signature (legacy/new)
             
             else => return CoreError.InvalidObjectID,
         }
@@ -257,7 +257,7 @@ pub const RPCErrorCodeMap = struct {
                     
                     // 共识层错误
                     ConsensusError.QuorumNotReached => return -32603,
-                    ConsensusError.VoteVerificationFailed => return -32009,
+                    ConsensusError.VoteVerificationFailed => return -32010,
                     
                     // Move VM 错误
                     MoveVMError.InvalidBytecode => return -32004,
@@ -265,7 +265,7 @@ pub const RPCErrorCodeMap = struct {
                     MoveVMError.OutOfGas => return -32603,
                     
                     // 加密错误
-                    CryptoError.InvalidSignature => return -32009,
+                    CryptoError.InvalidSignature => return -32010,
                     
                     else => return -32603, // internal_error
                 }

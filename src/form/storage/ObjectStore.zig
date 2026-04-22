@@ -4,7 +4,7 @@
 //! - O(log n) lookup via LSM-Tree
 //! - Causal version tracking
 //! - Ownership-based access control
-//! - Async I/O via io_uring (Linux) or ThreadPool (fallback)
+//! - Async I/O compatibility wrapper (currently sync on Linux, thread-pool fallback elsewhere)
 //!
 const std = @import("std");
 const core = @import("../../core.zig");

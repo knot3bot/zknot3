@@ -1,0 +1,12 @@
+.{
+    .name = .zknot3,
+    .version = "0.16.0",
+    .dependencies = .{
+        .blst = .{
+            .url = "git+https://github.com/supranational/blst",
+            .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0x996818910e4437f3,
+}

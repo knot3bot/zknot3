@@ -6,6 +6,7 @@
 //! Reference: kvdb WAL implementation with CRC32 checksums
 
 const std = @import("std");
+const IOUring = @import("IOUring.zig");
 
 /// WAL record types
 pub const WalRecordType = enum(u8) {
@@ -13,6 +14,14 @@ pub const WalRecordType = enum(u8) {
     delete = 2,
     commit = 3,
     abort = 4,
+    /// M4 mainnet extension (separate WAL file from LSM; never mixed into LSM WAL).
+    m4_stake_operation = 10,
+    m4_governance_proposal = 11,
+    m4_governance_status = 12,
+    m4_equivocation_evidence = 13,
+    m4_state_snapshot = 14,
+    m4_epoch_advance = 15,
+    m4_validator_set_rotate = 16,
 };
 
 /// WAL record header (16 bytes)
@@ -41,6 +50,8 @@ pub const RecoveryOptions = struct {
     validate_types: bool = true,
     /// Maximum record size to allow (prevents OOM)
     max_record_size: usize = 10 * 1024 * 1024, // 10 MB
+    /// Inclusive upper bound for `record_type` (LSM uses 1–4; M4 extension uses 10–14).
+    max_record_type: u8 = 4,
 };
 
 /// WAL recovery result
@@ -136,6 +147,7 @@ pub const WAL = struct {
     current_offset: u64,
     async_write: ?AsyncWriteBuffer = null,
     use_async_writes: bool = true,
+    durability_io: ?*IOUring.AsyncIO = null,
 
     /// Initialize WAL with async options
     pub fn initWithOptions(allocator: std.mem.Allocator, db_path: []const u8, use_async: ?bool) !Self {
@@ -158,6 +170,7 @@ pub const WAL = struct {
 
         // Initialize async buffer if requested
         const async_write = if (use_async orelse true) try AsyncWriteBuffer.init(allocator, 64 * 1024) else null;
+        const durability_io = IOUring.AsyncIO.init(allocator, IOUring.getRecommendedConfig()) catch null;
 
         return .{
             .allocator = allocator,
@@ -166,6 +179,7 @@ pub const WAL = struct {
             .current_offset = stat.size,
             .async_write = async_write,
             .use_async_writes = use_async orelse true,
+            .durability_io = durability_io,
         };
     }
     
@@ -177,39 +191,90 @@ pub const WAL = struct {
         return try initWithOptions(allocator, db_path, null);
     }
     pub fn deinit(self: *Self) void {
-        // Flush any pending async writes first
+        // Flush any pending async writes first. Legacy behavior is preserved
+        // verbatim (seek to current_offset, write, sync) to avoid altering
+        // teardown semantics in this perf-focused change.
         if (self.async_write) |*async_w| {
             if (async_w.write_offset > 0) {
                 const data = async_w.getAndReset();
                 self.file.seekTo(self.current_offset) catch {};
                 self.file.writeAll(data) catch {};
-                self.file.sync() catch {};
+                self.syncBarrier() catch {};
             }
             async_w.deinit();
+        }
+        if (self.durability_io) |dio| {
+            dio.deinit();
+            self.durability_io = null;
         }
         self.file.close();
         self.allocator.free(self.file_path);
     }
 
-    /// Compute CRC32 checksum
-    fn computeChecksum(header_no_checksum: *[12]u8, key: []const u8, value: ?[]const u8) u32 {
-        var crc: u32 = 0xFFFFFFFF;
-
-        // Hash header (excluding checksum field at offset 0)
-        crc ^= std.hash.Crc32.hash(header_no_checksum[4..]);
-        crc = (crc >> 1) ^ (0xEDB88320 * (crc & 1));
-
-        // Hash key
-        crc ^= std.hash.Crc32.hash(key);
-        crc = (crc >> 1) ^ (0xEDB88320 * (crc & 1));
-
-        // Hash value if present
-        if (value) |v| {
-            crc ^= std.hash.Crc32.hash(v);
-            crc = (crc >> 1) ^ (0xEDB88320 * (crc & 1));
+    fn syncBarrier(self: *Self) !void {
+        if (self.durability_io) |dio| {
+            return dio.fsync(self.file.file.handle);
         }
+        return self.file.sync();
+    }
 
-        return crc ^ 0xFFFFFFFF;
+    /// Durable write at `offset`. When the io_uring durability ring is attached
+    /// this submits write+fsync as a linked chain (one submit_and_wait instead
+    /// of two), preserving the same ordering guarantees as the legacy
+    /// `writeAll` + `syncBarrier` pair on non-Linux / fallback backends.
+    fn writeDurable(self: *Self, data: []const u8, offset: u64) !void {
+        if (self.durability_io) |dio| {
+            const n = try dio.writeAndFsync(self.file.file.handle, data, offset);
+            if (n != data.len) return error.ShortWrite;
+            return;
+        }
+        try self.file.seekTo(offset);
+        try self.file.writeAll(data);
+        try self.file.sync();
+    }
+
+    /// Gathered durable write at `offset`. Submits a single `pwritev + fsync`
+    /// chain on the io_uring path (one `submit_and_wait(2)`), eliminating the
+    /// caller-side "concat header + key + value into one contiguous buffer"
+    /// memcpy that `appendRecord` used to perform. Falls back to sequential
+    /// per-segment `writeAll` + `sync` on non-Linux / missing durability ring,
+    /// preserving the same ordering and atomicity contract from the caller's
+    /// point of view.
+    fn writevDurable(self: *Self, iovecs: []const std.posix.iovec_const, offset: u64) !void {
+        var expected: usize = 0;
+        for (iovecs) |iov| expected += iov.len;
+        if (self.durability_io) |dio| {
+            const n = try dio.writevAndFsync(self.file.file.handle, iovecs, offset);
+            if (n != expected) return error.ShortWrite;
+            return;
+        }
+        // Fallback path: no gather syscall available, write each segment at
+        // incrementing offsets, then one fsync.
+        var cur = offset;
+        try self.file.seekTo(cur);
+        for (iovecs) |iov| {
+            const bytes = @as([*]const u8, @ptrCast(iov.base))[0..iov.len];
+            try self.file.writeAll(bytes);
+            cur += iov.len;
+        }
+        try self.file.sync();
+    }
+
+    /// Compute CRC32 checksum over record body:
+    /// header_without_checksum + key + value
+    fn computeRecordChecksum(
+        allocator: std.mem.Allocator,
+        header_without_checksum: []const u8,
+        key: []const u8,
+        value: []const u8,
+    ) !u32 {
+        var checksum_data: std.ArrayList(u8) = .empty;
+        defer checksum_data.deinit(allocator);
+
+        try checksum_data.appendSlice(allocator, header_without_checksum);
+        try checksum_data.appendSlice(allocator, key);
+        try checksum_data.appendSlice(allocator, value);
+        return std.hash.Crc32.hash(checksum_data.items);
     }
 
     /// Log an insert operation
@@ -233,6 +298,11 @@ pub const WAL = struct {
         return self.appendRecord(.abort, &.{}, null);
     }
 
+    /// Append an extension record (empty key, arbitrary payload). Used for M4 durability WAL.
+    pub fn logExtensionRecord(self: *Self, record_type: WalRecordType, payload: []const u8) !void {
+        return self.appendRecord(record_type, &.{}, payload);
+    }
+
     /// Append record to WAL with async support
     fn appendRecord(self: *Self, record_type: WalRecordType, key: []const u8, value: ?[]const u8) !void {
         const value_len: u32 = if (value) |v| @intCast(v.len) else 0;
@@ -247,46 +317,60 @@ pub const WAL = struct {
             ._pad = 0,
         };
 
-        // Compute checksum over header (excluding checksum field) + key + value
+        // Compute checksum over header (without checksum) + key + value.
         var header_bytes = std.mem.asBytes(&header);
-        var checksum_data: std.ArrayList(u8) = .empty;
-        defer checksum_data.deinit(self.allocator);
+        const value_slice = value orelse &.{};
+        header.checksum = try computeRecordChecksum(self.allocator, header_bytes[4..], key, value_slice);
 
-        // Skip checksum field (first 4 bytes) for checksum calculation
-        try checksum_data.appendSlice(self.allocator, header_bytes[4..]);
-        try checksum_data.appendSlice(self.allocator, key);
+        // Build scatter iovecs for header / key / value (no memcpy concat).
+        // `writevDurable` fan-outs these through a single pwritev + fsync on
+        // io_uring, or falls back to per-segment writeAll on other backends.
+        const header_slice = std.mem.asBytes(&header);
+        var iovec_buf: [3]std.posix.iovec_const = undefined;
+        var iovec_len: usize = 0;
+        iovec_buf[iovec_len] = .{ .base = header_slice.ptr, .len = header_slice.len };
+        iovec_len += 1;
+        if (key.len > 0) {
+            iovec_buf[iovec_len] = .{ .base = key.ptr, .len = key.len };
+            iovec_len += 1;
+        }
         if (value) |v| {
-            try checksum_data.appendSlice(self.allocator, v);
+            if (v.len > 0) {
+                iovec_buf[iovec_len] = .{ .base = v.ptr, .len = v.len };
+                iovec_len += 1;
+            }
         }
 
-        header.checksum = std.hash.Crc32.hash(checksum_data.items);
-
-        // Create a complete buffer for this record
-        var record_buffer: std.ArrayList(u8) = .empty;
-        defer record_buffer.deinit(self.allocator);
-        
-        try record_buffer.appendSlice(self.allocator, std.mem.asBytes(&header));
-        try record_buffer.appendSlice(self.allocator, key);
-        if (value) |v| {
-            try record_buffer.appendSlice(self.allocator, v);
-        }
-
-        const record_data = record_buffer.items;
-        
         if (self.use_async_writes and self.async_write != null) {
+            // Buffered async path still needs a contiguous copy to accumulate
+            // multiple records into one flush, but the number of memcpys here
+            // is unchanged vs the legacy concat buffer.
             const async_w = &self.async_write.?;
-            // Try async write first
-            const should_flush = try async_w.append(record_data);
-            
-            if (should_flush) {
-                // Flush the buffer
-                try self.flushAsync();
+            const total_len = @sizeOf(WalRecordHeader) + key.len + value_slice.len;
+            // If the record alone exceeds the buffered capacity, flush and
+            // write it directly via writevDurable.
+            if (total_len > async_w.buffer.len) {
+                if (async_w.write_offset > 0) try self.flushAsync();
+                try self.writevDurable(iovec_buf[0..iovec_len], self.current_offset);
+            } else {
+                // Ensure room: flush first if this record wouldn't fit.
+                if (async_w.write_offset + total_len > async_w.buffer.len) {
+                    try self.flushAsync();
+                }
+                var wrote: usize = 0;
+                for (iovec_buf[0..iovec_len]) |iov| {
+                    const bytes = @as([*]const u8, @ptrCast(iov.base))[0..iov.len];
+                    const fits = try async_w.append(bytes);
+                    wrote += iov.len;
+                    _ = fits; // threshold check handled below after whole record lands
+                }
+                if (async_w.write_offset >= async_w.flush_threshold) {
+                    try self.flushAsync();
+                }
             }
         } else {
-            // Sync write for backward compatibility
-            try self.file.seekTo(self.current_offset);
-            try self.file.writeAll(record_data);
-            try self.file.sync();
+            // Sync path: gather header/key/value via pwritev + linked fsync.
+            try self.writevDurable(iovec_buf[0..iovec_len], self.current_offset);
         }
 
         // Update offset in all cases
@@ -296,27 +380,28 @@ pub const WAL = struct {
     /// Flush async write buffer to disk
     pub fn flushAsync(self: *Self) !void {
         if (!self.use_async_writes or self.async_write == null) return;
-        
+
         const async_w = &self.async_write.?;
-        
+
         if (async_w.write_offset > 0) {
             const data = async_w.getAndReset();
-            try self.file.seekTo(self.current_offset - async_w.write_offset);
-            try self.file.writeAll(data);
-            try self.file.sync();
+            // Preserve the existing offset-computation behavior (buffered bytes
+            // were accounted in current_offset at append time), but collapse
+            // write+fsync on the io_uring path.
+            try self.writeDurable(data, self.current_offset - async_w.write_offset);
         }
     }
     
     /// Force sync both async buffer and file
     pub fn syncAll(self: *Self) !void {
         try self.flushAsync();
-        try self.file.sync();
+        try self.syncBarrier();
     }
 
     /// Clear WAL after commit
     pub fn clear(self: *Self) !void {
         try self.file.setEndPos(0);
-        try self.file.sync();
+        try self.syncBarrier();
         self.current_offset = 0;
     }
 
@@ -348,7 +433,7 @@ pub const WAL = struct {
             const header = @as(*const WalRecordHeader, @alignCast(@ptrCast(&buf))).*;
 
             // Validate record fields before using them
-            if (header.record_type < 1 or header.record_type > 4) {
+            if (header.record_type < 1 or header.record_type > options.max_record_type) {
                 if (options.skip_corrupted) {
                     corrupted_records += 1;
                     offset += @sizeOf(WalRecordHeader);
@@ -360,19 +445,6 @@ pub const WAL = struct {
             }
             const max_record_size = options.max_record_size;
             if (header.key_len > max_record_size or header.value_len > max_record_size) {
-                if (options.skip_corrupted) {
-                    corrupted_records += 1;
-                    offset += @sizeOf(WalRecordHeader) + header.key_len + header.value_len;
-                    continue;
-                } else {
-                    errors += 1;
-                    break;
-                }
-            }
-
-            // Verify checksum
-            const computed = std.hash.Crc32.hash(buf[4..]);
-            if (computed != header.checksum) {
                 if (options.skip_corrupted) {
                     corrupted_records += 1;
                     offset += @sizeOf(WalRecordHeader) + header.key_len + header.value_len;
@@ -396,6 +468,19 @@ pub const WAL = struct {
                 value_buf = try self.allocator.alloc(u8, header.value_len);
                 defer if (value_buf) |v| self.allocator.free(v);
                 _ = try self.file.readAll(value_buf.?);
+            }
+
+            // Verify checksum using the exact same algorithm as write path.
+            const computed = try computeRecordChecksum(self.allocator, buf[4..], key_buf, value_buf orelse &.{});
+            if (computed != header.checksum) {
+                if (options.skip_corrupted) {
+                    corrupted_records += 1;
+                    offset += @sizeOf(WalRecordHeader) + header.key_len + header.value_len;
+                    continue;
+                } else {
+                    errors += 1;
+                    break;
+                }
             }
 
             // Apply record
@@ -593,6 +678,174 @@ test "WAL clear resets state" {
 
     // Clean up
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_path ++ ".wal") catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
+}
+
+test "WAL detects tampered record checksum" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    const test_path = "/tmp/wal_tamper_test.db";
+    const wal_path = test_path ++ ".wal";
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
+
+    // Write a normal WAL first.
+    {
+        var wal = try WAL.init(allocator, test_path);
+        try wal.logInsert("tamper_key", "tamper_value");
+        try wal.logCommit();
+        wal.deinit();
+    }
+
+    // Read, tamper one byte, and write back.
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, wal_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(bytes);
+    try std.testing.expect(bytes.len > 0);
+
+    var tampered = try allocator.dupe(u8, bytes);
+    defer allocator.free(tampered);
+    const idx = tampered.len / 2;
+    tampered[idx] ^=
+        0x5a;
+
+    const f = try std.Io.Dir.cwd().createFile(std.testing.io, wal_path, .{ .truncate = true, .read = true });
+    defer f.close(std.testing.io);
+    try f.writeStreamingAll(std.testing.io, tampered);
+    try f.sync(std.testing.io);
+
+    var wal = try WAL.init(allocator, test_path);
+    defer wal.deinit();
+
+    const State = struct { replayed: usize = 0 };
+    var state: State = .{};
+    const callback = struct {
+        fn cb(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void {
+            _ = op;
+            _ = key;
+            _ = value;
+            const s = @as(*State, @ptrCast(@alignCast(ctx)));
+            s.replayed += 1;
+        }
+    }.cb;
+
+    const result = try wal.replay(&callback, &state);
+    try std.testing.expect(result.errors > 0 or result.corrupted_records > 0);
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
+}
+
+test "WAL skip_corrupted continues replay" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    const test_path = "/tmp/wal_skip_corrupted_test.db";
+    const wal_path = test_path ++ ".wal";
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
+
+    {
+        var wal = try WAL.init(allocator, test_path);
+        try wal.logInsert("k1", "v1");
+        try wal.logInsert("k2", "v2");
+        try wal.logCommit();
+        wal.deinit();
+    }
+
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, wal_path, allocator, std.Io.Limit.limited(1024 * 1024));
+    defer allocator.free(bytes);
+    try std.testing.expect(bytes.len > 4);
+
+    var tampered = try allocator.dupe(u8, bytes);
+    defer allocator.free(tampered);
+    tampered[3] ^=
+        0xff;
+
+    const f = try std.Io.Dir.cwd().createFile(std.testing.io, wal_path, .{ .truncate = true, .read = true });
+    defer f.close(std.testing.io);
+    try f.writeStreamingAll(std.testing.io, tampered);
+    try f.sync(std.testing.io);
+
+    var wal = try WAL.init(allocator, test_path);
+    defer wal.deinit();
+
+    const State = struct { replayed: usize = 0 };
+    var state: State = .{};
+    const callback = struct {
+        fn cb(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void {
+            _ = op;
+            _ = key;
+            _ = value;
+            const s = @as(*State, @ptrCast(@alignCast(ctx)));
+            s.replayed += 1;
+        }
+    }.cb;
+
+    const result = try wal.replayWithOptions(&callback, &state, .{ .skip_corrupted = true });
+    try std.testing.expect(result.corrupted_records > 0);
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
+}
+
+test "WAL truncated tail during crash is detected" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    const test_path = "/tmp/wal_truncated_tail_test.db";
+    const wal_path = test_path ++ ".wal";
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
+    std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
+
+    {
+        var wal = try WAL.init(allocator, test_path);
+        try wal.logInsert("tail_k1", "tail_v1");
+        try wal.logInsert("tail_k2", "tail_v2");
+        try wal.logCommit();
+        wal.deinit();
+    }
+
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        wal_path,
+        allocator,
+        std.Io.Limit.limited(1024 * 1024),
+    );
+    defer allocator.free(bytes);
+    try std.testing.expect(bytes.len > 8);
+
+    const truncated_len = bytes.len - 7;
+    const f = try std.Io.Dir.cwd().createFile(std.testing.io, wal_path, .{ .truncate = true, .read = true });
+    defer f.close(std.testing.io);
+    try f.writeStreamingAll(std.testing.io, bytes[0..truncated_len]);
+    try f.sync(std.testing.io);
+
+    var wal = try WAL.init(allocator, test_path);
+    defer wal.deinit();
+
+    const State = struct { replayed: usize = 0 };
+    var state: State = .{};
+    const callback = struct {
+        fn cb(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void {
+            _ = op;
+            _ = key;
+            _ = value;
+            const s = @as(*State, @ptrCast(@alignCast(ctx)));
+            s.replayed += 1;
+        }
+    }.cb;
+
+    const strict_result = try wal.replay(&callback, &state);
+    try std.testing.expect(strict_result.errors > 0 or strict_result.corrupted_records > 0);
+
+    const tolerant_result = try wal.replayWithOptions(&callback, &state, .{ .skip_corrupted = true });
+    try std.testing.expect(tolerant_result.corrupted_records > 0 or tolerant_result.errors > 0);
+
+    std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 }
 

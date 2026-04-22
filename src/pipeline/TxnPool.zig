@@ -29,7 +29,22 @@ fn txnPoolOrder(_: void, a: PoolTransaction, b: PoolTransaction) std.math.Order 
     return std.math.order(b.gas_price, a.gas_price);
 }
 
-/// Transaction pool - manages pending transactions with priority queue
+/// Transaction pool - manages pending transactions with priority queue.
+///
+/// Threading model (lock stratification for read-heavy scenarios):
+///
+/// * Writer path (`add`, `next`, `removeExpired`, `skipExpired`): single-threaded;
+///   invariant is that only the executor / ingress loop mutates
+///   `priority_queue` / `by_sender`. Mutators bump `metric_*` atomic counters
+///   with `.monotonic` ordering so read-only observers never need a lock.
+/// * Reader path (metrics / dashboard / HTTP): MUST use `metricsSnapshot()`,
+///   which only touches the atomic counters and never walks the priority
+///   queue / hash map. This avoids torn reads and data races on the
+///   complex containers while keeping the mutation hot path lock-free.
+///
+/// Callers that need the full per-sender view (e.g. debugging tools) must go
+/// through the owning single-thread executor; those accessors are *not* safe
+/// to call from the metrics threads.
 pub const TxnPool = struct {
     const Self = @This();
 
@@ -42,10 +57,14 @@ pub const TxnPool = struct {
     /// Pending transactions by sender (sequence-based ordering)
     by_sender: std.AutoArrayHashMapUnmanaged([32]u8, std.ArrayList(PoolTransaction)),
 
-    /// Received count for metrics
-    received_count: u64,
-    /// Executed count for metrics
-    executed_count: u64,
+    /// Atomic mirror of receive count (lock-free read for metrics)
+    metric_received: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Atomic mirror of execute count (lock-free read for metrics)
+    metric_executed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Atomic mirror of current pool size (lock-free read for metrics)
+    metric_pool_size: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Atomic mirror of distinct-sender count (lock-free read for metrics)
+    metric_sender_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn init(allocator: std.mem.Allocator, config: TxnPoolConfig) !*Self {
         const self = try allocator.create(Self);
@@ -54,8 +73,6 @@ pub const TxnPool = struct {
             .config = config,
             .priority_queue = std.PriorityQueue(PoolTransaction, void, txnPoolOrder).initContext({}),
             .by_sender = std.AutoArrayHashMapUnmanaged([32]u8, std.ArrayList(PoolTransaction)).empty,
-            .received_count = 0,
-            .executed_count = 0,
         };
         return self;
     }
@@ -115,7 +132,8 @@ pub const TxnPool = struct {
 
         // Add to sender's list
         const sender_list = try self.by_sender.getOrPut(self.allocator, tx.sender);
-        if (!sender_list.found_existing) {
+        const is_new_sender = !sender_list.found_existing;
+        if (is_new_sender) {
             sender_list.value_ptr.* = std.ArrayList(PoolTransaction).empty;
         }
         try sender_list.value_ptr.append(self.allocator, pool_tx);
@@ -123,7 +141,15 @@ pub const TxnPool = struct {
         // Add to priority queue
         try self.priority_queue.push(self.allocator, pool_tx);
 
-        self.received_count += 1;
+        // Update atomic metric mirrors AFTER the structural mutation so a
+        // concurrent metrics reader never sees a size that exceeds the real
+        // queue. Ordering is monotonic because each counter is independently
+        // consistent; we do not need cross-field happens-before.
+        _ = self.metric_received.fetchAdd(1, .monotonic);
+        _ = self.metric_pool_size.fetchAdd(1, .monotonic);
+        if (is_new_sender) {
+            _ = self.metric_sender_count.fetchAdd(1, .monotonic);
+        }
     }
 
     /// Get next transaction for execution (highest gas price first)
@@ -132,9 +158,10 @@ pub const TxnPool = struct {
         self.skipExpired();
 
         const ptx = self.priority_queue.pop() orelse return null;
-        self.executed_count += 1;
 
-        // Remove from sender's tracking
+        // Remove from sender's tracking; track whether the sender's slot
+        // became empty so we can keep the atomic sender-count mirror in sync.
+        var sender_became_empty = false;
         if (self.by_sender.getPtr(ptx.tx.sender)) |list| {
             for (list.items, 0..) |item, idx| {
                 if (item.tx.sequence == ptx.tx.sequence) {
@@ -142,6 +169,17 @@ pub const TxnPool = struct {
                     break;
                 }
             }
+            if (list.items.len == 0) {
+                list.deinit(self.allocator);
+                _ = self.by_sender.swapRemove(ptx.tx.sender);
+                sender_became_empty = true;
+            }
+        }
+
+        _ = self.metric_executed.fetchAdd(1, .monotonic);
+        _ = self.metric_pool_size.fetchSub(1, .monotonic);
+        if (sender_became_empty) {
+            _ = self.metric_sender_count.fetchSub(1, .monotonic);
         }
 
         // Return the transaction and ownership to caller
@@ -161,18 +199,20 @@ pub const TxnPool = struct {
         var removed: usize = 0;
 
         // Use a temporary queue to rebuild without expired items
-        var valid_txs = std.ArrayList(PoolTransaction).init(self.allocator);
-        defer valid_txs.deinit();
+        var valid_txs = std.ArrayList(PoolTransaction).empty;
+        defer valid_txs.deinit(self.allocator);
 
         // Note: This is O(n) but bounded by max_size (50k) and only called periodically
         // For better scalability, consider a min-heap by timestamp in production
-        while (self.priority_queue.removeOrNull()) |ptx| {
+        while (self.priority_queue.pop()) |ptx| {
             if (now - ptx.received_at > self.config.timeout_seconds) {
+                self.pruneSenderEntry(ptx);
                 ptx.tx.deinit(self.allocator);
                 self.allocator.destroy(ptx.tx);
                 removed += 1;
             } else {
-                valid_txs.append(ptx) catch {
+                valid_txs.append(self.allocator, ptx) catch {
+                    self.pruneSenderEntry(ptx);
                     ptx.tx.deinit(self.allocator);
                     self.allocator.destroy(ptx.tx);
                     continue;
@@ -183,35 +223,80 @@ pub const TxnPool = struct {
         // Re-add valid transactions - O(n log n)
         for (valid_txs.items) |ptx| {
             self.priority_queue.push(self.allocator, ptx) catch {
+                self.pruneSenderEntry(ptx);
                 ptx.tx.deinit(self.allocator);
                 self.allocator.destroy(ptx.tx);
             };
         }
 
+        if (removed > 0) {
+            _ = self.metric_pool_size.fetchSub(removed, .monotonic);
+        }
+        // Recompute sender mirror authoritatively; cheap and correct after rebuild.
+        self.metric_sender_count.store(self.by_sender.count(), .monotonic);
+
         return removed;
+    }
+
+    /// Remove the matching entry from a sender's per-sender list, cleaning up
+    /// the empty entry when the sender has no remaining transactions.
+    fn pruneSenderEntry(self: *Self, ptx: PoolTransaction) void {
+        const list_ptr = self.by_sender.getPtr(ptx.tx.sender) orelse return;
+        for (list_ptr.items, 0..) |item, idx| {
+            if (item.tx.sequence == ptx.tx.sequence) {
+                _ = list_ptr.swapRemove(idx);
+                break;
+            }
+        }
+        if (list_ptr.items.len == 0) {
+            list_ptr.deinit(self.allocator);
+            _ = self.by_sender.swapRemove(ptx.tx.sender);
+        }
     }
 
     /// Check and skip expired transactions at front of queue (lazy expiry)
     pub fn skipExpired(self: *Self) void {
         const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
-        while (self.priority_queue.peek()) |ptx| {
-            if (now - ptx.received_at > self.config.timeout_seconds) {
-                _ = self.priority_queue.pop();
+        var expired: u64 = 0;
+        while (self.priority_queue.peek()) |ptx_peek| {
+            if (now - ptx_peek.received_at > self.config.timeout_seconds) {
+                const ptx = self.priority_queue.pop().?;
+                self.pruneSenderEntry(ptx);
                 ptx.tx.deinit(self.allocator);
                 self.allocator.destroy(ptx.tx);
+                expired += 1;
             } else {
                 break;
             }
         }
+        if (expired > 0) {
+            _ = self.metric_pool_size.fetchSub(expired, .monotonic);
+            self.metric_sender_count.store(self.by_sender.count(), .monotonic);
+        }
     }
 
-    /// Get pool statistics
+    /// Get pool statistics (single-threaded path - must be called from the
+    /// executor thread that owns the pool). Metrics readers should use
+    /// `metricsSnapshot` instead so they never touch `priority_queue` /
+    /// `by_sender` concurrently with mutators.
     pub fn stats(self: Self) PoolStats {
         return .{
             .pool_size = self.priority_queue.count(),
-            .received_total = self.received_count,
-            .executed_total = self.executed_count,
+            .received_total = self.metric_received.load(.monotonic),
+            .executed_total = self.metric_executed.load(.monotonic),
             .sender_count = self.by_sender.count(),
+        };
+    }
+
+    /// Lock-free metrics snapshot safe to call from any thread (HTTP, Dashboard,
+    /// Prometheus scraper). Backed exclusively by atomic mirrors; never walks
+    /// the priority queue or per-sender map, so it cannot race with writers.
+    pub fn metricsSnapshot(self: *const Self) MetricsSnapshot {
+        return .{
+            .pool_size = self.metric_pool_size.load(.monotonic),
+            .received_total = self.metric_received.load(.monotonic),
+            .executed_total = self.metric_executed.load(.monotonic),
+            .sender_count = self.metric_sender_count.load(.monotonic),
         };
     }
 
@@ -240,12 +325,22 @@ pub const TxnPool = struct {
     }
 };
 
-/// Pool statistics
+/// Pool statistics (full view: reads structural containers, single-thread-only).
 pub const PoolStats = struct {
     pool_size: usize,
     received_total: u64,
     executed_total: u64,
     sender_count: usize,
+};
+
+/// Lock-free metrics snapshot derived purely from atomic counters. Safe to
+/// consume from any thread (HTTP, Prometheus scraper, dashboard); never walks
+/// priority_queue / by_sender.
+pub const MetricsSnapshot = struct {
+    pool_size: u64,
+    received_total: u64,
+    executed_total: u64,
+    sender_count: u64,
 };
 
 test "TxnPool basic operations" {

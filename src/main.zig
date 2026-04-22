@@ -127,6 +127,7 @@ fn applyOptions(opts: Options, config: *Config) void {
         if (config.network.p2p_enabled == false) {
             config.*.network.p2p_enabled = true;
         }
+        config.*.allow_unauthenticated_p2p = true;
     }
     if (opts.validator) {
         config.*.network.p2p_enabled = true;
@@ -302,13 +303,28 @@ pub fn main(init: std.process.Init) !void {
     }
 
     Log.info("\nPress Ctrl+C to stop.", .{});
+
+    // Adaptive idle backoff for the main loop.
+    //
+    // At low QPS we want to avoid burning CPU on empty poll sweeps; at high
+    // QPS we want to fall back to a near-zero sleep so we drain the
+    // accept/commit queues without latency spikes. We track a ratio of busy
+    // ticks in the last window and clamp the sleep between 1 ms (fully busy)
+    // and 50 ms (fully idle).
+    const idle_sleep_min_ns: u64 = 1 * std.time.ns_per_ms;
+    const idle_sleep_max_ns: u64 = 50 * std.time.ns_per_ms;
+    var idle_sleep_ns: u64 = 10 * std.time.ns_per_ms;
+    var consecutive_idle_ticks: u32 = 0;
+
     // Event loop - accept and handle HTTP and P2P connections
     while (running.load(.seq_cst)) {
+        var did_work = false;
         // On non-Linux, accept and handle HTTP connection in main loop.
         // On Linux, AsyncHTTPServer runs in a dedicated io_uring thread.
         if (builtin.os.tag != .linux) {
             if (http_server.listener) |_| {
                 if (http_server.accept()) |conn| {
+                    did_work = true;
                     http_server.handleConnection(conn) catch |err| {
                         Log.err("[MAIN] HTTP handleConnection error: {s}", .{@errorName(err)});
                     };
@@ -323,27 +339,52 @@ pub fn main(init: std.process.Init) !void {
         // Accept P2P connection if enabled
         // Accept P2P connection if enabled
         if (node.getP2PServer()) |p2p| {
-            p2p.acceptOne() catch |err| {
-                // WouldBlock = no connection pending (expected)
-                // Unexpected = io_uring returns this when no connection ready instead of WouldBlock
-                if (err != error.WouldBlock and err != error.Unexpected) {
-                    Log.err("[MAIN] P2P acceptOne error: {s}", .{@errorName(err)});
-                }
-            };
+            // Public-chain hardening:
+            // Accept in small bursts to drain backlog, but cap per tick
+            // to avoid starvation of consensus/message processing.
+            var accepted_this_tick: usize = 0;
+            const max_accepts_per_tick: usize = 16;
+            while (accepted_this_tick < max_accepts_per_tick and p2p.hasPendingConnection()) {
+                did_work = true;
+                accepted_this_tick += 1;
+                p2p.acceptOne() catch |err| {
+                    // WouldBlock = no connection pending (expected)
+                    // Unexpected = transient no-ready condition on some paths
+                    if (err != error.WouldBlock and err != error.Unexpected) {
+                        Log.err("[MAIN] P2P acceptOne error: {s}", .{@errorName(err)});
+                    }
+                    break;
+                };
+            }
             p2p.maintainBootstrapConnections();
         }
         // Process consensus messages and check for proposals
         if (consensus_integration) |ci| {
-            ci.processPeerMessages() catch |err| {
+            const processed = ci.processPeerMessages() catch |err| blk: {
                 Log.err("[MAIN] processPeerMessages error: {s}", .{@errorName(err)});
+                break :blk @as(usize, 0);
             };
+            did_work = did_work or (processed > 0);
             ci.checkAndPropose() catch |err| {
                 Log.err("[MAIN] checkAndPropose error: {s}", .{@errorName(err)});
             };
         }
 
-        // Prevent busy-waiting in the event loop
-        try std.Io.sleep(init.io, std.Io.Duration.fromNanoseconds(1 * std.time.ns_per_ms), .awake);
+        // Adaptive idle backoff:
+        // - Busy tick: reset the sleep floor so the next idle tick pauses just
+        //   briefly, keeping accept / commit latency low under sustained load.
+        // - Idle tick: grow the sleep exponentially up to `idle_sleep_max_ns`
+        //   so a quiescent node does not burn CPU re-running poll sweeps.
+        if (did_work) {
+            consecutive_idle_ticks = 0;
+            idle_sleep_ns = idle_sleep_min_ns;
+        } else {
+            consecutive_idle_ticks +%= 1;
+            // Exponential backoff with a hard cap.
+            const next = idle_sleep_ns *| 2;
+            idle_sleep_ns = @min(idle_sleep_max_ns, @max(idle_sleep_min_ns, next));
+            try std.Io.sleep(init.io, std.Io.Duration.fromNanoseconds(idle_sleep_ns), .awake);
+        }
     }
 
     // Graceful shutdown

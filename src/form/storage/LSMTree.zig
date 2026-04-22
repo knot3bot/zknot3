@@ -773,6 +773,16 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
                             // Commit/abort don't need special handling in memtable
                             // The actual transaction semantics are handled at higher layers
                         },
+                        .m4_stake_operation,
+                        .m4_governance_proposal,
+                        .m4_governance_status,
+                        .m4_equivocation_evidence,
+                        .m4_state_snapshot,
+                        .m4_epoch_advance,
+                        .m4_validator_set_rotate,
+                        => {
+                            // M4 records must never be interleaved into the LSM WAL.
+                        },
                     }
                 }
             }.cb;
@@ -868,6 +878,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
         // Log commit to WAL after all operations
         if (self.wal) |*w| {
             try w.logCommit();
+            try w.syncAll();
         }
         batch.clear();
     }

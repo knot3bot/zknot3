@@ -6,3 +6,5 @@ pub const Config = @import("app/Config.zig").Config;
 pub const ConfigWithBuffer = @import("app/Config.zig").ConfigWithBuffer;
 pub const Node = @import("app/Node.zig").Node;
 pub const NodeDependencies = @import("app/Node.zig").NodeDependencies;
+pub const MainnetExtensionHooks = @import("app/MainnetExtensionHooks.zig");
+pub const LightClient = @import("app/LightClient.zig");

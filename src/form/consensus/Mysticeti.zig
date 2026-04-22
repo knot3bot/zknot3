@@ -192,6 +192,73 @@ pub const Vote = struct {
 
 };
 
+/// Equivocation evidence for one validator in one round.
+/// Captures two distinct signed votes for different block digests.
+pub const EquivocationEvidence = struct {
+    voter: [32]u8,
+    round: Round,
+    first_block_digest: [32]u8,
+    conflicting_block_digest: [32]u8,
+    first_signature: [64]u8,
+    conflicting_signature: [64]u8,
+
+    const Self = @This();
+
+    pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        var buf = try std.ArrayList(u8).initCapacity(allocator, 232);
+        try buf.appendSlice(allocator, &self.voter);
+        var round_bytes: [8]u8 = undefined;
+        std.mem.writeInt(u64, &round_bytes, self.round.value, .big);
+        try buf.appendSlice(allocator, &round_bytes);
+        try buf.appendSlice(allocator, &self.first_block_digest);
+        try buf.appendSlice(allocator, &self.conflicting_block_digest);
+        try buf.appendSlice(allocator, &self.first_signature);
+        try buf.appendSlice(allocator, &self.conflicting_signature);
+        return buf.toOwnedSlice(allocator);
+    }
+
+    pub fn deserialize(_: std.mem.Allocator, data: []const u8) !Self {
+        if (data.len < 232) return error.InvalidFormat;
+        var offset: usize = 0;
+        const voter = data[offset..][0..32].*;
+        offset += 32;
+        const round = Round{ .value = std.mem.readInt(u64, data[offset..][0..8], .big) };
+        offset += 8;
+        const first_block_digest = data[offset..][0..32].*;
+        offset += 32;
+        const conflicting_block_digest = data[offset..][0..32].*;
+        offset += 32;
+        const first_signature = data[offset..][0..64].*;
+        offset += 64;
+        const conflicting_signature = data[offset..][0..64].*;
+        return .{
+            .voter = voter,
+            .round = round,
+            .first_block_digest = first_block_digest,
+            .conflicting_block_digest = conflicting_block_digest,
+            .first_signature = first_signature,
+            .conflicting_signature = conflicting_signature,
+        };
+    }
+};
+
+/// Returns equivocation evidence when two votes from the same validator in the
+/// same round point to different block digests.
+pub fn detectEquivocation(existing_vote: Vote, incoming_vote: Vote) ?EquivocationEvidence {
+    if (!std.mem.eql(u8, &existing_vote.voter, &incoming_vote.voter)) return null;
+    if (existing_vote.round.value != incoming_vote.round.value) return null;
+    if (std.mem.eql(u8, &existing_vote.block_digest, &incoming_vote.block_digest)) return null;
+
+    return .{
+        .voter = incoming_vote.voter,
+        .round = incoming_vote.round,
+        .first_block_digest = existing_vote.block_digest,
+        .conflicting_block_digest = incoming_vote.block_digest,
+        .first_signature = existing_vote.signature,
+        .conflicting_signature = incoming_vote.signature,
+    };
+}
+
 pub const CommitCertificate = struct {
     block_digest: [32]u8,
     round: Round,
@@ -441,36 +508,9 @@ pub const Mysticeti = struct {
 
     /// Batch process votes for efficiency
     pub fn processVotesBatch(self: *Self, votes: []const Vote) !void {
-        // Create a work queue for parallel processing
-        const threads = std.math.min(8, votes.len);
-        const chunk_size = (votes.len + threads - 1) / threads;
-
-        // Spawn worker threads
-        var thread_handles: [8]std.Thread = undefined;
-        var thread_count: usize = 0;
-
-        for (0..threads) |thread_idx| {
-            const start = thread_idx * chunk_size;
-            const end = std.math.min((thread_idx + 1) * chunk_size, votes.len);
-            
-            if (start >= votes.len) break;
-
-            const thread_slice = votes[start..end];
-            
-            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
-                fn worker(self_ptr: *Self, slice: []const Vote) !void {
-                    for (slice) |vote| {
-                        try self_ptr.processVote(vote);
-                    }
-                }
-            }.worker, .{ self, thread_slice });
-            
-            thread_count += 1;
-        }
-
-        // Wait for all threads to finish
-        for (0..thread_count) |i| {
-            thread_handles[i].join();
+        // Safety first: apply votes serially to avoid concurrent map writes.
+        for (votes) |vote| {
+            try self.processVote(vote);
         }
     }
 
@@ -485,68 +525,16 @@ pub const Mysticeti = struct {
     pub fn getQuorumBlocks(self: *Self) ![]*Block {
         var quorum_blocks = try std.ArrayList(*Block).initCapacity(self.allocator, 10);
         errdefer quorum_blocks.deinit();
-
-        // Collect all blocks into a list first
-        var all_blocks = try std.ArrayList(*Block).initCapacity(self.allocator, 100);
-        errdefer all_blocks.deinit();
-
+        
         var round_it = self.dag.iterator();
         while (round_it.next()) |round_entry| {
             var block_it = round_entry.value_ptr.iterator();
             while (block_it.next()) |block_entry| {
-                try all_blocks.append(block_entry.value_ptr);
-            }
-        }
-
-        // Check quorum in parallel
-        const threads = std.math.min(8, all_blocks.items.len);
-        const chunk_size = (all_blocks.items.len + threads - 1) / threads;
-
-        const channel = try std.Thread.Channel([]*Block).init(self.allocator, threads);
-        defer channel.deinit();
-
-        var thread_handles: [8]std.Thread = undefined;
-        var thread_count: usize = 0;
-
-        for (0..threads) |thread_idx| {
-            const start = thread_idx * chunk_size;
-            const end = std.math.min((thread_idx + 1) * chunk_size, all_blocks.items.len);
-            
-            if (start >= all_blocks.items.len) break;
-
-            const thread_slice = all_blocks.items[start..end];
-            
-            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
-                fn worker(self_ptr: *Self, slice: []*Block, sender: std.Thread.Channel([]*Block).Sender) !void {
-                    var local_blocks = try std.ArrayList(*Block).initCapacity(self_ptr.allocator, slice.len);
-                    errdefer local_blocks.deinit();
-
-                    for (slice) |block| {
-                        if (self_ptr.hasQuorum(block)) {
-                            try local_blocks.append(block);
-                        }
-                    }
-
-                    try sender.send(local_blocks.toOwnedSlice());
+                const block = block_entry.value_ptr;
+                if (self.hasQuorum(block)) {
+                    try quorum_blocks.append(block);
                 }
-            }.worker, .{ self, thread_slice, channel.sender() });
-            
-            thread_count += 1;
-        }
-
-        for (0..thread_count) |_| {
-            const blocks = channel.receive();
-            errdefer self.allocator.free(blocks);
-            
-            for (blocks) |block| {
-                try quorum_blocks.append(block);
             }
-            
-            self.allocator.free(blocks);
-        }
-
-        for (0..thread_count) |i| {
-            thread_handles[i].join();
         }
 
         return quorum_blocks.toOwnedSlice();
@@ -570,60 +558,10 @@ pub const Mysticeti = struct {
     pub fn tryCommitMultiple(self: *Self, rounds_blocks: []struct { round: Round, block_digest: [32]u8 }) ![]CommitCertificate {
         var certificates = try std.ArrayList(CommitCertificate).initCapacity(self.allocator, rounds_blocks.len);
         errdefer certificates.deinit();
-
-        // Create a work queue for parallel processing
-        const threads = std.math.min(8, rounds_blocks.len);
-        const chunk_size = (rounds_blocks.len + threads - 1) / threads;
-
-        // Use a channel to communicate results between threads
-        const channel = try std.Thread.Channel([]CommitCertificate).init(self.allocator, threads);
-        defer channel.deinit();
-
-        // Spawn worker threads
-        var thread_handles: [8]std.Thread = undefined;
-        var thread_count: usize = 0;
-
-        for (0..threads) |thread_idx| {
-            const start = thread_idx * chunk_size;
-            const end = std.math.min((thread_idx + 1) * chunk_size, rounds_blocks.len);
-            
-            if (start >= rounds_blocks.len) break;
-
-            const thread_slice = rounds_blocks[start..end];
-            
-            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
-                fn worker(self_ptr: *Self, slice: []const struct { round: Round, block_digest: [32]u8 }, sender: std.Thread.Channel([]CommitCertificate).Sender) !void {
-                    var local_certs = try std.ArrayList(CommitCertificate).initCapacity(self_ptr.allocator, slice.len);
-                    errdefer local_certs.deinit();
-
-                    for (slice) |rb| {
-                        if (try self_ptr.tryCommit(rb.round, rb.block_digest)) |cert| {
-                            try local_certs.append(cert);
-                        }
-                    }
-
-                    try sender.send(local_certs.toOwnedSlice());
-                }
-            }.worker, .{ self, thread_slice, channel.sender() });
-            
-            thread_count += 1;
-        }
-
-        // Collect results from all threads
-        for (0..thread_count) |_| {
-            const certs = channel.receive();
-            errdefer self.allocator.free(certs);
-            
-            for (certs) |cert| {
+        for (rounds_blocks) |rb| {
+            if (try self.tryCommit(rb.round, rb.block_digest)) |cert| {
                 try certificates.append(cert);
             }
-            
-            self.allocator.free(certs);
-        }
-
-        // Wait for all threads to finish
-        for (0..thread_count) |i| {
-            thread_handles[i].join();
         }
 
         return certificates.toOwnedSlice();
@@ -631,36 +569,9 @@ pub const Mysticeti = struct {
 
     /// Receive and process a batch of votes for efficiency
     pub fn receiveVotesBatch(self: *Self, votes: []const Vote) !void {
-        // Create a work queue for parallel processing
-        const threads = std.math.min(8, votes.len);
-        const chunk_size = (votes.len + threads - 1) / threads;
-
-        // Spawn worker threads
-        var thread_handles: [8]std.Thread = undefined;
-        var thread_count: usize = 0;
-
-        for (0..threads) |thread_idx| {
-            const start = thread_idx * chunk_size;
-            const end = std.math.min((thread_idx + 1) * chunk_size, votes.len);
-            
-            if (start >= votes.len) break;
-
-            const thread_slice = votes[start..end];
-            
-            thread_handles[thread_count] = try std.Thread.spawn(.{}, struct { 
-                fn worker(self_ptr: *Self, slice: []const Vote) !void {
-                    for (slice) |vote| {
-                        try self_ptr.receiveVote(vote);
-                    }
-                }
-            }.worker, .{ self, thread_slice });
-            
-            thread_count += 1;
-        }
-
-        // Wait for all threads to finish
-        for (0..thread_count) |i| {
-            thread_handles[i].join();
+        // Safety first: apply votes serially to avoid concurrent map writes.
+        for (votes) |vote| {
+            try self.receiveVote(vote);
         }
     }
 
@@ -718,6 +629,27 @@ test "Mysticeti quorum commit" {
 
     try std.testing.expect(consensus.f == 1);
     try std.testing.expect(consensus.total_stake == 4000);
+}
+
+test "detectEquivocation returns evidence for conflicting votes" {
+    const vote_a = Vote{
+        .voter = [_]u8{7} ** 32,
+        .stake = 100,
+        .round = .{ .value = 42 },
+        .block_digest = [_]u8{1} ** 32,
+        .signature = [_]u8{2} ** 64,
+    };
+    const vote_b = Vote{
+        .voter = [_]u8{7} ** 32,
+        .stake = 100,
+        .round = .{ .value = 42 },
+        .block_digest = [_]u8{3} ** 32,
+        .signature = [_]u8{4} ** 64,
+    };
+    const ev = detectEquivocation(vote_a, vote_b) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 42), ev.round.value);
+    try std.testing.expectEqual(vote_a.block_digest, ev.first_block_digest);
+    try std.testing.expectEqual(vote_b.block_digest, ev.conflicting_block_digest);
 }
 
 comptime {

@@ -320,6 +320,46 @@ test "Message serialization" {
     try std.testing.expect(std.mem.eql(u8, deserialized.payload, "hello world"));
 }
 
+test "Message.deserialize rejects truncated header" {
+    const allocator = std.testing.allocator;
+
+    var short_buf: [Message.HEADER_SIZE - 1]u8 = undefined;
+    @memset(&short_buf, 0);
+    try std.testing.expectError(error.MessageTooShort, Message.deserialize(allocator, &short_buf));
+}
+
+test "Message.deserialize rejects length mismatch" {
+    const allocator = std.testing.allocator;
+
+    var header: [Message.HEADER_SIZE]u8 = undefined;
+    @memset(&header, 0);
+    header[0] = @intFromEnum(MessageType.transaction);
+    // Advertise 128 bytes of payload but provide none.
+    std.mem.writeInt(u32, header[41..45], 128, .big);
+
+    try std.testing.expectError(error.InvalidMessage, Message.deserialize(allocator, &header));
+}
+
+test "Message.deserialize accepts zero-length payload" {
+    const allocator = std.testing.allocator;
+
+    const msg = Message{
+        .msg_type = .ping,
+        .sender = [_]u8{0} ** 32,
+        .sequence = 7,
+        .payload = &.{},
+    };
+    const serialized = try msg.serialize(allocator);
+    defer allocator.free(serialized);
+
+    const decoded = try Message.deserialize(allocator, serialized);
+    defer allocator.free(decoded.payload);
+
+    try std.testing.expect(decoded.msg_type == .ping);
+    try std.testing.expect(decoded.sequence == 7);
+    try std.testing.expect(decoded.payload.len == 0);
+}
+
 test "Transport stats" {
     const allocator = std.testing.allocator;
     const config = TransportConfig{};

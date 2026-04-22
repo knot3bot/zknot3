@@ -48,6 +48,14 @@ pub const NetworkConfig = struct {
     enable_upnp: bool = false,
     /// Maximum HTTP requests per second (rate limiting)
     max_requests_per_second: u32 = 100,
+    /// Maximum inbound P2P messages per peer per second
+    p2p_max_messages_per_peer_per_second: usize = 256,
+    /// Maximum inbound P2P messages for one message type per second
+    p2p_max_messages_per_type_per_second: usize = 128,
+    /// Peer score threshold that triggers a temporary ban
+    p2p_peer_score_ban_threshold: i32 = -100,
+    /// Temporary peer ban duration in seconds
+    p2p_peer_ban_seconds: i64 = 300,
 };
 
 /// Consensus configuration
@@ -76,6 +84,36 @@ pub const ConsensusConfig = struct {
     max_txs_per_block: u32 = 50,
     /// Maximum committed blocks to retain in memory before pruning
     max_committed_blocks: usize = 10000,
+
+    // ---------------------------------------------------------------------
+    // P2P message scheduling budgets (public-chain hardening)
+    // ---------------------------------------------------------------------
+    /// Total messages processed per event-loop tick
+    max_messages_per_tick: usize = 256,
+    /// Base per-type budgets
+    max_block_messages_per_tick: usize = 64,
+    max_vote_messages_per_tick: usize = 128,
+    max_certificate_messages_per_tick: usize = 32,
+    max_transaction_messages_per_tick: usize = 32,
+    /// Per-peer cap in one scheduling turn
+    per_peer_batch_limit: usize = 4,
+
+    /// Dynamic budget thresholds based on mempool pressure
+    pending_tx_medium_threshold: usize = 256,
+    pending_tx_high_threshold: usize = 2048,
+
+    /// Dynamic budget deltas (applied when thresholds/phase match)
+    medium_tx_budget_boost: usize = 24,
+    high_tx_budget_boost: usize = 48,
+    near_round_vote_budget_boost: usize = 24,
+    near_round_certificate_budget_boost: usize = 16,
+    near_round_block_budget_boost: usize = 8,
+
+    /// Per-type floors to avoid starvation
+    min_block_messages_per_tick: usize = 32,
+    min_vote_messages_per_tick: usize = 64,
+    min_certificate_messages_per_tick: usize = 16,
+    min_transaction_messages_per_tick: usize = 8,
 };
 
 /// Storage configuration
@@ -126,6 +164,12 @@ pub const AuthorityConfig = struct {
     description: []const u8 = "",
     /// Validator index (for round-robin proposer selection)
     validator_index: usize = 0,
+    /// Extra Ed25519 seeds for M4 `buildCheckpointProof` signatures, appended after `signing_key` (same message, distinct validator ids).
+    checkpoint_proof_extra_signing_seeds: []const [32]u8 = &.{},
+    /// Optional BLS signing seed used for aggregated checkpoint signature payloads.
+    bls_signing_seed: ?[32]u8 = null,
+    /// Extra BLS seeds aggregated together with `bls_signing_seed`.
+    extra_bls_signing_seeds: []const [32]u8 = &.{},
 };
 
 /// Full node configuration
@@ -164,6 +208,17 @@ pub const NodeConfig = struct {
         }
         if (self.network.max_connections == 0) {
             return error.InvalidMaxConnections;
+        }
+        if (self.network.p2p_max_messages_per_peer_per_second == 0 or
+            self.network.p2p_max_messages_per_type_per_second == 0)
+        {
+            return error.InvalidP2PRateLimit;
+        }
+        if (self.network.p2p_peer_ban_seconds <= 0) {
+            return error.InvalidP2PBanWindow;
+        }
+        if (self.consensus.max_messages_per_tick == 0) {
+            return error.InvalidConsensusMessageBudget;
         }
     }
 
@@ -350,6 +405,7 @@ pub const Config = struct {
     storage: StorageConfig = .{},
     vm: VMConfig = .{},
     authority: AuthorityConfig = .{},
+    allow_unauthenticated_p2p: bool = false,
 
     /// Create default configuration
     pub fn default() Self {
@@ -361,6 +417,7 @@ pub const Config = struct {
         return .{
             .consensus = .{ .validator_enabled = true },
             .authority = .{ .stake = 1_000_000_000 },
+            .allow_unauthenticated_p2p = true,
         };
     }
 

@@ -71,6 +71,8 @@ pub const EpochManager = struct {
     config: EpochConfig,
     current_epoch: Epoch,
     epoch_history: std.ArrayList(Epoch),
+    on_epoch_advanced: ?*const fn (ctx: *anyopaque, previous: Epoch, current: Epoch) anyerror!void = null,
+    on_epoch_advanced_ctx: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator, config: EpochConfig, current_time: i64) !*Self {
         const self = try allocator.create(Self);
@@ -104,6 +106,21 @@ pub const EpochManager = struct {
             total_stake,
             validator_count,
         );
+
+        if (self.on_epoch_advanced) |cb| {
+            const hook_ctx = self.on_epoch_advanced_ctx orelse return error.InvalidState;
+            try cb(hook_ctx, current, self.current_epoch);
+        }
+    }
+
+    /// Bind consensus/security hook on epoch transition.
+    pub fn setEpochAdvanceHook(
+        self: *Self,
+        ctx: *anyopaque,
+        cb: *const fn (ctx: *anyopaque, previous: Epoch, current: Epoch) anyerror!void,
+    ) void {
+        self.on_epoch_advanced_ctx = ctx;
+        self.on_epoch_advanced = cb;
     }
 
     /// Get current epoch
@@ -146,4 +163,31 @@ test "Epoch manager" {
     try manager.advanceEpoch(5000, 4);
     const new_epoch = manager.getCurrentEpoch();
     try std.testing.expect(new_epoch.number == 1);
+}
+
+test "Epoch manager calls advance hook" {
+    const allocator = std.testing.allocator;
+    var manager = try EpochManager.init(allocator, .{}, 1000);
+    defer manager.deinit();
+
+    const HookCtx = struct {
+        called: bool = false,
+        previous_epoch: u64 = 0,
+        current_epoch: u64 = 0,
+    };
+    var ctx = HookCtx{};
+    const hook = struct {
+        fn call(raw: *anyopaque, previous: Epoch, current: Epoch) anyerror!void {
+            const typed = @as(*HookCtx, @ptrCast(@alignCast(raw)));
+            typed.called = true;
+            typed.previous_epoch = previous.number;
+            typed.current_epoch = current.number;
+        }
+    }.call;
+    manager.setEpochAdvanceHook(&ctx, hook);
+
+    try manager.advanceEpoch(5000, 4);
+    try std.testing.expect(ctx.called);
+    try std.testing.expectEqual(@as(u64, 0), ctx.previous_epoch);
+    try std.testing.expectEqual(@as(u64, 1), ctx.current_epoch);
 }

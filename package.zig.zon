@@ -11,14 +11,12 @@
     // External dependencies (using zig package manager)
     // Note: Most functionality uses std library which is already included
 
-    // Optional: WebSocket support for subscriptions
-    // Uncomment when websocket.zig adds package.zig.zon support:
-    // .dependencies = .{
-    //     .websocket = .{
-    //         .url = "https://github.com/karlseguin/websocket.zig/archive/{COMMIT}.tar.gz",
-    //         .hash = "...",
-    //     },
-    // },
+    .dependencies = .{
+        .blst = .{
+            .url = "git+https://github.com/supranational/blst",
+            .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
+        },
+    },
 
     // Build configuration
     .build_config = .{
