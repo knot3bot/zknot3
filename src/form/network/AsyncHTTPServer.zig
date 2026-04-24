@@ -258,15 +258,26 @@ pub const AsyncHTTPServer = struct {
 
                 // Check if we have a complete HTTP request
                 const req_data = conn.buf[0..conn.buf_used];
-                if (std.mem.indexOf(u8, req_data, "\r\n\r\n")) |_| {
-                    // We have a complete request; process it
-                    const response = try self.dispatchRequest(req_data);
-                    conn.response = response;
-                    conn.response_sent = 0;
-                    conn.state = .writing;
-                    _ = try self.ring.send(makeUserData(idx, .send), conn.fd, response, 0);
+                const he = std.mem.indexOf(u8, req_data, "\r\n\r\n");
+                if (he) |hdr_end| {
+                    const content_len = HTTPServerBase.parseContentLength(req_data) orelse 0;
+                    const total_needed = hdr_end + 4 + content_len;
+                    if (conn.buf_used >= total_needed) {
+                        // We have a complete request (headers + full body).
+                        const response = try self.dispatchRequest(req_data[0..total_needed]);
+                        conn.response = response;
+                        conn.response_sent = 0;
+                        conn.state = .writing;
+                        _ = try self.ring.send(makeUserData(idx, .send), conn.fd, response, 0);
+                    } else if (conn.buf_used >= conn.buf.len) {
+                        // Buffer full without full body
+                        self.closeConn(idx);
+                    } else {
+                        // Need more data; submit another recv
+                        _ = try self.ring.recv(makeUserData(idx, .recv), conn.fd, .{ .buffer = conn.buf[conn.buf_used..] }, 0);
+                    }
                 } else if (conn.buf_used >= conn.buf.len) {
-                    // Buffer full without complete request
+                    // Buffer full without complete headers
                     self.closeConn(idx);
                 } else {
                     // Need more data; submit another recv

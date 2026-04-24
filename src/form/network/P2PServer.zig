@@ -90,7 +90,7 @@ pub const TransportType = enum {
 };
 
 pub const P2PServerConfig = struct {
-    bind_address: []const u8 = "0.0.0.0:8080",
+    bind_address: []const u8 = "0.0.0.0:8083",
     max_connections: usize = 256,
     connection_timeout_secs: u64 = 30,
     ping_interval_secs: u64 = 15,
@@ -245,7 +245,7 @@ pub const P2PServer = struct {
         } else {
             var parts = std.mem.splitScalar(u8, self.config.bind_address, ':');
             const host = parts.next() orelse "0.0.0.0";
-            const port_str = parts.next() orelse "8080";
+            const port_str = parts.next() orelse "8083";
             const port = try std.fmt.parseInt(u16, port_str, 10);
             const addr = try std.Io.net.IpAddress.parseIp4(host, port);
             self.listener = try addr.listen(@import("io_instance").io, .{});
@@ -1182,7 +1182,7 @@ test "QUICPeerConnection struct layout" {
 }
 
 test "bootstrap peer key derivation is deterministic" {
-    const addr = "127.0.0.1:8080";
+    const addr = "127.0.0.1:8083";
     const k1 = P2PServer.derivePeerKeyFromAddress(addr);
     const k2 = P2PServer.derivePeerKeyFromAddress(addr);
     try std.testing.expectEqual(k1, k2);

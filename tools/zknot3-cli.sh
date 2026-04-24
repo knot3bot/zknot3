@@ -261,14 +261,14 @@ health_check() {
     log_info "执行健康检查..."
     
     # 提取 RPC 端口
-    local rpc_port=9000
+    local rpc_port=9003
     if [ -f "$ZKNOT3_CONFIG" ]; then
         # 尝试从 JSON 配置提取
         if command -v python3 &> /dev/null; then
-            rpc_port=$(python3 -c "import json; f=open('$ZKNOT3_CONFIG'); c=json.load(f); print(c.get('network',{}).get('rpc_port',9000))" 2>/dev/null || echo 9000)
+            rpc_port=$(python3 -c "import json; f=open('$ZKNOT3_CONFIG'); c=json.load(f); print(c.get('network',{}).get('rpc_port',9003))" 2>/dev/null || echo 9003)
         else
             # 简单 grep
-            rpc_port=$(grep -A 5 -B 0 "rpc_port" "$ZKNOT3_CONFIG" 2>/dev/null | grep -o "[0-9]\+" | head -1 || echo 9000)
+            rpc_port=$(grep -A 5 -B 0 "rpc_port" "$ZKNOT3_CONFIG" 2>/dev/null | grep -o "[0-9]\+" | head -1 || echo 9003)
         fi
     fi
     

@@ -8,7 +8,7 @@ const core = @import("../../core.zig");
 
 /// Transport configuration
 pub const TransportConfig = struct {
-    bind_address: []const u8 = "0.0.0.0:8080",
+    bind_address: []const u8 = "0.0.0.0:8083",
     use_quic: bool = true,
     max_connections: usize = 1024,
     recv_buffer_size: usize = 64 * 1024,

@@ -44,7 +44,7 @@ pub const SDKConfig = struct {
     language: TargetLanguage,
     output_dir: []const u8,
     package_name: []const u8,
-    rpc_url: []const u8 = "http://localhost:9000",
+    rpc_url: []const u8 = "http://localhost:9003",
 };
 
 /// JSON encoding for each RPC parameter (M4 object bodies must match server).
@@ -148,7 +148,7 @@ fn generateTypeScript(sdk: *ClientSDK) ![]const u8 {
     try buf.appendSlice("export class Knot3Client {\n");
     try buf.appendSlice("    private rpcUrl: string;\n");
     try buf.appendSlice("    \n");
-    try buf.appendSlice("    constructor(rpcUrl: string = 'http://localhost:9000') {\n");
+    try buf.appendSlice("    constructor(rpcUrl: string = 'http://localhost:9003') {\n");
     try buf.appendSlice("        this.rpcUrl = rpcUrl;\n");
     try buf.appendSlice("    }\n");
     try buf.appendSlice("    \n");
@@ -339,7 +339,7 @@ fn generatePython(sdk: *ClientSDK) ![]const u8 {
 
     // Client class
     try buf.appendSlice("class Knot3Client:\n");
-    try buf.appendSlice("    def __init__(self, rpc_url: str = 'http://localhost:9000'):\n");
+    try buf.appendSlice("    def __init__(self, rpc_url: str = 'http://localhost:9003'):\n");
     try buf.appendSlice("        self.rpc_url = rpc_url\n");
     try buf.appendSlice("    \n");
     try buf.appendSlice("    def _rpc_call(self, method: str, params: Any) -> Any:\n");

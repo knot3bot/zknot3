@@ -30,14 +30,19 @@ pub const NetworkConfig = struct {
 
     /// Bind address for HTTP/RPC server
     bind_address: []const u8 = "127.0.0.1",
+    /// Admin token for write-class HTTP/RPC endpoints.
+    ///
+    /// If empty, the node will refuse to bind RPC to a non-loopback address.
+    /// When set, clients must pass `X-Zknot3-Admin-Token: <token>` for write endpoints.
+    admin_token: []const u8 = "",
     /// RPC server port
-    rpc_port: u16 = 9000,
+    rpc_port: u16 = 9003,
     /// Enable P2P networking
     p2p_enabled: bool = false,
     /// P2P listen address
-    p2p_address: []const u8 = "0.0.0.0:8080",
+    p2p_address: []const u8 = "0.0.0.0:8083",
     /// P2P port
-    p2p_port: u16 = 8080,
+    p2p_port: u16 = 8083,
     /// Local peer ID for P2P
     local_peer_id: []const u8 = "local_peer",
     /// Bootstrap peers for P2P network discovery (addresses)
@@ -45,7 +50,7 @@ pub const NetworkConfig = struct {
     /// Enable metrics server
     metrics_enabled: bool = true,
     /// Metrics server address
-    metrics_address: []const u8 = "127.0.0.1:9090",
+    metrics_address: []const u8 = "127.0.0.1:9133",
     /// Maximum connections
     max_connections: usize = 1024,
     /// Connection timeout in seconds
@@ -164,7 +169,7 @@ pub const AuthorityConfig = struct {
     /// Validator address (IP or hostname)
     address: []const u8 = "127.0.0.1",
     /// Validator port
-    port: u16 = 8080,
+    port: u16 = 8083,
     /// Validator's signing key (32 bytes)
     signing_key: ?[32]u8 = null,
     /// Validator's network key (32 bytes)
@@ -471,7 +476,7 @@ pub const Config = struct {
 
 test "Config default" {
     const config = Config.default();
-    try std.testing.expect(config.network.rpc_port == 9000);
+    try std.testing.expect(config.network.rpc_port == 9003);
 }
 
 test "Config development" {

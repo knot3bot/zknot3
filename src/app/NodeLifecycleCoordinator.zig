@@ -40,7 +40,7 @@ test "NodeLifecycleCoordinator runStart validates state transitions" {
     };
     const MockConfig = struct {
         network: struct {
-            p2p_port: u16 = 8080,
+            p2p_port: u16 = 8083,
         } = .{},
     };
     const MockNode = struct {
@@ -74,7 +74,7 @@ test "NodeLifecycleCoordinator runStart rejects non-initializing state" {
         state: enum { initializing, starting, running } = .running,
         object_store: ?*ObjectStore = null,
         p2p_server: ?*MockP2P = null,
-        config: struct { network: struct { p2p_port: u16 = 8080 } = .{} } = .{},
+        config: struct { network: struct { p2p_port: u16 = 8083 } = .{} } = .{},
         pub fn validateConfig(_: *@This()) !void {}
     };
 

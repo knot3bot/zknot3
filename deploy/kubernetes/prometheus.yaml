@@ -18,8 +18,8 @@ scrape_configs:
     regex: validator
   - source_labels: [__meta_kubernetes_pod_container_port_number]
     action: keep
-    regex: "8081"
+    regex: "9133"
   - action: labelmap
     regex: __meta_kubernetes_pod_label_(.+)
   - target_label: __address__
-    replacement: kubernetes.default.svc:8081
+    replacement: kubernetes.default.svc:9133

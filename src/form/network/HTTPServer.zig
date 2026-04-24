@@ -103,6 +103,63 @@ pub const StatusCode = enum(u16) {
     too_many_requests = 429,
 };
 
+fn asciiLower(c: u8) u8 {
+    return if (c >= 'A' and c <= 'Z') c + 32 else c;
+}
+
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ac, bc| {
+        if (asciiLower(ac) != asciiLower(bc)) return false;
+    }
+    return true;
+}
+
+fn findHeaderValue(request: []const u8, header_name: []const u8) ?[]const u8 {
+    const header_end = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return null;
+    const headers = request[0..header_end];
+    var it = std.mem.splitSequence(u8, headers, "\r\n");
+    _ = it.next(); // request line
+    while (it.next()) |line| {
+        if (line.len == 0) break;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const name = std.mem.trim(u8, line[0..colon], " \t");
+        if (!asciiEqlIgnoreCase(name, header_name)) continue;
+        const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+        return value;
+    }
+    return null;
+}
+
+fn rpcBodyHasWriteMethod(allocator: std.mem.Allocator, body: []const u8) bool {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{ .ignore_unknown_fields = true }) catch return true;
+    defer parsed.deinit();
+    const method_val = parsed.value.object.get("method") orelse return true;
+    if (method_val != .string) return true;
+    if (std.mem.eql(u8, method_val.string, "knot3_submitStakeOperation")) return true;
+    if (std.mem.eql(u8, method_val.string, "knot3_submitGovernanceProposal")) return true;
+    return false;
+}
+
+fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) bool {
+    const n = node orelse return false;
+    if (n.config.network.admin_token.len == 0) return false;
+
+    if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) return true;
+    if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
+        const body = extractBody(request) orelse return true;
+        return rpcBodyHasWriteMethod(n.allocator, body);
+    }
+    return false;
+}
+
+fn isAuthorizedAdmin(node: ?*Node, request: []const u8) bool {
+    const n = node orelse return true;
+    if (n.config.network.admin_token.len == 0) return true;
+    const token = findHeaderValue(request, "X-Zknot3-Admin-Token") orelse return false;
+    return std.mem.eql(u8, token, n.config.network.admin_token);
+}
+
 /// HTTP Response
 pub const Response = struct {
     status: StatusCode,
@@ -320,11 +377,9 @@ pub const Response = struct {
 
     // Parse Content-Length header from a raw HTTP request
     pub fn parseContentLength(request: []const u8) ?usize {
-        const header = "Content-Length: ";
-        const start = std.mem.indexOf(u8, request, header) orelse return null;
-        const value_start = start + header.len;
-        const value_end = std.mem.indexOf(u8, request[value_start..], "\r\n") orelse return null;
-        return std.fmt.parseInt(usize, request[value_start..value_start + value_end], 10) catch null;
+        const value = findHeaderValue(request, "Content-Length") orelse return null;
+        if (value.len == 0) return null;
+        return std.fmt.parseInt(usize, value, 10) catch null;
     }
 
     /// Extract HTTP body using Content-Length if available.
@@ -577,12 +632,26 @@ pub const HTTPServer = struct {
             request_owned = true;
             @memcpy(request_data[0..initial_read], stack_buf[0..initial_read]);
             const remainder = request_data[initial_read..total_needed];
-            _ = streamReadAll(conn, remainder) catch {};
+            const got = streamReadAll(conn, remainder) catch 0;
+            if (got < remainder.len) {
+                var response = Response.badRequest("{\"error\":\"Incomplete request body\"}");
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {};
+                try response.send(conn);
+                return;
+            }
         } else {
             request_data = stack_buf[0..total_needed];
             if (initial_read < total_needed) {
                 const remainder = request_data[initial_read..total_needed];
-                _ = streamReadAll(conn, remainder) catch {};
+                const got = streamReadAll(conn, remainder) catch 0;
+                if (got < remainder.len) {
+                    var response = Response.badRequest("{\"error\":\"Incomplete request body\"}");
+                    _ = try response.withJSONContentType(self.allocator);
+                    _ = response.withTraceId(&trace_id) catch {};
+                    try response.send(conn);
+                    return;
+                }
             }
         }
         defer if (request_owned) self.allocator.free(request_data);
@@ -591,6 +660,18 @@ pub const HTTPServer = struct {
 
         // Extract the request path for proper routing
         const path = extractPath(request);
+
+        if (requireAdminForRequest(self.node, request, path) and !isAuthorizedAdmin(self.node, request)) {
+            var response = Response{
+                .status = .unauthorized,
+                .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+                .body = "{\"error\":\"Unauthorized\"}",
+            };
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {};
+            try response.send(conn);
+            return;
+        }
 
         // Route based on path - order matters (most specific first)
         if (path.len == 0 or std.mem.eql(u8, path, "/")) {

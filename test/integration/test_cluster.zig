@@ -28,8 +28,8 @@ const Node = root.app.Node;
 
 /// Test node configuration
 pub const TestNodeConfig = struct {
-    port: u16 = 9000 + @as(u16, std.crypto.randomInt(u16) % 1000),
-    p2p_port: u16 = 9000 + @as(u16, std.crypto.randomInt(u16) % 1000),
+    port: u16 = 9003 + @as(u16, std.crypto.randomInt(u16) % 1000),
+    p2p_port: u16 = 8083 + @as(u16, std.crypto.randomInt(u16) % 1000),
     is_validator: bool = true,
     stake: u64 = 1000000000, // 1 KNOT3 worth in MIST
     name: []const u8 = "test-validator",
@@ -100,8 +100,8 @@ pub const TestCluster = struct {
         var i: usize = 0;
         while (i < num_nodes) : (i += 1) {
             const cfg = TestNodeConfig{
-                .port = @as(u16, 9000 + @as(u16, @intCast(i * 100))),
-                .p2p_port = @as(u16, 9100 + @as(u16, @intCast(i * 100))),
+                .port = @as(u16, 9003 + @as(u16, @intCast(i * 100))),
+                .p2p_port = @as(u16, 8083 + @as(u16, @intCast(i * 100))),
                 .is_validator = true,
                 .stake = 1000000000,
                 .name = try std.fmt.allocPrint(allocator, "validator-{d}", .{i}),

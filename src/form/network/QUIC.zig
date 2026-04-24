@@ -29,7 +29,7 @@ fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
     };
 }
 pub const QUICConfig = struct {
-    bind_address: []const u8 = "0.0.0.0:8080",
+    bind_address: []const u8 = "0.0.0.0:8083",
     max_connections: usize = 256,
     stream_window: u64 = 1024 * 1024,
     connection_window: u64 = 16 * 1024 * 1024,
@@ -340,7 +340,7 @@ pub const QUICTransport = struct {
 
         var parts = std.mem.splitScalar(u8, self.config.bind_address, ':');
         const host = parts.next() orelse "0.0.0.0";
-        const port_str = parts.next() orelse "8080";
+        const port_str = parts.next() orelse "8083";
         const port = try std.fmt.parseInt(u16, port_str, 10);
 
         const addr = try std.Io.net.IpAddress.parseIp4(host, port);

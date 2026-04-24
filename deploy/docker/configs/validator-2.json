@@ -1,15 +1,16 @@
 {
   "network": {
     "bind_address": "0.0.0.0",
-    "rpc_port": 9000,
+    "admin_token": "",
+    "rpc_port": 9003,
     "p2p_enabled": true,
     "p2p_address": "0.0.0.0",
-    "p2p_port": 8080,
+    "p2p_port": 8083,
     "local_peer_id": "validator-2",
     "bootstrap_peers": [
-      "172.20.0.2:8080",
-      "172.20.0.4:8080",
-      "172.20.0.5:8080"
+      "172.20.0.2:8083",
+      "172.20.0.4:8083",
+      "172.20.0.5:8083"
     ],
     "max_connections": 256,
     "known_validators": [
@@ -43,12 +44,10 @@
   },
   "authority": {
     "address": "zknot3-validator-2",
-    "port": 8080,
+    "port": 8083,
     "stake": 1000000000000,
     "name": "Validator 2",
-    "validator_index": 1,
-    "signing_key": [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],
-    "bls_signing_seed": [102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102,102]
+    "validator_index": 1
   },
   "logging": {
     "level": 2,

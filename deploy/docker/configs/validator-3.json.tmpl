@@ -1,7 +1,7 @@
 {
   "network": {
     "bind_address": "0.0.0.0",
-    "admin_token": "",
+    "admin_token": "${ZKNOT3_ADMIN_TOKEN}",
     "rpc_port": 9003,
     "p2p_enabled": true,
     "p2p_address": "0.0.0.0",
@@ -12,6 +12,8 @@
       "172.20.0.3:8083",
       "172.20.0.5:8083"
     ],
+    "metrics_enabled": true,
+    "metrics_address": "0.0.0.0:9133",
     "max_connections": 256,
     "known_validators": [
       { "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c", "name": "Validator 1", "stake": 1000000000000 },
@@ -55,3 +57,4 @@
     "enable_stderr": true
   }
 }
+

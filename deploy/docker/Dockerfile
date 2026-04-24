@@ -33,10 +33,15 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev \
     ca-certificates \
     curl \
+    gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from build stage
 COPY --from=builder /src/zig-out/bin/zknot3-node-safe /usr/local/bin/zknot3
+
+# Entry point wrapper to render config templates with env vars
+COPY deploy/docker/zknot3-entrypoint.sh /usr/local/bin/zknot3-entrypoint
+RUN chmod +x /usr/local/bin/zknot3-entrypoint
 
 # Create data directory
 RUN mkdir -p /var/lib/zknot3
@@ -48,8 +53,8 @@ COPY deploy/config/production.toml /var/lib/zknot3/config.toml
 WORKDIR /var/lib/zknot3
 
 # Expose ports
-EXPOSE 9000 8080 8081
+EXPOSE 9003 8083 9133
 
 # Run
-ENTRYPOINT ["/usr/local/bin/zknot3"]
+ENTRYPOINT ["/usr/local/bin/zknot3-entrypoint"]
 CMD ["--config", "/var/lib/zknot3/config.toml"]

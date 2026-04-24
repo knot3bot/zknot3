@@ -31,6 +31,9 @@ data/
 *.sst
 *.wal
 
+# Docker dev env (secrets)
+deploy/docker/.env
+
 # Dependency artifacts (if vendored)
 vendor/
 

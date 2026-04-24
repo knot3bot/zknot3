@@ -87,7 +87,7 @@ services:
     restart: always  # 改为 always
     # 添加健康检查
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
       interval: 30s
       timeout: 10s
       retries: 3

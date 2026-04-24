@@ -16,12 +16,14 @@ services:
     hostname: validator-1
     restart: unless-stopped
     ports:
-      - "19001:9000"   # RPC
-      - "18081:8080"   # P2P
-      - "18011:8081"   # Metrics
+      - "19001:9003"   # RPC
+      - "18081:8083"   # P2P
+      - "18011:9133"   # Metrics
     volumes:
       - validator1-data:/var/lib/zknot3
-      - ./configs/validator-1.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-1.json.tmpl:/etc/zknot3/config.template.json:ro
+    env_file:
+      - ./.env
     environment:
       - ZKNOT3_VALIDATOR_NAME=validator-1
       - ZKNOT3_VALIDATOR_PORT=18081
@@ -37,12 +39,14 @@ services:
     hostname: validator-2
     restart: unless-stopped
     ports:
-      - "19002:9000"   # RPC
-      - "18082:8080"   # P2P
-      - "18012:8081"   # Metrics
+      - "19002:9003"   # RPC
+      - "18082:8083"   # P2P
+      - "18012:9133"   # Metrics
     volumes:
       - validator2-data:/var/lib/zknot3
-      - ./configs/validator-2.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-2.json.tmpl:/etc/zknot3/config.template.json:ro
+    env_file:
+      - ./.env
     environment:
       - ZKNOT3_VALIDATOR_NAME=validator-2
       - ZKNOT3_VALIDATOR_PORT=18082
@@ -58,12 +62,14 @@ services:
     hostname: validator-3
     restart: unless-stopped
     ports:
-      - "19003:9000"   # RPC
-      - "18083:8080"   # P2P
-      - "18013:8081"   # Metrics
+      - "19003:9003"   # RPC
+      - "18083:8083"   # P2P
+      - "18013:9133"   # Metrics
     volumes:
       - validator3-data:/var/lib/zknot3
-      - ./configs/validator-3.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-3.json.tmpl:/etc/zknot3/config.template.json:ro
+    env_file:
+      - ./.env
     environment:
       - ZKNOT3_VALIDATOR_NAME=validator-3
       - ZKNOT3_VALIDATOR_PORT=18083
@@ -79,12 +85,14 @@ services:
     hostname: validator-4
     restart: unless-stopped
     ports:
-      - "19004:9000"   # RPC
-      - "18084:8080"   # P2P
-      - "18014:8081"   # Metrics
+      - "19004:9003"   # RPC
+      - "18084:8083"   # P2P
+      - "18014:9133"   # Metrics
     volumes:
       - validator4-data:/var/lib/zknot3
-      - ./configs/validator-4.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-4.json.tmpl:/etc/zknot3/config.template.json:ro
+    env_file:
+      - ./.env
     environment:
       - ZKNOT3_VALIDATOR_NAME=validator-4
       - ZKNOT3_VALIDATOR_PORT=18084
@@ -104,12 +112,14 @@ services:
     hostname: fullnode
     restart: unless-stopped
     ports:
-      - "19005:9000"   # RPC
-      - "18085:8080"   # P2P
-      - "18015:8081"   # Metrics
+      - "19005:9003"   # RPC
+      - "18085:8083"   # P2P
+      - "18015:9133"   # Metrics
     volumes:
       - fullnode-data:/var/lib/zknot3
-      - ./configs/fullnode.json:/etc/zknot3/config.json:ro
+      - ./configs/fullnode.json.tmpl:/etc/zknot3/config.template.json:ro
+    env_file:
+      - ./.env
     environment:
       - ZKNOT3_PEER_ID=fullnode
       - RUST_LOG=info
@@ -136,11 +146,11 @@ services:
     restart: "no"
     command: ["sleep", "infinity"]  # Keep running for manual testing
     environment:
-      - VALIDATOR1_RPC=http://zknot3-validator-1:9000
-      - VALIDATOR2_RPC=http://zknot3-validator-2:9000
-      - VALIDATOR3_RPC=http://zknot3-validator-3:9000
-      - VALIDATOR4_RPC=http://zknot3-validator-4:9000
-      - FULLNODE_RPC=http://zknot3-fullnode:9000
+      - VALIDATOR1_RPC=http://zknot3-validator-1:9003
+      - VALIDATOR2_RPC=http://zknot3-validator-2:9003
+      - VALIDATOR3_RPC=http://zknot3-validator-3:9003
+      - VALIDATOR4_RPC=http://zknot3-validator-4:9003
+      - FULLNODE_RPC=http://zknot3-fullnode:9003
     networks:
       - zknot3-testnet
     depends_on:

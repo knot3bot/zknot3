@@ -88,7 +88,7 @@ zig build test
 
 ```toml
 [network]
-rpc_port = 9000
+rpc_port = 9003
 p2p_enabled = false
 
 [consensus]
@@ -105,9 +105,9 @@ cache_size = 1073741824  # 1GB
 ```toml
 [network]
 bind_address = "0.0.0.0"
-rpc_port = 9000
+rpc_port = 9003
 p2p_enabled = true
-p2p_port = 8080
+p2p_port = 8083
 max_connections = 1024
 
 [consensus]
@@ -131,7 +131,7 @@ max_bytecode_size = 65536
 
 [authority]
 address = "your-validator-address"
-port = 8080
+port = 8083
 signing_key = "your-32-byte-key"
 stake = 1000000000000  # 1000 KNOT3
 ```
@@ -147,8 +147,9 @@ docker build -t zknot3:latest .
 # Run container
 docker run -d \
   --name zknot3 \
-  -p 9000:9000 \
-  -p 8080:8080 \
+  -p 9003:9003 \
+  -p 8083:8083 \
+  -p 9133:9133 \
   -v /var/lib/zknot3:/var/lib/zknot3 \
   zknot3:latest \
   --config /var/lib/zknot3/config.toml

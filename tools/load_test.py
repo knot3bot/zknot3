@@ -12,11 +12,11 @@ from datetime import datetime
 
 # Node endpoints (host ports mapped by docker-compose)
 NODES = {
-    "validator-1": {"rpc": 9000, "p2p": 8080, "metrics": 8081},
-    "validator-2": {"rpc": 9010, "p2p": 8090, "metrics": 8091},
-    "validator-3": {"rpc": 9020, "p2p": 8100, "metrics": 8101},
-    "validator-4": {"rpc": 9030, "p2p": 8110, "metrics": 8111},
-    "fullnode": {"rpc": 9040, "p2p": 8120, "metrics": None},
+    "validator-1": {"rpc": 9003, "p2p": 8083, "metrics": 9133},
+    "validator-2": {"rpc": 9013, "p2p": 8093, "metrics": 9143},
+    "validator-3": {"rpc": 9023, "p2p": 8103, "metrics": 9153},
+    "validator-4": {"rpc": 9033, "p2p": 8113, "metrics": 9163},
+    "fullnode": {"rpc": 9043, "p2p": 8123, "metrics": 9173},
 }
 
 BASE_URL = "http://localhost:{port}"

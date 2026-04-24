@@ -23,10 +23,34 @@ zig build -Doptimize=ReleaseSafe
 
 # Run local devnet (4 validators + 1 fullnode)
 cd deploy/docker
+cp .env.example .env
+# edit .env and set ZKNOT3_ADMIN_TOKEN to a real value
 docker compose up -d
 
 # Verify
 ./tools/soak_monitor.sh 0.1  # 6-minute smoke test
+```
+
+### 管理员写接口鉴权（重要）
+
+为避免误把“写类接口”暴露到公网，节点现在具备两层保护：
+
+- **默认只允许 RPC 绑定到 loopback**（`127.0.0.1` / `localhost`）
+- 当你把 `network.bind_address` 设为非 loopback（例如 `0.0.0.0`）时，必须同时设置 **`network.admin_token`**，否则节点会拒绝启动
+
+写类接口包括：
+
+- `POST /tx`
+- `POST /rpc` 且 method 为 `knot3_submitStakeOperation` / `knot3_submitGovernanceProposal`
+
+客户端需要带 header：
+
+```bash
+curl -sS \
+  -H "X-Zknot3-Admin-Token: change-me-dev-token" \
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","id":1,"method":"knot3_submitStakeOperation","params":{}}' \
+  http://127.0.0.1:9003/rpc
 ```
 
 ---
@@ -44,11 +68,11 @@ docker compose up -d
 Services exposed:
 | Node | RPC Port | P2P Port |
 |------|----------|----------|
-| validator-1 | 9000 | 8080/8081 |
-| validator-2 | 9010 | 8090/8091 |
-| validator-3 | 9020 | 8100/8101 |
-| validator-4 | 9030 | 8110/8111 |
-| fullnode | 9040 | 8120 |
+| validator-1 | 9003 | 8083 / 9133 |
+| validator-2 | 9013 | 8093 / 9143 |
+| validator-3 | 9023 | 8103 / 9153 |
+| validator-4 | 9033 | 8113 / 9163 |
+| fullnode | 9043 | 8123 / 9173 |
 
 ### Kubernetes
 
@@ -62,9 +86,9 @@ kubectl apply -f deploy/kubernetes/validator.yaml
 
 ### HTTP Endpoints
 
-- **Health**: `GET http://localhost:9000/health` → `{"healthy":true}`
-- **Consensus Status**: `GET http://localhost:9000/api/consensus/status`
-- **Submit TX**: `POST http://localhost:9000/tx` (body: 32-byte raw tx)
+- **Health**: `GET http://localhost:9003/health` → `{"healthy":true}`
+- **Consensus Status**: `GET http://localhost:9003/api/consensus/status`
+- **Submit TX**: `POST http://localhost:9003/tx`（写类接口，需要 `X-Zknot3-Admin-Token`）
 
 ### Container Health
 
@@ -199,7 +223,7 @@ done
 
 ### Consensus rounds are stuck at 0
 
-1. Check if all validators can reach each other on P2P ports (8080-8081)
+1. Check if all validators can reach each other on P2P ports (8083)
 2. Check logs for `ConnectionRefused` — bootstrap may be dialing before the target listener is ready
 3. Verify `vote_quorum` in config is ≤ number of validators
 
@@ -272,3 +296,16 @@ What it checks every 30 seconds:
 | Dashboard panic | `src/app/ui/Dashboard.zig` | Avoid subtraction that can underflow; use `now + const - value` |
 | Memory leak | `src/pipeline/Executor.zig` | Call `ExecutionResult.deinit(allocator)` after consuming results |
 | Pending block leak | `src/app/Node.zig` | `receiveBlock` prunes oldest pending blocks when over `max_pending_blocks` |
+
+---
+
+## Secrets / Keys（严禁提交到仓库）
+
+`deploy/docker/configs/validator-*.json` 现在**不再**包含：
+
+- `authority.signing_key`
+- `authority.bls_signing_seed`
+
+原因：它们属于高敏感材料，提交到仓库即视为泄漏。
+
+在生产上应通过外部注入（例如环境变量/密钥管理器/挂载文件）提供这些值；在 devnet 可用固定种子，但也应放在本机/CI 的私密配置中，而不是 git 跟踪文件中。

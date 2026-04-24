@@ -2,10 +2,10 @@
 
 [network]
 bind_address = "0.0.0.0"
-rpc_port = 9000
+rpc_port = 9003
 p2p_enabled = true
 p2p_address = "0.0.0.0"
-p2p_port = 8080
+p2p_port = 8083
 max_connections = 1024
 connection_timeout = 30
 
@@ -36,7 +36,7 @@ storage_gas_per_byte = 10
 [authority]
 # Configure with your validator keys
 address = "127.0.0.1"
-port = 8080
+port = 8083
 signing_key = null                  # Set via environment or secret
 network_key = null                  # Set via environment or secret
 stake = 0                           # Set actual stake amount

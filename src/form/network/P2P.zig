@@ -349,7 +349,7 @@ test "Peer creation" {
     const peer = Peer{
         .id = [_]u8{1} ** 32,
         .address = "127.0.0.1",
-        .port = 8080,
+        .port = 8083,
         .is_outbound = true,
         .connected_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .last_message = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
@@ -371,7 +371,7 @@ test "PeerManager with Kademlia routing" {
     const peer = Peer{
         .id = [_]u8{2} ** 32,
         .address = "127.0.0.1",
-        .port = 8080,
+        .port = 8083,
         .is_outbound = true,
         .connected_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .last_message = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },

@@ -22,11 +22,11 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 
 
 NODES = {
-    "validator-1": {"rpc": 9000, "p2p": 8080},
-    "validator-2": {"rpc": 9010, "p2p": 8090},
-    "validator-3": {"rpc": 9020, "p2p": 8100},
-    "validator-4": {"rpc": 9030, "p2p": 8110},
-    "fullnode": {"rpc": 9040, "p2p": 8120},
+    "validator-1": {"rpc": 9003, "p2p": 8083},
+    "validator-2": {"rpc": 9013, "p2p": 8093},
+    "validator-3": {"rpc": 9023, "p2p": 8103},
+    "validator-4": {"rpc": 9033, "p2p": 8113},
+    "fullnode": {"rpc": 9043, "p2p": 8123},
 }
 
 # P2P wire framing from src/form/network/Transport.zig

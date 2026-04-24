@@ -5,7 +5,7 @@ const sdk = @import("../../src/sdk.zig");
 test "e2e: getCheckpointProof verifies under docker devnet" {
     const allocator = std.testing.allocator;
 
-    const rpc = sdk.rpc.RpcClient.init(allocator, "http://127.0.0.1:9000/rpc");
+    const rpc = sdk.rpc.RpcClient.init(allocator, "http://127.0.0.1:9003/rpc");
 
     const object_id_hex = "0000000000000000000000000000000000000000000000000000000000000000";
     const params_json = try std.fmt.allocPrint(allocator, "{{\"sequence\":1,\"objectId\":\"{s}\"}}", .{object_id_hex});

@@ -2,10 +2,10 @@
 
 [network]
 bind_address = "0.0.0.0"
-rpc_port = 9000
+rpc_port = 9003
 p2p_enabled = true
 p2p_address = "0.0.0.0"
-p2p_port = 8080
+p2p_port = 8083
 max_connections = 256
 connection_timeout = 30
 

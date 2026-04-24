@@ -292,7 +292,7 @@ test "RoutingTable add/remove peer" {
     defer rt.deinit();
     
     const peer_id = [_]u8{0x34} ** 32;
-    try rt.addPeer(peer_id, "127.0.0.1", 8080);
+    try rt.addPeer(peer_id, "127.0.0.1", 8083);
     
     try std.testing.expect(rt.totalPeers() == 1);
     
@@ -312,9 +312,9 @@ test "RoutingTable closest peers" {
     const peer2 = [_]u8{0x10} ** 32;
     const peer3 = [_]u8{0xff} ** 32;
     
-    try rt.addPeer(peer1, "127.0.0.1", 8080);
-    try rt.addPeer(peer2, "127.0.0.1", 8081);
-    try rt.addPeer(peer3, "127.0.0.1", 8082);
+    try rt.addPeer(peer1, "127.0.0.1", 8083);
+    try rt.addPeer(peer2, "127.0.0.1", 8084);
+    try rt.addPeer(peer3, "127.0.0.1", 8085);
     
     const closest = try rt.getClosestPeers(peer1, 2);
     defer allocator.free(closest);

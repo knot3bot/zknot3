@@ -6,18 +6,20 @@ services:
     restart: unless-stopped
     privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
+    env_file:
+      - ./.env
     ports:
-      - "9000:9000"
-      - "8080:8080"
-      - "8081:8081"
+      - "9003:9003"     # JSON-RPC / REST (and gRPC reserved) - container:9003
+      - "8083:8083"     # P2P
+      - "9133:9133"     # Metrics
     volumes:
       - zknot3-data-1:/var/lib/zknot3
-      - ./configs/validator-1.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-1.json.tmpl:/etc/zknot3/config.template.json:ro
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.2
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -35,18 +37,20 @@ services:
     restart: unless-stopped
     privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
+    env_file:
+      - ./.env
     ports:
-      - "9010:9000"
-      - "8090:8080"
-      - "8091:8081"
+      - "9013:9003"
+      - "8093:8083"
+      - "9143:9133"
     volumes:
       - zknot3-data-2:/var/lib/zknot3
-      - ./configs/validator-2.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-2.json.tmpl:/etc/zknot3/config.template.json:ro
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.3
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -64,18 +68,20 @@ services:
     restart: unless-stopped
     privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
+    env_file:
+      - ./.env
     ports:
-      - "9020:9000"
-      - "8100:8080"
-      - "8101:8081"
+      - "9023:9003"
+      - "8103:8083"
+      - "9153:9133"
     volumes:
       - zknot3-data-3:/var/lib/zknot3
-      - ./configs/validator-3.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-3.json.tmpl:/etc/zknot3/config.template.json:ro
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.4
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -93,18 +99,20 @@ services:
     restart: unless-stopped
     privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
+    env_file:
+      - ./.env
     ports:
-      - "9030:9000"
-      - "8110:8080"
-      - "8111:8081"
+      - "9033:9003"
+      - "8113:8083"
+      - "9163:9133"
     volumes:
       - zknot3-data-4:/var/lib/zknot3
-      - ./configs/validator-4.json:/etc/zknot3/config.json:ro
+      - ./configs/validator-4.json.tmpl:/etc/zknot3/config.template.json:ro
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.5
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -121,12 +129,15 @@ services:
     restart: unless-stopped
     privileged: true
     command: ["-c", "/etc/zknot3/config.json"]
+    env_file:
+      - ./.env
     ports:
-      - "9040:9000"
-      - "8120:8080"
+      - "9043:9003"
+      - "8123:8083"
+      - "9173:9133"
     volumes:
       - zknot3-fullnode-data:/var/lib/zknot3
-      - ./configs/fullnode.json:/etc/zknot3/config.json:ro
+      - ./configs/fullnode.json.tmpl:/etc/zknot3/config.template.json:ro
     depends_on:
       - zknot3-validator-1
       - zknot3-validator-2
@@ -135,7 +146,7 @@ services:
     networks:
       zknot3-net:
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -18,6 +18,10 @@ else
 const ConsensusIntegration = @import("form/consensus/ConsensusIntegration.zig").ConsensusIntegration;
 const Log = @import("app/Log.zig");
 
+fn isLoopbackIPv4(addr: []const u8) bool {
+    return std.mem.eql(u8, addr, "127.0.0.1") or std.mem.eql(u8, addr, "localhost");
+}
+
 /// Global shutdown flag with atomic access
 var running = std.atomic.Value(bool).init(true);
 
@@ -49,8 +53,8 @@ fn printUsage() void {
         \\  -d, --dev            Start in development mode (validator enabled)
         \\  --validator          Enable validator mode
         \\  -c, --config <file>  Load configuration from file
-        \\  --rpc-port <port>    Set RPC server port (default: 9000)
-        \\  --p2p-port <port>    Set P2P server port (default: 8080)
+        \\  --rpc-port <port>    Set RPC server port (default: 9003)
+        \\  --p2p-port <port>    Set P2P server port (default: 8083)
         \\  --log-level <level>  Set log level: error, warn, info, debug, trace
         \\  --data-dir <path>    Set data directory (default: ./data)
         \\
@@ -260,7 +264,15 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // Start HTTP server
-    const rpc_addr = std.Io.net.IpAddress.parseIp4("0.0.0.0", config.network.rpc_port) catch {
+    if (!isLoopbackIPv4(config.network.bind_address) and config.network.admin_token.len == 0) {
+        Log.err(
+            "Refusing to bind RPC to non-loopback address without admin_token. bind_address={s}",
+            .{config.network.bind_address},
+        );
+        return;
+    }
+
+    const rpc_addr = std.Io.net.IpAddress.parseIp4(config.network.bind_address, config.network.rpc_port) catch {
         Log.err("Invalid RPC address", .{});
         return;
     };

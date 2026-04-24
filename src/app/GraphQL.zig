@@ -806,11 +806,11 @@ pub const Response = struct {
             try buf.appendSlice(allocator, ",\"errors\":[");
             for (self.errors, 0..) |err, i| {
                 if (i > 0) try buf.append(allocator, ',');
-                const err_json = try std.fmt.allocPrint(allocator, "{{\"message\":\"{s}\"}}", .{err.message});
-                defer allocator.free(err_json);
-                try buf.appendSlice(allocator, err_json);
+                try buf.appendSlice(allocator, "{\"message\":");
+                try appendJSONStringEscaped(allocator, &buf, err.message);
+                try buf.appendSlice(allocator, "}");
             }
-            try buf.append(allocator, '}');
+            try buf.append(allocator, ']');
         }
 
         try buf.append(allocator, '}');
@@ -818,14 +818,35 @@ pub const Response = struct {
     }
 };
 
+fn appendJSONStringEscaped(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    try buf.append(allocator, '"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    var tmp: [6]u8 = undefined;
+                    const out = try std.fmt.bufPrint(&tmp, "\\u{X:0>4}", .{@as(u16, c)});
+                    try buf.appendSlice(allocator, out);
+                } else {
+                    try buf.append(allocator, c);
+                }
+            },
+        }
+    }
+    try buf.append(allocator, '"');
+}
+
 /// Serialize Value to JSON
 fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: Value) !void {
     switch (value.kind) {
         .Null => try buf.appendSlice(allocator, "null"),
         .String => {
-            const str_json = try std.fmt.allocPrint(allocator, "\"{s}\"", .{value.string.?});
-            defer allocator.free(str_json);
-            try buf.appendSlice(allocator, str_json);
+            try appendJSONStringEscaped(allocator, buf, value.string.?);
         },
         .Int => {
             const int_json = try std.fmt.allocPrint(allocator, "{d}", .{value.int.?});
@@ -856,9 +877,8 @@ fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: 
                 while (it.next()) |entry| {
                     if (!first) try buf.append(allocator, ',');
                     first = false;
-                    const key_json = try std.fmt.allocPrint(allocator, "\"{s}\":", .{entry.key_ptr.*});
-                    defer allocator.free(key_json);
-                    try buf.appendSlice(allocator, key_json);
+                    try appendJSONStringEscaped(allocator, buf, entry.key_ptr.*);
+                    try buf.append(allocator, ':');
                     try serializeValue(allocator, buf, entry.value_ptr.*);
                 }
             }

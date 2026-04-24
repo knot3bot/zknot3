@@ -119,6 +119,14 @@ zig build test
 - **JSON-RPC** API at `POST /rpc`
 - Health endpoint at `GET /health`
 
+#### RPC 暴露与写接口鉴权（重要）
+
+- `network.bind_address` 默认是 `127.0.0.1`（只监听本机）
+- 如果你要监听非 loopback（例如 `0.0.0.0`），必须设置 `network.admin_token`，否则节点会拒绝启动
+- 写类接口需要 header：`X-Zknot3-Admin-Token: <token>`
+  - `POST /tx`
+  - `POST /rpc` 且 method 为 `knot3_submitStakeOperation` / `knot3_submitGovernanceProposal`
+
 ## Testing
 
 ### Test Suite (25 tests)
@@ -276,6 +284,8 @@ For fast recovery (avoiding replaying thousands of individual WAL records):
 2. Implement handler function
 3. Return `JSONRPCResponse.success()` or `JSONRPCResponse.newError()`
 4. Add test
+
+注意：如果是“写类 RPC 方法”，需要同步更新鉴权判定（`HTTPServer.zig` 对写类 method 的识别），避免无意间开放公网写入口。
 
 ### Adding a Consensus Message
 

@@ -1,12 +1,13 @@
 {
   "network": {
     "bind_address": "0.0.0.0",
-    "rpc_port": 9000,
+    "admin_token": "",
+    "rpc_port": 9003,
     "p2p_enabled": true,
     "p2p_address": "0.0.0.0",
-    "p2p_port": 8080,
+    "p2p_port": 8083,
     "local_peer_id": "fullnode",
-    "bootstrap_peers": ["validator-1:8080", "validator-2:8080", "validator-3:8080", "validator-4:8080"],
+    "bootstrap_peers": ["validator-1:8083", "validator-2:8083", "validator-3:8083", "validator-4:8083"],
     "max_connections": 256,
     "known_validators": [
       { "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c", "name": "Validator 1", "stake": 1000000000000 },

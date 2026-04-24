@@ -1,17 +1,15 @@
 {
   "network": {
     "bind_address": "0.0.0.0",
-    "admin_token": "",
+    "admin_token": "${ZKNOT3_ADMIN_TOKEN}",
     "rpc_port": 9003,
     "p2p_enabled": true,
     "p2p_address": "0.0.0.0",
     "p2p_port": 8083,
-    "local_peer_id": "validator-3",
-    "bootstrap_peers": [
-      "172.20.0.2:8083",
-      "172.20.0.3:8083",
-      "172.20.0.5:8083"
-    ],
+    "local_peer_id": "fullnode",
+    "bootstrap_peers": ["validator-1:8083", "validator-2:8083", "validator-3:8083", "validator-4:8083"],
+    "metrics_enabled": true,
+    "metrics_address": "0.0.0.0:9133",
     "max_connections": 256,
     "known_validators": [
       { "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c", "name": "Validator 1", "stake": 1000000000000 },
@@ -21,14 +19,8 @@
     ]
   },
   "consensus": {
-    "validator_enabled": true,
-    "min_validator_stake": 1000000000,
-    "min_validators": 4,
-    "target_validators": 4,
-    "max_validators": 4,
-        "epoch_duration_secs": 3600,
-    "quorum_threshold": 200,
-    "vote_quorum": 1
+    "validator_enabled": false,
+    "epoch_duration_secs": 60
   },
   "storage": {
     "data_dir": "/var/lib/zknot3",
@@ -43,11 +35,7 @@
     "max_bytecode_size": 65536
   },
   "authority": {
-    "address": "zknot3-validator-3",
-    "port": 8083,
-    "stake": 1000000000000,
-    "name": "Validator 3",
-    "validator_index": 2
+    "validator_index": 4
   },
   "logging": {
     "level": 2,
@@ -55,3 +43,4 @@
     "enable_stderr": true
   }
 }
+

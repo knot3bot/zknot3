@@ -15,7 +15,7 @@ VALIDATORS=("zknot3-validator-1" "zknot3-validator-2" "zknot3-validator-3" "zkno
 FULLNODE="zknot3-fullnode"
 ALL_NODES=("${VALIDATORS[@]}" "$FULLNODE")
 
-RPC_PORTS=(9000 9010 9020 9030 9040)
+RPC_PORTS=(9003 9013 9023 9033 9043)
 
 START_TIME=$(date +%s)
 END_TIME=$((START_TIME + DURATION_SECS * 3600))
@@ -116,14 +116,14 @@ while true; do
     done
 
     # Check fullnode HTTP
-    if ! check_http "9040" "$FULLNODE"; then
+    if ! check_http "9043" "$FULLNODE"; then
         ALL_OK=false
         FAILURES=$((FAILURES + 1))
     fi
 
     # Submit a test transaction every 10 iterations (~5 minutes)
     if [ $((ITERATION % 10)) -eq 0 ]; then
-        if submit_tx "9000"; then
+        if submit_tx "9003"; then
             echo "[OK] TX submitted successfully"
         else
             echo "[WARN] TX submission failed"

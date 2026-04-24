@@ -2,12 +2,12 @@
 
 [network]
 bind_address = "0.0.0.0"
-rpc_port = 9000
+rpc_port = 9003
 p2p_enabled = true
 p2p_address = "0.0.0.0"
-p2p_port = 8080
+p2p_port = 8083
 local_peer_id = "validator-2"
-bootstrap_peers = ["validator-1:8080", "validator-3:8080", "validator-4:8080"]
+bootstrap_peers = ["validator-1:8083", "validator-3:8083", "validator-4:8083"]
 max_connections = 256
 
 [consensus]
@@ -33,7 +33,7 @@ max_bytecode_size = 65536
 
 [authority]
 address = "zknot3-validator-2"
-port = 8080
+port = 8083
 stake = 1000000000000
 name = "Validator 2"
 
