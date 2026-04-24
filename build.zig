@@ -51,25 +51,28 @@ pub fn build(b: *std.Build) void {
     const unit_tests = b.addTest(.{
         .root_module = test_module,
     });
+    const run_unit_tests = b.addRunArtifact(unit_tests);
 
     const unit_test_step = b.step("test-unit", "Run unit tests");
-    unit_test_step.dependOn(&unit_tests.step);
+    unit_test_step.dependOn(&run_unit_tests.step);
 
     // Integration tests
     const integration_tests = b.addTest(.{
         .root_module = test_module,
     });
+    const run_integration_tests = b.addRunArtifact(integration_tests);
 
     const integration_test_step = b.step("test-integration", "Run integration tests");
-    integration_test_step.dependOn(&integration_tests.step);
+    integration_test_step.dependOn(&run_integration_tests.step);
 
     // All tests
     const all_tests = b.addTest(.{
         .root_module = test_module,
     });
+    const run_all_tests = b.addRunArtifact(all_tests);
 
     const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&all_tests.step);
+    test_step.dependOn(&run_all_tests.step);
 
     // ========================================================================
     // Formal Specification Export

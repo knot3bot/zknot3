@@ -461,6 +461,47 @@
                 font-size: 0.875rem;
             }
 
+            .pagination {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                padding-top: 0.75rem;
+                margin-top: 0.5rem;
+                border-top: 1px solid var(--border);
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+            }
+
+            .pagination .controls {
+                display: inline-flex;
+                gap: 0.5rem;
+                align-items: center;
+            }
+
+            .btn {
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border);
+                color: var(--text-primary);
+                padding: 0.45rem 0.75rem;
+                border-radius: 8px;
+                font-size: 0.875rem;
+                cursor: pointer;
+            }
+
+            .btn:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+
+            select {
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border);
+                color: var(--text-primary);
+                padding: 0.45rem 0.6rem;
+                border-radius: 8px;
+            }
+
             /* Section visibility */
             .section {
                 display: none;
@@ -698,7 +739,9 @@
                                 <tbody>
                                     <template x-for="txn in recentTxns.slice(0, 5)" :key="txn.hash">
                                         <tr>
-                                            <td class="mono" x-text="txn.hash.substring(0, 10) + '...'">--</td>
+                                            <td class="mono">
+                                                <a href="#" @click.prevent="openTxnDetail(txn.hash)" x-text="txn.hash.substring(0, 10) + '...'">--</a>
+                                            </td>
                                             <td><span class="badge" :class="txn.status === 'executed' || txn.status === 'success' ? 'badge-success' : 'badge-muted'" x-text="txn.status">--</span></td>
                                             <td x-text="txn.gas_used">0</td>
                                         </tr>
@@ -741,6 +784,19 @@
                             </tbody>
                         </table>
                     </div>
+                    <div class="pagination">
+                        <div>Showing <span x-text="recentBlocks.length">0</span> / <span x-text="blocksTotal">0</span></div>
+                        <div class="controls">
+                            <button class="btn" :disabled="blocksHistory.length === 0" @click="prevBlocks()">Prev</button>
+                            <button class="btn" :disabled="!blocksHasMore" @click="nextBlocks()">Next</button>
+                            <label>Page size</label>
+                            <select x-model.number="blocksLimit" @change="resetBlocks()">
+                                <option :value="50">50</option>
+                                <option :value="100">100</option>
+                                <option :value="200">200</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -759,7 +815,9 @@
                             <tbody>
                                 <template x-for="txn in recentTxns" :key="txn.hash">
                                     <tr>
-                                        <td class="mono" x-text="txn.hash.substring(0, 16) + '...'">--</td>
+                                        <td class="mono">
+                                            <a href="#" @click.prevent="openTxnDetail(txn.hash)" x-text="txn.hash.substring(0, 16) + '...'">--</a>
+                                        </td>
                                         <td><span class="badge" :class="txn.status === 'executed' || txn.status === 'success' ? 'badge-success' : 'badge-muted'" x-text="txn.status">--</span></td>
                                         <td x-text="txn.gas_used">0</td>
                                         <td class="mono" x-text="txn.sender.substring(0, 12) + '...'">--</td>
@@ -771,6 +829,19 @@
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                    <div class="pagination">
+                        <div>Showing <span x-text="recentTxns.length">0</span> / <span x-text="txTotal">0</span></div>
+                        <div class="controls">
+                            <button class="btn" :disabled="txHistory.length === 0" @click="prevTxns()">Prev</button>
+                            <button class="btn" :disabled="!txHasMore" @click="nextTxns()">Next</button>
+                            <label>Page size</label>
+                            <select x-model.number="txLimit" @change="resetTxns()">
+                                <option :value="50">50</option>
+                                <option :value="100">100</option>
+                                <option :value="200">200</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -894,6 +965,33 @@
             </div>
         </main>
 
+        <!-- Transaction detail modal -->
+        <div x-show="txnDetailOpen" x-transition.opacity style="position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; padding: 1.5rem; z-index: 2000;">
+            <div style="width: min(960px, 100%); max-height: 85vh; overflow: auto; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1rem 0.75rem;">
+                <div style="display:flex; align-items:center; justify-content: space-between; gap: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);">
+                    <div>
+                        <div style="font-weight: 600;">Transaction Detail</div>
+                        <div class="mono" style="font-size: 0.85rem; color: var(--text-muted);" x-text="txnDetailHash">--</div>
+                    </div>
+                    <div style="display:flex; gap: 0.5rem;">
+                        <button class="btn" :disabled="!txnDetailRaw" @click="copyText(txnDetailRaw)">Copy JSON</button>
+                        <button class="btn" @click="closeTxnDetail()">Close</button>
+                    </div>
+                </div>
+                <div style="padding: 0.75rem 0;">
+                    <template x-if="txnDetailLoading">
+                        <div class="empty-state">Loading…</div>
+                    </template>
+                    <template x-if="!txnDetailLoading && txnDetailError">
+                        <div class="empty-state" x-text="txnDetailError"></div>
+                    </template>
+                    <template x-if="!txnDetailLoading && txnDetailRaw">
+                        <pre style="white-space: pre-wrap; word-break: break-word; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; font-size: 0.85rem;" x-text="txnDetailRaw"></pre>
+                    </template>
+                </div>
+            </div>
+        </div>
+
         <script>
             function dashboard() {
                 return {
@@ -907,6 +1005,25 @@
                     validators: [],
                     recentBlocks: [],
                     recentTxns: [],
+
+                    txnDetailOpen: false,
+                    txnDetailHash: "",
+                    txnDetailLoading: false,
+                    txnDetailRaw: "",
+                    txnDetailError: "",
+
+                    // Pagination state
+                    blocksLimit: 50,
+                    blocksCursor: null,
+                    blocksHistory: [],
+                    blocksHasMore: false,
+                    blocksTotal: 0,
+
+                    txLimit: 50,
+                    txCursor: null,
+                    txHistory: [],
+                    txHasMore: false,
+                    txTotal: 0,
 
                     async fetchData() {
                         try {
@@ -929,8 +1046,16 @@
 
                     async fetchBlocks() {
                         try {
-                            const res = await fetch("/api/blocks").then(r => r.json()).catch(() => null);
-                            if (res && res.blocks) this.recentBlocks = res.blocks;
+                            const url = new URL("/api/blocks", window.location.origin);
+                            url.searchParams.set("limit", String(this.blocksLimit));
+                            if (this.blocksCursor) url.searchParams.set("cursor", String(this.blocksCursor));
+                            const res = await fetch(url.toString()).then(r => r.json()).catch(() => null);
+                            if (res && res.blocks) {
+                                this.recentBlocks = res.blocks;
+                                this.blocksHasMore = !!res.has_more;
+                                this.blocksCursor = res.next_cursor ?? null;
+                                this.blocksTotal = res.total ?? 0;
+                            }
                         } catch (e) {
                             console.error("Failed to fetch blocks:", e);
                         }
@@ -938,11 +1063,80 @@
 
                     async fetchTransactions() {
                         try {
-                            const res = await fetch("/api/transactions").then(r => r.json()).catch(() => null);
-                            if (res && res.transactions) this.recentTxns = res.transactions;
+                            const url = new URL("/api/transactions", window.location.origin);
+                            url.searchParams.set("limit", String(this.txLimit));
+                            if (this.txCursor) url.searchParams.set("cursor", String(this.txCursor));
+                            const res = await fetch(url.toString()).then(r => r.json()).catch(() => null);
+                            if (res && res.transactions) {
+                                this.recentTxns = res.transactions;
+                                this.txHasMore = !!res.has_more;
+                                this.txCursor = res.next_cursor ?? null;
+                                this.txTotal = res.total ?? 0;
+                            }
                         } catch (e) {
                             console.error("Failed to fetch transactions:", e);
                         }
+                    },
+
+                    async openTxnDetail(hash) {
+                        this.txnDetailOpen = true;
+                        this.txnDetailHash = hash;
+                        this.txnDetailLoading = true;
+                        this.txnDetailError = "";
+                        this.txnDetailRaw = "";
+                        try {
+                            const res = await fetch(`/api/transactions/${hash}`).then(r => r.json());
+                            this.txnDetailRaw = JSON.stringify(res, null, 2);
+                        } catch (e) {
+                            this.txnDetailError = `Failed to load transaction detail: ${e}`;
+                        } finally {
+                            this.txnDetailLoading = false;
+                        }
+                    },
+
+                    closeTxnDetail() {
+                        this.txnDetailOpen = false;
+                    },
+
+                    async copyText(text) {
+                        try {
+                            await navigator.clipboard.writeText(text);
+                        } catch (_) {}
+                    },
+
+                    resetBlocks() {
+                        this.blocksCursor = null;
+                        this.blocksHistory = [];
+                        this.fetchBlocks();
+                    },
+
+                    nextBlocks() {
+                        if (this.blocksCursor) this.blocksHistory.push(this.blocksCursor);
+                        this.fetchBlocks();
+                    },
+
+                    prevBlocks() {
+                        // Pop current cursor; previous cursor becomes last of stack (or null).
+                        this.blocksHistory.pop();
+                        this.blocksCursor = this.blocksHistory.length > 0 ? this.blocksHistory[this.blocksHistory.length - 1] : null;
+                        this.fetchBlocks();
+                    },
+
+                    resetTxns() {
+                        this.txCursor = null;
+                        this.txHistory = [];
+                        this.fetchTransactions();
+                    },
+
+                    nextTxns() {
+                        if (this.txCursor) this.txHistory.push(this.txCursor);
+                        this.fetchTransactions();
+                    },
+
+                    prevTxns() {
+                        this.txHistory.pop();
+                        this.txCursor = this.txHistory.length > 0 ? this.txHistory[this.txHistory.length - 1] : null;
+                        this.fetchTransactions();
                     },
 
                     async fetchValidators() {

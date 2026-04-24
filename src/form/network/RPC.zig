@@ -122,6 +122,14 @@ pub const RPCResponse = struct {
             .err = .{ .code = code, .message = message },
         };
     }
+
+    pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+        if (self.result) |r| {
+            if (r == .success) {
+                allocator.free(r.success);
+            }
+        }
+    }
 };
 
 /// RPC context for handlers - uses interface-based access
@@ -198,6 +206,15 @@ pub const RPCServer = struct {
                 .{ @intFromEnum(ErrorCode.internal_error), @errorName(err) },
             );
         };
+        defer response.deinit(self.allocator);
+
+        if (response.err) |e| {
+            return try std.fmt.allocPrint(
+                self.allocator,
+                "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{d},\"message\":\"{s}\"}},\"id\":null}}",
+                .{ @intFromEnum(e.code), e.message },
+            );
+        }
 
         var out: std.Io.Writer.Allocating = .init(self.allocator);
         defer out.deinit();
@@ -472,9 +489,11 @@ test "RPC m4 methods call node mainnet hooks" {
     var stake_params1 = try std.json.parseFromSlice(std.json.Value, allocator, stake_body, .{ .ignore_unknown_fields = true });
     defer stake_params1.deinit();
     const stake_1 = try handleSubmitStakeOperation(&ctx, stake_params1.value);
+    defer if (stake_1.result) |r| allocator.free(r.success);
     var stake_params2 = try std.json.parseFromSlice(std.json.Value, allocator, stake_body, .{ .ignore_unknown_fields = true });
     defer stake_params2.deinit();
     const stake_2 = try handleSubmitStakeOperation(&ctx, stake_params2.value);
+    defer if (stake_2.result) |r| allocator.free(r.success);
     try std.testing.expect(stake_1.result != null);
     try std.testing.expect(stake_2.result != null);
     try std.testing.expect(std.mem.indexOf(u8, stake_1.result.?.success, "\"operationId\":1") != null);
@@ -485,6 +504,7 @@ test "RPC m4 methods call node mainnet hooks" {
     var gov_params = try std.json.parseFromSlice(std.json.Value, allocator, gov_body, .{ .ignore_unknown_fields = true });
     defer gov_params.deinit();
     const proposal = try handleSubmitGovernanceProposal(&ctx, gov_params.value);
+    defer if (proposal.result) |r| allocator.free(r.success);
     try std.testing.expect(proposal.result != null);
     try std.testing.expect(std.mem.indexOf(u8, proposal.result.?.success, "\"proposalId\":1") != null);
 
@@ -493,6 +513,7 @@ test "RPC m4 methods call node mainnet hooks" {
     const proof_params = try std.json.parseFromSlice(std.json.Value, allocator, proof_body, .{ .ignore_unknown_fields = true });
     defer proof_params.deinit();
     const proof = try handleGetCheckpointProof(&ctx, proof_params.value);
+    defer if (proof.result) |r| allocator.free(r.success);
     try std.testing.expect(proof.result != null);
     try std.testing.expect(std.mem.indexOf(u8, proof.result.?.success, "\"sequence\":7") != null);
 }

@@ -11,7 +11,13 @@
       "172.20.0.3:8080",
       "172.20.0.5:8080"
     ],
-    "max_connections": 256
+    "max_connections": 256,
+    "known_validators": [
+      { "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c", "name": "Validator 1", "stake": 1000000000000 },
+      { "public_key_hex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394", "name": "Validator 2", "stake": 1000000000000 },
+      { "public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1", "name": "Validator 3", "stake": 1000000000000 },
+      { "public_key_hex": "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c", "name": "Validator 4", "stake": 1000000000000 }
+    ]
   },
   "consensus": {
     "validator_enabled": true,
@@ -40,7 +46,9 @@
     "port": 8080,
     "stake": 1000000000000,
     "name": "Validator 3",
-    "validator_index": 2
+    "validator_index": 2,
+    "signing_key": [3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],
+    "bls_signing_seed": [103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103,103]
   },
   "logging": {
     "level": 2,

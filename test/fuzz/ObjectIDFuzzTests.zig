@@ -134,7 +134,7 @@ test "Fuzz: ObjectID fromBytes validation" {
         rng.random().bytes(&data);
         
         const id = ObjectID.hash(&data);
-        const roundtrip = try ObjectID.fromBytes(&data);
+        const roundtrip = try ObjectID.fromBytes(id.asBytes());
         
         if (!id.eql(roundtrip)) {
             std.debug.panic("ObjectID fromBytes roundtrip failed", .{});

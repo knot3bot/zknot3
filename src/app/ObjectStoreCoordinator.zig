@@ -25,7 +25,7 @@ pub fn putObject(store: ?*ObjectStore, object: ObjectStore.Object) (CoordinatorE
 
 pub fn deleteObject(store: ?*ObjectStore, id: core.ObjectID) (CoordinatorError || anyerror)!void {
     if (store) |s| {
-        s.delete(id);
+        try s.delete(id);
         return;
     }
     return error.ObjectStoreNotAvailable;

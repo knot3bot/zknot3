@@ -22,6 +22,12 @@ pub const ProtocolVersion = struct {
 
 /// Network configuration
 pub const NetworkConfig = struct {
+    pub const KnownValidator = struct {
+        public_key_hex: []const u8,
+        name: []const u8 = "",
+        stake: u64 = 0,
+    };
+
     /// Bind address for HTTP/RPC server
     bind_address: []const u8 = "127.0.0.1",
     /// RPC server port
@@ -56,6 +62,11 @@ pub const NetworkConfig = struct {
     p2p_peer_score_ban_threshold: i32 = -100,
     /// Temporary peer ban duration in seconds
     p2p_peer_ban_seconds: i64 = 300,
+    /// Maximum HTTP request body size in bytes
+    max_request_body_size: usize = 1024 * 1024, // 1MB
+    /// Maximum concurrent HTTP connections
+    max_concurrent_http_connections: usize = 256,
+    known_validators: []const KnownValidator = &.{},
 };
 
 /// Consensus configuration
@@ -84,6 +95,8 @@ pub const ConsensusConfig = struct {
     max_txs_per_block: u32 = 50,
     /// Maximum committed blocks to retain in memory before pruning
     max_committed_blocks: usize = 10000,
+    /// Maximum pending blocks to retain in memory before pruning
+    max_pending_blocks: usize = 5000,
 
     // ---------------------------------------------------------------------
     // P2P message scheduling budgets (public-chain hardening)
@@ -255,7 +268,8 @@ pub const NodeConfig = struct {
 /// Load node config from JSON file
 pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
     const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
-    defer allocator.free(contents);
+    // NOTE: `Self.loadFromJSON` returns a config that borrows from `contents`.
+    // Keep `contents` alive for the lifetime of the returned config.
     return try Self.loadFromJSON(allocator, contents);
 }
 
@@ -429,7 +443,8 @@ pub const Config = struct {
     /// Load configuration from JSON file
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
         const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
-        defer allocator.free(contents);
+        // NOTE: `Self.loadFromJSON` returns a config that borrows from `contents`.
+        // Keep `contents` alive for the lifetime of the returned config.
         return try Self.loadFromJSON(allocator, contents);
     }
 

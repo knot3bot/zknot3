@@ -58,7 +58,7 @@ test "Property: Signature roundtrip" {
 }
 
 test "Property: Interpreter gas tracking" {
-    var gas = Gas.GasMeter.init(.{ .max_gas = 5000 });
+    var gas = Gas.GasMeter.init(.{ .initial_budget = 5000, .max_gas = 5000 });
     try gas.consume(1000);
     try std.testing.expect(gas.getRemaining() == 4000);
     try std.testing.expect(gas.getConsumed() == 1000);
@@ -69,7 +69,10 @@ test "Property: Resource lifecycle" {
 
     const id = ObjectID.hash("resource");
     var res = try Resource.init(id, .Coin, &.{1, 2, 3}, null, allocator);
-    defer res.deinit(allocator);
+    defer {
+        res.deinit(allocator);
+        allocator.destroy(res);
+    }
 
     try std.testing.expect(res.isValid());
     try std.testing.expect(!res.isMoved());

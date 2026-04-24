@@ -12,6 +12,12 @@ const ObjectID = core.ObjectID;
 const Resource = @import("Resource.zig");
 const Gas = @import("Gas.zig");
 const Bytecode = @import("Bytecode.zig");
+const NativeFunction = @import("NativeFunction.zig");
+const Registry = NativeFunction.Registry;
+const TxContextModule = @import("TxContext.zig");
+const TxContext = TxContextModule.TxContext;
+const EventEmitter = @import("EventEmitter.zig");
+const Event = EventEmitter.Event;
 
 /// Value types on the stack
 pub const Value = struct {
@@ -36,6 +42,38 @@ pub const Value = struct {
         resource: ResourceLoc,
         vector: []Value,
     };
+
+    /// Recursively release any heap-allocated data owned by this Value.
+    pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
+        switch (self.tag) {
+            .vector => {
+                for (self.data.vector) |v| {
+                    v.deinit(allocator);
+                }
+                allocator.free(self.data.vector);
+            },
+            else => {},
+        }
+    }
+
+    /// Deep-clone a Value. For scalar types this is a bitwise copy;
+    /// for vectors it recursively clones every element so that the
+    /// caller owns an independent copy.
+    pub fn clone(self: Self, allocator: std.mem.Allocator) !Self {
+        switch (self.tag) {
+            .vector => {
+                const new_vec = try allocator.alloc(Value, self.data.vector.len);
+                errdefer allocator.free(new_vec);
+                for (self.data.vector, 0..) |v, i| {
+                    new_vec[i] = try v.clone(allocator);
+                }
+                var copy = self;
+                copy.data.vector = new_vec;
+                return copy;
+            },
+            else => return self,
+        }
+    }
 
     pub const ResourceLoc = struct {
         id: [32]u8,
@@ -66,6 +104,7 @@ pub const ExecutionResult = struct {
     gas_consumed: u64,
     resources_used: usize,
     output_objects: [][32]u8,
+    events: []Event,
     err: ?anyerror,
 };
 
@@ -119,6 +158,12 @@ pub const Interpreter = struct {
     pc: usize,
     instructions: []const Bytecode.Instruction,
     output_objects: std.ArrayList([32]u8),
+    /// Phase 2: native function registry
+    registry: ?*Registry = null,
+    /// Phase 2: transaction context injection
+    tx_context: ?*TxContext = null,
+    /// Phase 2: events emitted during execution
+    events: std.ArrayList(Event),
 
     pub fn init(allocator: std.mem.Allocator, gas: *Gas.GasMeter, tracker: *Resource.ResourceTracker) !*Self {
         const self = try allocator.create(Self);
@@ -131,14 +176,24 @@ pub const Interpreter = struct {
             .pc = 0,
             .instructions = &.{},
             .output_objects = std.ArrayList([32]u8).empty,
+            .registry = null,
+            .tx_context = null,
+            .events = std.ArrayList(Event).empty,
         };
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.stack.items) |v| {
+            v.deinit(self.allocator);
+        }
         self.stack.deinit(self.allocator);
         self.output_objects.deinit(self.allocator);
         self.call_stack.deinit();
+        for (self.events.items) |evt| {
+            self.allocator.free(evt.payload);
+        }
+        self.events.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -181,9 +236,50 @@ pub const Interpreter = struct {
             .return_value = return_value,
             .gas_consumed = self.gas.getConsumed(),
             .resources_used = self.resource_tracker.activeCount(),
-            .output_objects = try self.output_objects.toOwnedSlice(self.allocator),
+            .output_objects = self.output_objects.items,
+            .events = self.events.items,
             .err = null,
         };
+    }
+
+    fn decodeU64Compat(payload: []const u8) u64 {
+        const little = std.mem.readInt(u64, payload[0..8], .little);
+        const big = std.mem.readInt(u64, payload[0..8], .big);
+        const small_cutoff: u64 = 1 << 40;
+        if (little <= small_cutoff and big > small_cutoff) return little;
+        if (big <= small_cutoff and little > small_cutoff) return big;
+
+        var leading: usize = 0;
+        while (leading < payload.len and payload[leading] == 0) : (leading += 1) {}
+        var trailing: usize = 0;
+        while (trailing < payload.len and payload[payload.len - 1 - trailing] == 0) : (trailing += 1) {}
+        if (trailing > leading) return little;
+        if (leading > trailing) return big;
+        return big;
+    }
+
+    fn decodeI64Compat(payload: []const u8) i64 {
+        const little = std.mem.readInt(i64, payload[0..8], .little);
+        const big = std.mem.readInt(i64, payload[0..8], .big);
+        const little_abs = i64Magnitude(little);
+        const big_abs = i64Magnitude(big);
+        if (little_abs < big_abs) return little;
+        if (big_abs < little_abs) return big;
+        return big;
+    }
+
+    fn i64Magnitude(v: i64) u64 {
+        if (v == std.math.minInt(i64)) return std.math.maxInt(u64);
+        if (v < 0) return @intCast(-v);
+        return @intCast(v);
+    }
+
+    fn decodeVecCountCompat(payload: []const u8, max_count: u32) u32 {
+        const little = std.mem.readInt(u32, payload[0..4], .little);
+        const big = std.mem.readInt(u32, payload[0..4], .big);
+        if (little <= max_count and big > max_count) return little;
+        if (big <= max_count and little > max_count) return big;
+        return big;
     }
 
     fn executeInstruction(self: *Self, instr: Bytecode.Instruction) !void {
@@ -211,8 +307,9 @@ pub const Interpreter = struct {
             .dup => {
                 if (self.stack.items.len == 0) return error.StackUnderflow;
                 const top = self.stack.pop().?;
+                const cloned = try top.clone(self.allocator);
                 try self.stack.append(self.allocator, top);
-                try self.stack.append(self.allocator, top);
+                try self.stack.append(self.allocator, cloned);
             },
             .swap => {
                 if (self.stack.items.len < 2) return error.StackUnderflow;
@@ -223,7 +320,7 @@ pub const Interpreter = struct {
             },
             .ld_const => {
                 if (instr.payload.len >= 8) {
-                    const val = std.mem.readInt(i64, instr.payload[0..8], .big);
+                    const val = decodeI64Compat(instr.payload);
                     try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = val } });
                 }
             },
@@ -240,13 +337,13 @@ pub const Interpreter = struct {
             },
             .ld_u64 => {
                 if (instr.payload.len >= 8) {
-                    const val = std.mem.readInt(u64, instr.payload[0..8], .big);
+                    const val = decodeU64Compat(instr.payload);
                     try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @intCast(val) } });
                 }
             },
             .ld_i64 => {
                 if (instr.payload.len >= 8) {
-                    const val = std.mem.readInt(i64, instr.payload[0..8], .big);
+                    const val = decodeI64Compat(instr.payload);
                     try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = val } });
                 }
             },
@@ -448,7 +545,7 @@ pub const Interpreter = struct {
                 return error.UnimplementedInstruction;
             },
             .call => {
-                return error.UnimplementedInstruction;
+                try self.executeCall(instr);
             },
             .call_indirect => {
                 return error.UnimplementedInstruction;
@@ -458,6 +555,7 @@ pub const Interpreter = struct {
                 return;
             },
             .move_to_sender => {
+                if (self.stack.items.len < 1) return error.StackUnderflow;
                 const resource = self.stack.pop().?;
                 if (resource.tag == .resource) {
                     var oid = ObjectID.zero;
@@ -466,6 +564,7 @@ pub const Interpreter = struct {
                 }
             },
             .move_from => {
+                if (self.stack.items.len < 1) return error.StackUnderflow;
                 const addr = self.stack.pop().?;
                 if (addr.tag == .address) {
                     const resource_id = addr.data.address;
@@ -479,6 +578,7 @@ pub const Interpreter = struct {
                 }
             },
             .borrow_global => {
+                if (self.stack.items.len < 1) return error.StackUnderflow;
                 const addr = self.stack.pop().?;
                 if (addr.tag == .address) {
                     const resource_id = addr.data.address;
@@ -492,6 +592,7 @@ pub const Interpreter = struct {
                 }
             },
             .exists => {
+                if (self.stack.items.len < 1) return error.StackUnderflow;
                 const addr = self.stack.pop().?;
                 if (addr.tag == .address) {
                     var oid = ObjectID.zero;
@@ -501,6 +602,7 @@ pub const Interpreter = struct {
                 }
             },
             .delete_resource => {
+                if (self.stack.items.len < 1) return error.StackUnderflow;
                 const resource = self.stack.pop().?;
                 if (resource.tag == .resource) {
                     var oid = ObjectID.zero;
@@ -540,8 +642,27 @@ pub const Interpreter = struct {
                 }
             },
             .vec_pack => {
-                if (instr.payload.len >= 4) {
-                    const count = std.mem.readInt(u32, instr.payload[0..4], .big);
+                const MAX_VEC_PACK: u32 = 4096;
+                var count: u32 = 0;
+                var consumed_count_from_stack = false;
+
+                if (self.stack.items.len > 0) {
+                    const top = self.stack.items[self.stack.items.len - 1];
+                    if (top.tag == .integer and top.data.int >= 0) {
+                        count = @intCast(top.data.int);
+                        _ = self.stack.pop();
+                        consumed_count_from_stack = true;
+                    }
+                }
+
+                if (!consumed_count_from_stack) {
+                    if (instr.payload.len < 4) return error.InvalidInstructionPayload;
+                    count = decodeVecCountCompat(instr.payload, MAX_VEC_PACK);
+                }
+
+                if (count > MAX_VEC_PACK) return error.InvalidInstructionPayload;
+                if (self.stack.items.len < count) return error.StackUnderflow;
+                {
                     var elems = try std.ArrayList(Value).initCapacity(self.allocator, count);
                     defer elems.deinit(self.allocator);
                     for (0..count) |_| {
@@ -568,6 +689,7 @@ pub const Interpreter = struct {
                     const index = self.stack.pop().?;
                     const vec = self.stack.pop().?;
                     if (vec.tag == .vector and index.tag == .integer) {
+                        if (index.data.int < 0) return error.IndexOutOfBounds;
                         const idx = @as(usize, @intCast(index.data.int));
                         if (idx < vec.data.vector.len) {
                             try self.stack.append(self.allocator, vec.data.vector[idx]);
@@ -579,6 +701,60 @@ pub const Interpreter = struct {
             },
             else => return error.UnsupportedOpcode,
         }
+    }
+
+    /// Base gas charged for every native function call in addition to the
+    /// `call` instruction complexity. Prevents gas bypass through cheap loops
+    /// of native functions.
+    const NATIVE_CALL_BASE_GAS: u64 = 50;
+
+    /// Execute a native function call.
+    /// Payload format: [module_len: u8][module: bytes][func_len: u8][func: bytes][arg_count: u8]
+    fn executeCall(self: *Self, instr: Bytecode.Instruction) !void {
+        const reg = self.registry orelse return error.UnimplementedInstruction;
+        const payload = instr.payload;
+        if (payload.len < 3) return error.InvalidInstructionPayload;
+
+        var offset: usize = 0;
+        const module_len = payload[offset];
+        offset += 1;
+        if (payload.len < offset + module_len + 1) return error.InvalidInstructionPayload;
+        const module_name = payload[offset..][0..module_len];
+        offset += module_len;
+
+        const func_len = payload[offset];
+        offset += 1;
+        if (payload.len < offset + func_len + 1) return error.InvalidInstructionPayload;
+        const func_name = payload[offset..][0..func_len];
+        offset += func_len;
+
+        const arg_count = payload[offset];
+
+        if (self.stack.items.len < arg_count) return error.StackUnderflow;
+
+        // Charge base gas for native call before execution
+        try self.gas.consume(NATIVE_CALL_BASE_GAS);
+
+        // Pop arguments from stack (last arg is top of stack)
+        const args_start = self.stack.items.len - arg_count;
+        const args = self.stack.items[args_start..];
+
+        const native = reg.resolve(module_name, func_name) orelse return error.UnimplementedInstruction;
+        const result = native(self, args) catch |err| switch (err) {
+            error.InvalidArgumentCount => return error.InvalidArgumentCount,
+            error.TypeMismatch => return error.TypeMismatch,
+            error.ResourceNotFound => return error.ResourceNotFound,
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnimplementedNative => return error.UnimplementedInstruction,
+        };
+
+        // Remove consumed args from stack. Deinit each argument first because
+        // native functions receive borrowed values and do not own stack memory.
+        for (args) |arg| {
+            arg.deinit(self.allocator);
+        }
+        self.stack.shrinkRetainingCapacity(args_start);
+        try self.stack.append(self.allocator, result);
     }
 
     fn valuesEqual(a: Value, b: Value) bool {

@@ -13,7 +13,11 @@ const Resource = property.move_vm.Resource;
 const ResourceTracker = property.move_vm.ResourceTracker;
 const Interpreter = property.move_vm.Interpreter;
 const Bytecode = property.move_vm.Bytecode;
+const Registry = property.move_vm.Registry;
+const TxContext = property.move_vm.TxContext;
+const Event = property.move_vm.Event;
 const Ingress = @import("Ingress.zig");
+const DependencyGraph = @import("DependencyGraph.zig").DependencyGraph;
 const Log = @import("../app/Log.zig");
 
 /// Execution result
@@ -22,6 +26,17 @@ pub const ExecutionResult = struct {
     status: ExecutionStatus,
     gas_used: u64,
     output_objects: [][32]u8,
+    /// Phase 2: events emitted during VM execution
+    events: []Event,
+
+    /// Release all owned memory
+    pub fn deinit(self: ExecutionResult, allocator: std.mem.Allocator) void {
+        if (self.output_objects.len > 0) allocator.free(self.output_objects);
+        for (self.events) |evt| {
+            if (evt.payload.len > 0) allocator.free(evt.payload);
+        }
+        if (self.events.len > 0) allocator.free(self.events);
+    }
 };
 
 /// Execution status
@@ -44,10 +59,11 @@ pub const Executor = struct {
     allocator: std.mem.Allocator,
     config: ExecutorConfig,
     resource_tracker: *ResourceTracker,
+    /// Phase 2: optional native function registry for VM calls
+    registry: ?*Registry = null,
 
     pub fn init(allocator: std.mem.Allocator, config: ExecutorConfig) !*Self {
         const tracker = try allocator.create(ResourceTracker);
-        tracker.* = ResourceTracker.init(allocator);
         tracker.* = ResourceTracker.init(allocator);
         errdefer {
             tracker.deinit();
@@ -60,17 +76,28 @@ pub const Executor = struct {
             .allocator = allocator,
             .config = config,
             .resource_tracker = tracker,
+            .registry = null,
         };
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.registry) |reg| {
+            reg.deinit();
+            self.allocator.destroy(reg);
+        }
         self.resource_tracker.deinit();
+        self.allocator.destroy(self.resource_tracker);
         self.allocator.destroy(self);
     }
 
-    /// Execute a single transaction
+    /// Execute a single transaction (legacy wrapper without tx context)
     pub fn execute(self: *Self, tx: Ingress.Transaction) !ExecutionResult {
+        return self.executeWithContext(tx, null);
+    }
+
+    /// Execute a single transaction with optional tx context for native functions
+    pub fn executeWithContext(self: *Self, tx: Ingress.Transaction, tx_context: ?*TxContext) !ExecutionResult {
         // Initialize gas meter
         const gas_config: Gas.GasConfig = .{
             .initial_budget = tx.gas_budget,
@@ -85,6 +112,8 @@ pub const Executor = struct {
             self.resource_tracker,
         );
         defer interpreter.deinit();
+        interpreter.registry = self.registry;
+        interpreter.tx_context = tx_context;
 
         // Parse and verify bytecode
         var verifier = Bytecode.BytecodeVerifier.init(self.allocator);
@@ -94,6 +123,7 @@ pub const Executor = struct {
                 .status = .invalid_bytecode,
                 .gas_used = gas.getConsumed(),
                 .output_objects = &.{},
+                .events = &.{},
             };
         };
         defer module.deinit(self.allocator);
@@ -105,16 +135,44 @@ pub const Executor = struct {
                 .status = if (err == error.OutOfGas) .out_of_gas else .resource_error,
                 .gas_used = gas.getConsumed(),
                 .output_objects = &.{},
+                .events = &.{},
             };
         };
+        // Release the return value (not used by Executor) to avoid leaking
+        // any heap-allocated data (e.g. vectors) left on the stack.
+        if (result.return_value) |rv| {
+            rv.deinit(self.allocator);
+        }
 
         // Validate resource tracking (void function - debug assert)
         self.resource_tracker.validate() catch |err| {
             Log.err("[ERR] Resource validation failed: {}", .{err});
+            if (result.output_objects.len > 0) self.allocator.free(result.output_objects);
+            for (result.events) |evt| { if (evt.payload.len > 0) self.allocator.free(evt.payload); }
+            if (result.events.len > 0) self.allocator.free(result.events);
+            return ExecutionResult{
+                .digest = undefined,
+                .status = .resource_error,
+                .gas_used = gas.getConsumed(),
+                .output_objects = &.{},
+                .events = &.{},
+            };
         };
 
         // Check for resource leaks - all resources should be consumed or moved
-        try self.resource_tracker.checkLeaks();
+        self.resource_tracker.checkLeaks() catch |err| {
+            Log.err("[ERR] Resource leak check failed: {}", .{err});
+            if (result.output_objects.len > 0) self.allocator.free(result.output_objects);
+            for (result.events) |evt| { if (evt.payload.len > 0) self.allocator.free(evt.payload); }
+            if (result.events.len > 0) self.allocator.free(result.events);
+            return ExecutionResult{
+                .digest = undefined,
+                .status = .resource_error,
+                .gas_used = gas.getConsumed(),
+                .output_objects = &.{},
+                .events = &.{},
+            };
+        };
 
         // Compute digest
         var ctx = std.crypto.hash.Blake3.init(.{});
@@ -127,6 +185,7 @@ pub const Executor = struct {
             .status = .success,
             .gas_used = result.gas_consumed,
             .output_objects = result.output_objects,
+            .events = result.events,
         };
     }
 
@@ -140,6 +199,7 @@ pub const Executor = struct {
                     .status = if (err == error.OutOfGas) .out_of_gas else .resource_error,
                     .gas_used = 0,
                     .output_objects = &.{},
+                    .events = &.{},
                 };
                 continue;
             };
@@ -147,10 +207,35 @@ pub const Executor = struct {
         return results;
     }
 
-    /// Execute transactions with dependency ordering (simplified - just sequential)
-    pub fn executeOrdered(self: *Self, transactions: []const Ingress.Transaction, dependencies: []const []const usize) ![]ExecutionResult {
-        _ = dependencies;
-        return self.executeBatch(transactions);
+    /// Execute transactions with dependency ordering using DependencyGraph.
+    /// Batches within a level have no conflicts and could run in parallel;
+    /// currently they are executed sequentially within the batch.
+    pub fn executeOrdered(self: *Self, transactions: []const Ingress.Transaction) ![]ExecutionResult {
+        const allocator = self.allocator;
+        var graph = try DependencyGraph.init(allocator, transactions);
+        defer graph.deinit();
+
+        const batches = try graph.topologicalBatches(allocator);
+        defer {
+            for (batches) |b| allocator.free(b);
+            allocator.free(batches);
+        }
+
+        const results = try allocator.alloc(ExecutionResult, transactions.len);
+        for (batches) |batch| {
+            for (batch) |idx| {
+                results[idx] = self.executeWithContext(transactions[idx], null) catch |err| {
+                    results[idx] = ExecutionResult{
+                        .digest = [_]u8{0} ** 32,
+                        .status = if (err == error.OutOfGas) .out_of_gas else .resource_error,
+                        .gas_used = 0,
+                        .output_objects = &.{},
+                        .events = &.{},
+                    };
+                };
+            }
+        }
+        return results;
     }
 
     /// Get parallelism level

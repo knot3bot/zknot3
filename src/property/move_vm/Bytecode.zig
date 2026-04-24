@@ -128,9 +128,10 @@ pub const BytecodeVerifier = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Verify bytecode for type safety
+    /// Verify bytecode for type safety and bounds
     pub fn verify(self: *Self, bytecode: []const u8) !VerifiedModule {
-        // Parse instructions
+        if (bytecode.len == 0) return error.EmptyBytecode;
+
         var instructions = try std.ArrayList(Instruction).initCapacity(self.allocator, 32);
         errdefer instructions.deinit(self.allocator);
 
@@ -139,17 +140,36 @@ pub const BytecodeVerifier = struct {
             const opcode: Instruction.OpCode = @enumFromInt(bytecode[offset]);
             offset += 1;
 
-            // Parse instruction-specific payload
-            const payload_len = switch (opcode) {
+            // Parse instruction-specific payload with bounds checks
+            const payload_len: usize = switch (opcode) {
                 .ld_u8 => 1,
                 .ld_u64 => 8,
                 .ld_u128 => 16,
                 .ld_i8 => 1,
                 .ld_i64 => 8,
-                .ld_const => bytecode[offset],
+                .ld_addr => 32,
+                .ld_const => if (offset < bytecode.len) blk: {
+                    const len = bytecode[offset];
+                    if (len == 0) return error.InvalidBytecode;
+                    break :blk len;
+                } else return error.InvalidBytecode,
+                .branch, .branch_if => 2,
+                .vec_pack => 4,
+                .call => blk: {
+                    // call format: [module_len: u8][module: bytes][func_len: u8][func: bytes][arg_count: u8]
+                    if (offset >= bytecode.len) return error.InvalidBytecode;
+                    const module_len = bytecode[offset];
+                    var pos = offset + 1 + module_len;
+                    if (pos >= bytecode.len) return error.InvalidBytecode;
+                    const func_len = bytecode[pos];
+                    pos += 1 + func_len;
+                    if (pos >= bytecode.len) return error.InvalidBytecode;
+                    break :blk (pos + 1) - offset;
+                },
                 else => 0,
             };
 
+            if (offset + payload_len > bytecode.len) return error.InvalidBytecode;
             const payload = if (payload_len > 0) bytecode[offset..][0..payload_len] else &.{};
 
             try instructions.append(self.allocator, .{
@@ -158,6 +178,21 @@ pub const BytecodeVerifier = struct {
             });
 
             offset += payload_len;
+        }
+
+        // Validate branch targets are within instruction range (must be done
+        // after the full instruction list is built so we know the count).
+        const instr_count = instructions.items.len;
+        for (instructions.items) |instr| {
+            switch (instr.opcode) {
+                .branch, .branch_if => {
+                    if (instr.payload.len >= 2) {
+                        const target = std.mem.readInt(u16, instr.payload[0..2], .big);
+                        if (target >= instr_count) return error.InvalidBranchTarget;
+                    }
+                },
+                else => {},
+            }
         }
 
         return .{
@@ -212,4 +247,34 @@ test "Instruction complexity" {
 
     const add = Instruction{ .opcode = .add, .payload = &.{} };
     try std.testing.expect(add.complexity() == 1);
+}
+
+test "Bytecode rejects empty input" {
+    const allocator = std.testing.allocator;
+    var verifier = BytecodeVerifier.init(allocator);
+    const empty = [_]u8{};
+    try std.testing.expectError(error.EmptyBytecode, verifier.verify(&empty));
+}
+
+test "Bytecode rejects ld_const with zero length" {
+    const allocator = std.testing.allocator;
+    var verifier = BytecodeVerifier.init(allocator);
+    const bytecode = [_]u8{ 0x30, 0x00 }; // ld_const, length=0
+    try std.testing.expectError(error.InvalidBytecode, verifier.verify(&bytecode));
+}
+
+test "Bytecode rejects truncated call payload" {
+    const allocator = std.testing.allocator;
+    var verifier = BytecodeVerifier.init(allocator);
+    // call with module_len=5 but only 2 bytes follow
+    const bytecode = [_]u8{ 0xA0, 0x05, 0xAB, 0xCD };
+    try std.testing.expectError(error.InvalidBytecode, verifier.verify(&bytecode));
+}
+
+test "Bytecode rejects out-of-range branch target" {
+    const allocator = std.testing.allocator;
+    var verifier = BytecodeVerifier.init(allocator);
+    // branch to instruction 1000 but only 1 instruction exists
+    const bytecode = [_]u8{ 0x02, 0x03, 0xE8, 0x01 };
+    try std.testing.expectError(error.InvalidBranchTarget, verifier.verify(&bytecode));
 }

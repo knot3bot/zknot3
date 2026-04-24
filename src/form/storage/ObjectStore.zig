@@ -178,9 +178,9 @@ pub const ObjectStore = struct {
     }
 
     /// Delete object from store
-    pub fn delete(self: *Self, id: core.ObjectID) void {
+    pub fn delete(self: *Self, id: core.ObjectID) !void {
         const key = id.asBytes();
-        self.lsm.delete(key);
+        try self.lsm.delete(key);
     }
 };
 

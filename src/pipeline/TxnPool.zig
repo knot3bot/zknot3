@@ -78,14 +78,11 @@ pub const TxnPool = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Clean up priority queue
-        while (self.priority_queue.pop()) |ptx| {
-            ptx.tx.deinit(self.allocator);
-            self.allocator.destroy(ptx.tx);
-        }
+        // Clean up priority queue (just drain it; transactions are owned by by_sender)
+        while (self.priority_queue.pop()) |_| {}
         self.priority_queue.deinit(self.allocator);
 
-        // Clean up by_sender map
+        // Clean up by_sender map (owns the transactions)
         var it = self.by_sender.iterator();
         while (it.next()) |entry| {
             for (entry.value_ptr.items) |ptx| {
@@ -120,9 +117,11 @@ pub const TxnPool = struct {
             }
         }
 
-        // Allocate and copy the transaction
+        // Allocate and copy the transaction (deep copy slices so pool owns the data)
         const tx_ptr = try self.allocator.create(Ingress.Transaction);
         tx_ptr.* = tx;
+        tx_ptr.inputs = try self.allocator.dupe(core.ObjectID, tx.inputs);
+        tx_ptr.program = try self.allocator.dupe(u8, tx.program);
 
         const pool_tx = PoolTransaction{
             .tx = tx_ptr,
@@ -348,20 +347,22 @@ test "TxnPool basic operations" {
     var pool = try TxnPool.init(allocator, .{});
     defer pool.deinit();
 
-    const tx = Ingress.Transaction{
+    var tx = Ingress.Transaction{
         .sender = [_]u8{1} ** 32,
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test"),
         .gas_budget = 1000,
         .sequence = 1,
     };
+    defer tx.deinit(allocator);
 
     try pool.add(tx, 1000);
 
     try std.testing.expect(pool.stats().pool_size == 1);
     try std.testing.expect(pool.stats().received_total == 1);
 
-    const next = pool.next();
+    var next = pool.next();
+    defer if (next) |*n| n.deinit(allocator);
     try std.testing.expect(next != null);
     try std.testing.expect(next.?.sequence == 1);
 
@@ -414,7 +415,7 @@ test "TxnPool priority ordering" {
         .gas_budget = 1000,
         .sequence = 1,
     };
-    try pool.add(tx1, 100); // Low gas price
+    try pool.add(tx1, 1000); // Low gas price
 
     const tx2 = Ingress.Transaction{
         .sender = [_]u8{2} ** 32,
@@ -423,7 +424,7 @@ test "TxnPool priority ordering" {
         .gas_budget = 1000,
         .sequence = 1,
     };
-    try pool.add(tx2, 500); // Medium gas price
+    try pool.add(tx2, 2000); // Medium gas price
 
     const tx3 = Ingress.Transaction{
         .sender = [_]u8{3} ** 32,
@@ -432,18 +433,21 @@ test "TxnPool priority ordering" {
         .gas_budget = 1000,
         .sequence = 1,
     };
-    try pool.add(tx3, 1000); // High gas price
+    try pool.add(tx3, 3000); // High gas price
 
     // Should get highest gas price first
-    const first = pool.next();
+    var first = pool.next();
+    defer if (first) |*n| n.deinit(allocator);
     try std.testing.expect(first != null);
     try std.testing.expect(first.?.sender[0] == 3); // sender 3 had highest gas price
 
-    const second = pool.next();
+    var second = pool.next();
+    defer if (second) |*n| n.deinit(allocator);
     try std.testing.expect(second != null);
     try std.testing.expect(second.?.sender[0] == 2);
 
-    const third = pool.next();
+    var third = pool.next();
+    defer if (third) |*n| n.deinit(allocator);
     try std.testing.expect(third != null);
     try std.testing.expect(third.?.sender[0] == 1);
 }

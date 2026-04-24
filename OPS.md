@@ -102,10 +102,12 @@ done
 
 **Symptoms**: Node stops producing blocks after ~13 hours. CPU drops to near-zero. Docker container stays "running" but consensus halts.
 
-**Root Cause**: `P2PServer.broadcast()` called `stream.writeAll()` on TCP sockets with no timeout. A half-open connection (peer crashed, network partition, etc.) would block indefinitely, freezing the single-threaded event loop.
+**Root Cause**: `P2PServer.broadcast()` called `stream.writeAll()` on TCP sockets with no timeout. A half-open connection (peer crashed, network partition, etc.) would block indefinitely, freezing the single-threaded event loop. Additionally, handshake performed before timeout setup meant a malicious peer could stall during handshake forever.
 
 **Fixes Applied**:
-- `P2PServer.zig`: Added `SO_RCVTIMEO` and `SO_SNDTIMEO` (100ms) via `setsockopt` on all peer sockets
+- `P2PServer.zig`: `SO_RCVTIMEO` and `SO_SNDTIMEO` (100ms) are now set **before** `performHandshake` on both inbound and outbound connections
+- `P2PServer.zig`: Handshake failure now triggers `errdefer` that closes the raw socket and frees the `PeerConnection`
+- `P2PServer.zig`: Outbound `dial()` now checks `max_connections` before opening a socket
 - `HTTPServer.zig`: Added 5-second read/write timeouts on HTTP connections
 - `ConsensusIntegration.zig`: Limited `processPeerMessages()` to 10 messages per peer per loop iteration
 - `P2PServer.zig`: Fixed iterator invalidation in `broadcast()` — failed peers are collected and removed after iteration
@@ -123,6 +125,37 @@ done
 - `QUICPeerConnection.deinit()` no longer self-destructs
 - Memory ownership rule: `P2PServer` creates the `PeerConnection`, so `P2PServer` (and only `P2PServer`) destroys it
 
+### Issue: QUIC Peer Type Confusion / Wrong-Size Free (FIXED)
+
+**Symptoms**: Potential memory corruption or crash when QUIC peers disconnect.
+
+**Root Cause**: `handleQUICConnection` stored `*QUICPeerConnection` in the TCP `peers` map via `@ptrCast`. `removePeer` then freed the QUIC pointer using `PeerConnection` size.
+
+**Fix Applied**:
+- Added `quic_peers: AutoArrayHashMapUnmanaged([32]u8, *QUICPeerConnection)` as a separate map
+- `removePeer`, `broadcast`, `sendToPeer`, `peerCount`, `getPeerIDs`, `isPeerConnectedByAddress` all operate on both maps
+- `deinit` destroys QUIC peers via `quic_conn.deinit()` + `allocator.destroy(peer)`
+- `QUICTransport.closeConnection` now calls `conn.deinit()` (which frees streams and receive_buffer) instead of just `conn.close()`
+
+### Issue: Consensus Main-Loop Blocking (FIXED)
+
+**Symptoms**: Intermittent latency spikes in consensus rounds; main loop appears to "hang" for tens of milliseconds under load.
+
+**Root Cause**: `onVoteReceived` and `checkAndPropose` synchronously called `tryCommit()`, which can execute a batch of pending blocks through the Move VM inside the P2P message handler.
+
+**Fix Applied**:
+- `ConsensusIntegration` now defers commit: `onVoteReceived` / `checkAndPropose` set `should_commit = true`
+- The main loop calls `ci.maybeCommit()` after `processPeerMessages()`, ensuring heavy commit work never blocks peer message recv
+
+### Issue: HTTP Concurrent Connection / Request Truncation (FIXED)
+
+**Symptoms**: Large POST requests (e.g., `/tx` with big payload) could be silently truncated because `handleConnection` only read into a 4096-byte stack buffer. No limit on concurrent HTTP connections.
+
+**Fix Applied**:
+- `HTTPServer` now tracks `active_connections` and returns HTTP 503 when `max_concurrent_http_connections` is exceeded
+- `Content-Length` is parsed up-front; if the total request exceeds 4096 bytes, a heap-allocated buffer is used and the remainder is read with `streamReadAll`
+- `extractBody` now returns `null` when the available data is shorter than `Content-Length`, preventing silent truncation
+
 ### Issue: Dashboard Integer Underflow + Memory Leaks (FIXED)
 
 **Symptoms**: Occasional panics in `Dashboard.zig` with `integer overflow` or `underflow`. Slow memory growth over time.
@@ -131,6 +164,34 @@ done
 - `Dashboard.zig`: Replaced `(42 - block.round.value) * 2` with `now + 84 - block.round.value * 2` to avoid underflow when round > 42
 - `Dashboard.zig`: Added missing `ArrayList.deinit()` calls in `handleBlocks()` and `handleTransactions()`
 - `Node.zig`: Added `block.deinit()` in `receiveBlock()` early-return path when block already exists
+
+### Issue: Move VM / Executor Robustness — Memory Leaks & Boundary Errors (FIXED)
+
+**Symptoms**: Potential memory leaks when resource validation fails after successful VM execution. Bytecode verifier could mis-parse `ld_const` with zero length. Interpreter `vec_borrow` with negative index triggers safety panic. `vec_pack` with huge count allows memory exhaustion.
+
+**Fixes Applied**:
+- `Executor.zig`: `validate()` / `checkLeaks()` failure paths now free `result.output_objects` and `result.events` before returning `.resource_error`
+- `Node.zig`: `commitBlock()` now has `defer` to release `executeBlockTransactions` results (both per-result `deinit` and array `free`)
+- `Bytecode.zig`: Rejects empty bytecode; rejects `ld_const` with length=0; validates `call` payload boundaries; validates branch targets are within instruction count
+- `Interpreter.zig`: `vec_pack` limited to 4096 elements to prevent DoS via huge allocation
+- `Interpreter.zig`: `vec_borrow` checks `index.data.int < 0` before `@intCast` to avoid safety panic
+- Added 4 BytecodeVerifier regression tests (empty bytecode, ld_const zero-length, truncated call, invalid branch target)
+
+### Issue: Storage WAL Integrity — Checkpoint Commitment Mismatch & Recovery Gaps (FIXED)
+
+**Symptoms**: `Checkpoint.digest()` and `serialize()` bind different data ranges, creating a security gap where chain-linking and signature verification commit to different scopes. `CheckpointSequence` resets to 0 on every restart. Governance votes are lost after node restart because they are never written to WAL.
+
+**Fixes Applied**:
+- `Checkpoint.zig`: `digest()` now hashes the full `serialize()` output (same scope as `signingCommitment()`), closing the commitment mismatch
+- `Checkpoint.zig`: Added `CheckpointSequence.save()` / `load()` to persist sequence counter to `{data_dir}/checkpoints/sequence.bin`
+- `Node.zig`: `init()` loads checkpoint sequence from disk; `deinit()` saves it; `tryCommitBlocks` / `tryCommitBlocksBatch` advance and save the sequence on every quorum block
+- `WAL.zig`: Added `.m4_governance_vote = 17` record type
+- `MainnetExtensionHooks.zig`: `voteOnProposal()` now appends a WAL record after each vote; `replayWalExtension()` replays it via `injectReplayedGovernanceVote()`
+- `LSMTree.zig`: Updated recovery switch to ignore `.m4_governance_vote` (M4 records must not interleave into LSM WAL)
+- `MainnetExtensionHooks.zig`: Implemented `serializeStateSnapshot()` / `deserializeStateSnapshot()` — full M4 state (stake ops, proposals, votes, validator stake, delegations, evidence, epoch, validator set hash) serialized to `.m4_state_snapshot` WAL record
+- `Node.zig`: `deinit()` triggers `appendStateSnapshotWal()` before shutdown for fast recovery
+- `MainnetExtensionHooks.zig`: `replayWalExtension()` now handles `.m4_state_snapshot` by calling `deserializeStateSnapshot()` instead of returning `UnsupportedWalReplayOp`
+- Added regression tests: `Checkpoint digest binds object_changes`, `CheckpointSequence save/load roundtrip`, `governance vote WAL roundtrip`, `M4 state snapshot roundtrip`
 
 ---
 
@@ -151,8 +212,9 @@ done
 ### Slow memory growth
 
 1. Check for missing `defer allocator.free(...)` or `defer arr.deinit()` in recent changes
-2. Check `Node.pending_blocks` and `Node.committed_blocks` — blocks are never pruned in current implementation
-3. Check `P2PServer.peers` for leaked `PeerConnection` objects when peers disconnect
+2. Check `Node.pending_blocks` and `Node.committed_blocks` — `committed_blocks` are pruned at `max_committed_blocks`; `pending_blocks` are pruned at `max_pending_blocks` (both configured in `Config.ConsensusConfig`)
+3. Check `ExecutionResult.events` and `output_objects` — callers must call `ExecutionResult.deinit(allocator)` to release owned memory
+4. Check `P2PServer.peers` for leaked `PeerConnection` objects when peers disconnect
 
 ### `WouldBlock` spam in logs
 
@@ -191,6 +253,14 @@ What it checks every 30 seconds:
 
 ---
 
+## Recovery Procedures
+
+### Node restart / crash recovery
+
+1. `Node.recoverFromDisk()` replays both `ObjectStore` WAL and M4 extension WAL
+2. M4 state (stake, governance, epoch, validator set hash) is restored from `m4_wal`
+3. After recovery, call `Node.advanceEpoch()` to sync `stake_pool` → `quorum` and execute approved proposals
+
 ## File Ownership for Critical Fixes
 
 | Issue | Primary File | Pattern |
@@ -200,3 +270,5 @@ What it checks every 30 seconds:
 | UAF in consensus | `src/form/consensus/ConsensusIntegration.zig` | Re-validate peer pointers after any callback that might mutate the peer map |
 | Block leak | `src/app/Node.zig` | Early returns must still free locally-allocated objects |
 | Dashboard panic | `src/app/ui/Dashboard.zig` | Avoid subtraction that can underflow; use `now + const - value` |
+| Memory leak | `src/pipeline/Executor.zig` | Call `ExecutionResult.deinit(allocator)` after consuming results |
+| Pending block leak | `src/app/Node.zig` | `receiveBlock` prunes oldest pending blocks when over `max_pending_blocks` |

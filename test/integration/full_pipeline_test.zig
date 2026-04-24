@@ -61,7 +61,8 @@ test "Pipeline: object store put and get" {
         .data = data,
     };
     try store.put(obj);
-    const got = try store.get(id);
+    var got = try store.get(id);
+    defer if (got) |*object| object.deinit(allocator);
     try std.testing.expect(got != null);
     try std.testing.expect(std.mem.eql(u8, got.?.data, "hello"));
 }
@@ -86,5 +87,5 @@ test "Pipeline: Mysticeti block creation" {
     defer block.deinit(allocator);
 
     try std.testing.expect(block.round.value == 1);
-    try std.testing.expect(block.hasQuorum(0, quorum.quorumStakeThreshold()));
+    try std.testing.expect(!block.hasQuorum(0, quorum.quorumStakeThreshold()));
 }

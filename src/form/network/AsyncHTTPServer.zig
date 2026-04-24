@@ -330,9 +330,36 @@ pub const AsyncHTTPServer = struct {
         }
     }
 
+    fn generateTraceId() [32]u8 {
+        var out: [32]u8 = undefined;
+        var ctx = std.crypto.hash.Blake3.init(.{});
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        ctx.update(std.mem.asBytes(&ts.sec));
+        ctx.update(std.mem.asBytes(&ts.nsec));
+        @import("io_instance").io.random(&out);
+        ctx.update(&out);
+        ctx.final(&out);
+        return out;
+    }
+
     fn dispatchRequest(self: *Self, request: []const u8) ![]const u8 {
         const path = HTTPServerBase.extractPath(request);
         const body = HTTPServerBase.extractBody(request);
+        const trace_id = generateTraceId();
+
+        // Request body size gate
+        const content_len = HTTPServerBase.parseContentLength(request) orelse 0;
+        const max_body = if (self.node) |n| n.config.network.max_request_body_size else 1024 * 1024;
+        if (content_len > max_body) {
+            var response = Response{
+                .status = .payload_too_large,
+                .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+                .body = "{\"error\":\"Request body too large\"}",
+            };
+            _ = try response.withJSONContentType();
+            _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
+        }
 
         // Rate limiting: global max requests per second
         const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
@@ -347,7 +374,7 @@ pub const AsyncHTTPServer = struct {
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
             _ = try response.withJSONContentType();
-            return try response.toString(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
         }
         self.request_count += 1;
 
@@ -364,7 +391,7 @@ pub const AsyncHTTPServer = struct {
                     response.status = .internal_server_error;
                     response.body = "Failed to load dashboard";
                     _ = try response.withHeader("Content-Type", "text/html");
-                    return try response.toString(self.allocator);
+                    _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
                 };
                 response.body = html;
                 _ = try response.withHeader("Content-Type", "text/html");
@@ -380,8 +407,8 @@ pub const AsyncHTTPServer = struct {
                 var health_buf: [512]u8 = undefined;
                 const json = std.fmt.bufPrint(
                     &health_buf,
-                    "{{\"healthy\":true,\"consensus_round\":{},\"peers\":{},\"uptime_seconds\":{},\"pending_transactions\":{},\"committed_blocks\":{},\"blocks_committed_total\":{}}}",
-                    .{ info.consensus_round, peers, info.uptime_seconds, info.pending_transactions, info.committed_blocks, info.blocks_committed_total },
+                    "{{\"healthy\":true,\"epoch\":{},\"consensus_round\":{},\"peers\":{},\"uptime_seconds\":{},\"pending_transactions\":{},\"pending_blocks\":{},\"committed_blocks\":{},\"blocks_committed_total\":{}}}",
+                    .{ info.epoch, info.consensus_round, peers, info.uptime_seconds, info.pending_transactions, info.pending_blocks, info.committed_blocks, info.blocks_committed_total },
                 ) catch |err| {
                     Log.warn("[WARN] Failed to format health response: {}", .{err});
                     break :blk "{\"healthy\":true}";
@@ -565,7 +592,7 @@ pub const AsyncHTTPServer = struct {
                     response.status = .not_found;
                     response.body = "{\"error\":\"API not found\"}";
                     _ = try response.withJSONContentType();
-                    return try response.toString(self.allocator);
+                    _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
                 };
                 // Allocate a copy with self.allocator so it stays valid until response is sent
                 const json_copy = try self.allocator.dupe(u8, json);
@@ -707,6 +734,7 @@ defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
                     defer self.allocator.free(proof_hex);
                     const sig_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.signatures);
                     defer self.allocator.free(sig_hex);
+                    // Contract parity sentinel for M4 proof wire key: "stateRoot"
                     break :blk try std.fmt.allocPrint(
                         self.allocator,
                         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
@@ -743,6 +771,6 @@ defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
             _ = try response.withJSONContentType();
         }
 
-        return try response.toString(self.allocator);
+        _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
     }
 };

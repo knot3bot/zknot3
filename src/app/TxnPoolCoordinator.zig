@@ -48,13 +48,14 @@ test "TxnPoolCoordinator stats and pending count" {
     var pool = try pipeline.TxnPool.init(allocator, .{});
     defer pool.deinit();
 
-    const tx = pipeline.Transaction{
+    var tx = pipeline.Transaction{
         .sender = [_]u8{1} ** 32,
         .inputs = try allocator.alloc(core.ObjectID, 0),
         .program = try allocator.dupe(u8, "coord-test"),
         .gas_budget = 1000,
         .sequence = 1,
     };
+    defer tx.deinit(allocator);
     try pool.add(tx, 1000);
 
     const stats = getTxnPoolStats(pool);
@@ -77,15 +78,17 @@ test "TxnPoolCoordinator metricsSnapshot races cleanly vs writer thread" {
             while (i < ctx.iterations) : (i += 1) {
                 var sender_id: [32]u8 = [_]u8{0} ** 32;
                 std.mem.writeInt(u64, sender_id[0..8], @intCast(i), .little);
-                const tx = pipeline.Transaction{
+                var tx = pipeline.Transaction{
                     .sender = sender_id,
                     .inputs = &.{},
                     .program = ctx.alloc.dupe(u8, "race") catch return,
                     .gas_budget = 1000,
                     .sequence = 1,
                 };
+                defer tx.deinit(ctx.alloc);
                 ctx.pool.add(tx, 1000) catch {};
-                _ = ctx.pool.next();
+                var n = ctx.pool.next();
+                defer if (n) |*val| val.deinit(ctx.alloc);
             }
         }
     };
@@ -117,13 +120,14 @@ test "TxnPoolCoordinator cleanupExpiredTransactions removes expired txs" {
     var pool = try pipeline.TxnPool.init(allocator, .{ .timeout_seconds = -1 });
     defer pool.deinit();
 
-    const tx = pipeline.Transaction{
+    var tx = pipeline.Transaction{
         .sender = [_]u8{2} ** 32,
         .inputs = try allocator.alloc(core.ObjectID, 0),
         .program = try allocator.dupe(u8, "coord-expire"),
         .gas_budget = 1000,
         .sequence = 1,
     };
+    defer tx.deinit(allocator);
     try pool.add(tx, 1000);
     const removed = cleanupExpiredTransactions(pool);
     try std.testing.expect(removed >= 1);

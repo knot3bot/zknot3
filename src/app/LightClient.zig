@@ -111,7 +111,8 @@ pub fn verifyCheckpointProofQuorum(
         var i: usize = 0;
         while (i < bitmap_len) : (i += 1) {
             if (proof.bls_signer_bitmap[i] != 0) {
-                try selected.append(allocator, Bls.derivePublicKey(validators[i].stake.public_key));
+                const pk = validators[i].stake.bls_public_key orelse Bls.derivePublicKey(validators[i].stake.public_key);
+                try selected.append(allocator, pk);
                 bls_power += validators[i].stake.votingPower();
             }
         }

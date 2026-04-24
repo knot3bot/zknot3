@@ -23,8 +23,8 @@ pub const IndexedObject = struct {
 /// Indexed event with transaction reference
 pub const IndexedEvent = struct {
     transaction_digest: [32]u8,
-    event_type: []u8,
-    contents: []u8,
+    event_type: []const u8,
+    contents: []const u8,
     timestamp: i64,
     event_index: u64, // Index within the transaction
 };
@@ -234,7 +234,7 @@ pub const Indexer = struct {
         }
         return null;
     }
-    
+
     /// Query events with filter
     pub fn queryEvents(self: Self, query: EventQuery, cursor: ?u64, limit: usize) !PaginatedResult {
         var results = std.ArrayList(IndexedEvent).empty;
@@ -333,12 +333,16 @@ test "Indexer basic operations" {
     var indexer = try Indexer.init(allocator, config);
     defer indexer.deinit();
     
+    const obj_type = try allocator.dupe(u8, "Coin");
+    defer allocator.free(obj_type);
+    const obj_data = try allocator.dupe(u8, "data");
+    defer allocator.free(obj_data);
     const obj = IndexedObject{
         .id = core.ObjectID.hash("test"),
         .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
-        .type = try allocator.dupe(u8, "Coin"),
+        .type = obj_type,
         .owner = [_]u8{1} ** 32,
-        .data = try allocator.dupe(u8, "data"),
+        .data = obj_data,
         .timestamp = 0,
     };
     
@@ -357,10 +361,14 @@ test "Indexer event indexing" {
     
     const tx_digest = [_]u8{1} ** 32;
     
+    const event_type = try allocator.dupe(u8, "CoinTransfer");
+    defer allocator.free(event_type);
+    const event_contents = try allocator.dupe(u8, "{}");
+    defer allocator.free(event_contents);
     const event = IndexedEvent{
         .transaction_digest = tx_digest,
-        .event_type = try allocator.dupe(u8, "CoinTransfer"),
-        .contents = try allocator.dupe(u8, "{}"),
+        .event_type = event_type,
+        .contents = event_contents,
         .timestamp = 1000,
         .event_index = 0,
     };

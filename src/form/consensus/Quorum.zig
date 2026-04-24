@@ -70,6 +70,38 @@ pub const Quorum = struct {
         }
     }
 
+    /// Update validator stake (add if not present, update if present, remove if stake=0)
+    pub fn updateValidatorStake(self: *Self, id: [32]u8, stake: u128) !void {
+        for (self.members.items, 0..) |v, i| {
+            if (std.mem.eql(u8, &v.id, &id)) {
+                if (v.is_active) {
+                    self.active_stake -= v.stake;
+                    self.total_stake -= v.stake;
+                }
+                if (stake == 0) {
+                    self.members.items[i].is_active = false;
+                    self.members.items[i].stake = 0;
+                } else {
+                    self.members.items[i].stake = stake;
+                    self.members.items[i].is_active = true;
+                    self.active_stake += stake;
+                    self.total_stake += stake;
+                }
+                return;
+            }
+        }
+        // Not found - add new
+        if (stake > 0) {
+            try self.members.append(self.allocator, .{
+                .id = id,
+                .stake = stake,
+                .is_active = true,
+            });
+            self.total_stake += stake;
+            self.active_stake += stake;
+        }
+    }
+
     /// Get total stake
     pub fn totalStake(self: Self) u128 {
         return self.total_stake;
@@ -84,21 +116,23 @@ pub const Quorum = struct {
     ///
     /// For stake-based systems, prefer byzantineStakeThreshold()
     pub fn byzantineThreshold(self: Self) usize {
-        const n = self.members.items.len;
+        const n = self.activeValidatorCount();
         if (n == 0) return 0;
-        return (n - 1) / 3;
+        return n / 3;
     }
 
     /// Byzantine threshold based on TOTAL STAKE (correct for stake-based BFT)
     /// f = (total_stake - 1) / 3
     pub fn byzantineStakeThreshold(self: Self) u128 {
         if (self.total_stake == 0) return 0;
-        return (self.total_stake - 1) / 3;
+        return @divFloor(self.total_stake + 2, 3);
     }
 
     /// Quorum size 2f+1 based on validator count
     pub fn quorumSize(self: Self) usize {
-        return 2 * self.byzantineThreshold() + 1;
+        const n = self.activeValidatorCount();
+        if (n == 0) return 0;
+        return @divFloor(2 * n + 2, 3);
     }
 
     /// Minimum stake for quorum (> 2/3 of total)
@@ -117,7 +151,7 @@ pub const Quorum = struct {
         for (votes) |vote| {
             total += vote.stake;
         }
-        return total > self.quorumStakeThreshold();
+        return total >= self.quorumStakeThreshold();
     }
 
     /// Get voting power for an address
@@ -132,11 +166,21 @@ pub const Quorum = struct {
 
     /// Check if set of validators forms a quorum
     pub fn isQuorum(self: Self, validator_ids: []const [32]u8) bool {
-        var stake: u128 = 0;
+        var count: usize = 0;
         for (validator_ids) |id| {
-            stake += self.getVotingPower(id);
+            if (self.getVotingPower(id) > 0) {
+                count += 1;
+            }
         }
-        return stake > self.quorumStakeThreshold();
+        return count >= self.quorumSize();
+    }
+
+    fn activeValidatorCount(self: Self) usize {
+        var count: usize = 0;
+        for (self.members.items) |v| {
+            if (v.is_active and v.stake > 0) count += 1;
+        }
+        return count;
     }
 };
 

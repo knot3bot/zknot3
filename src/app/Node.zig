@@ -3,10 +3,14 @@
 const std = @import("std");
 const core = @import("../core.zig");
 const pipeline = @import("../pipeline.zig");
+const property = @import("../property.zig");
 const Config = @import("Config.zig").Config;
 const Log = @import("Log.zig");
 const Indexer = @import("Indexer.zig").Indexer;
 const CheckpointSequence = @import("../form/storage/Checkpoint.zig").CheckpointSequence;
+const EpochManager = @import("../metric/Epoch.zig").EpochManager;
+const StakePool = @import("../metric/Stake.zig").StakePool;
+const Quorum = @import("../form/consensus/Quorum.zig").Quorum;
 const EpochConsensusBridge = @import("../metric/EpochConsensusBridge.zig").EpochConsensusBridge;
 const ConsensusEpochInfo = @import("../metric/EpochConsensusBridge.zig").ConsensusEpochInfo;
 const Mysticeti = @import("../form/consensus/Mysticeti.zig");
@@ -83,6 +87,7 @@ pub const NodeDependencies = struct {
     executor: ?*anyopaque = null,
     indexer: ?*Indexer = null,
     epoch_bridge: ?*EpochConsensusBridge = null,
+    trace_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     txn_pool: ?*anyopaque = null, // TxnPool.TxnPool when initialized
 };
 
@@ -111,6 +116,15 @@ pub const Node = struct {
     mainnet_hooks: *MainnetExtensionHooks.Manager,
     /// M4 protocol WAL (separate from LSM); optional if init fails.
     m4_wal: ?*WAL = null,
+    /// Epoch management (Phase 0: default primary path)
+    epoch_manager: ?*EpochManager = null,
+    stake_pool: ?*StakePool = null,
+    quorum: ?*Quorum = null,
+    epoch_bridge: ?*EpochConsensusBridge = null,
+    /// Phase 1: optional indexer for object/event queries
+    indexer: ?*Indexer = null,
+    /// Phase 1: atomic trace ID counter for observability
+    trace_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -119,8 +133,19 @@ pub const Node = struct {
     ) !*Self {
         const txn_pool = try pipeline.TxnPool.init(allocator, .{});
         errdefer txn_pool.deinit();
-        const exec = try pipeline.Executor.init(allocator, .{});
+        const exec = try pipeline.Executor.init(allocator, .{
+            .parallelism = config.consensus.max_txs_per_block,
+            .max_gas = config.vm.max_gas_budget,
+        });
         errdefer exec.deinit();
+
+        // Phase 2: set up native function registry for Move VM
+        const vm_registry = try allocator.create(property.move_vm.Registry);
+        errdefer allocator.destroy(vm_registry);
+        vm_registry.* = property.move_vm.Registry.init(allocator);
+        errdefer vm_registry.deinit();
+        try vm_registry.registerSuiFramework();
+        exec.registry = vm_registry;
 
         const self_ptr = try allocator.create(Self);
         errdefer allocator.destroy(self_ptr);
@@ -130,7 +155,12 @@ pub const Node = struct {
         self_ptr.state = .initializing;
         self_ptr.deps = deps;
         self_ptr.object_store = null;
-        self_ptr.checkpoint_store = CheckpointSequence.init();
+        const cp_path = try std.fmt.allocPrint(allocator, "{s}/{s}/sequence.bin", .{ config.storage.data_dir, config.storage.checkpoint_store_path });
+        defer allocator.free(cp_path);
+        self_ptr.checkpoint_store = CheckpointSequence.load(cp_path) catch |err| blk: {
+            Log.warn("[WARN] Failed to load checkpoint sequence from {s}: {s}, starting from 0", .{ cp_path, @errorName(err) });
+            break :blk CheckpointSequence.init();
+        };
         self_ptr.txn_history = std.AutoArrayHashMapUnmanaged([32]u8, pipeline.TransactionReceipt).empty;
         self_ptr.committed_blocks = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block).empty;
         self_ptr.pending_blocks = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block).empty;
@@ -162,6 +192,44 @@ pub const Node = struct {
             .{},
             config.storage.data_dir,
         );
+
+        // Phase 0: initialize epoch bridge as the default primary path
+        const epoch_manager = try EpochManager.init(allocator, .{
+            .duration_seconds = config.consensus.epoch_duration_secs,
+            .min_validators = config.consensus.min_validators,
+            .max_validators = config.consensus.max_validators,
+        }, self_ptr.started_at);
+        errdefer epoch_manager.deinit();
+
+        const stake_pool = try StakePool.init(allocator);
+        errdefer stake_pool.deinit();
+
+        const quorum = try Quorum.init(allocator);
+        errdefer quorum.deinit();
+
+        const epoch_bridge = try EpochConsensusBridge.init(allocator, epoch_manager, stake_pool, quorum);
+        errdefer epoch_bridge.deinit();
+
+        // Phase 0: bootstrap validator stake from config known_validators into stake_pool
+        for (config.network.known_validators) |kv| {
+            if (kv.stake > 0) {
+                const pk = std.fmt.parseInt(u256, kv.public_key_hex, 16) catch continue;
+                var validator_id: [32]u8 = undefined;
+                std.mem.writeInt(u256, &validator_id, pk, .big);
+                stake_pool.addStake(validator_id, kv.stake, true) catch continue;
+            }
+        }
+
+        self_ptr.epoch_manager = epoch_manager;
+        self_ptr.stake_pool = stake_pool;
+        self_ptr.quorum = quorum;
+        self_ptr.epoch_bridge = epoch_bridge;
+        self_ptr.deps.epoch_bridge = epoch_bridge;
+
+        // Phase 1: initialize indexer for object/event queries
+        const indexer = try Indexer.init(allocator, .{});
+        self_ptr.indexer = indexer;
+        self_ptr.deps.indexer = indexer;
 
         const m4_base = try std.fmt.allocPrint(allocator, "{s}/m4_state", .{config.storage.data_dir});
         defer allocator.free(m4_base);
@@ -200,22 +268,49 @@ pub const Node = struct {
             store.deinit();
         }
         self.txn_history.deinit(self.allocator);
-        self.committed_blocks.deinit(self.allocator);
-        self.pending_blocks.deinit(self.allocator);
+        var it_exec = self.execution_results.iterator();
+        while (it_exec.next()) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
+        }
         self.execution_results.deinit(self.allocator);
+        var it_committed = self.committed_blocks.iterator();
+        while (it_committed.next()) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
+        }
+        self.committed_blocks.deinit(self.allocator);
+        var it_pending = self.pending_blocks.iterator();
+        while (it_pending.next()) |entry| {
+            entry.value_ptr.*.deinit(self.allocator);
+        }
+        self.pending_blocks.deinit(self.allocator);
         self.sender_sequence.deinit(self.allocator);
         if (self.p2p_server) |server| {
             server.deinit();
         }
+        const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
+        if (cp_path) |p| {
+            defer self.allocator.free(p);
+            self.checkpoint_store.save(p) catch |err| {
+                Log.warn("[WARN] Failed to save checkpoint sequence to {s}: {s}", .{ p, @errorName(err) });
+            };
+        }
         self.checkpoint_store.deinit();
         self.txn_pool.deinit();
         self.executor.deinit();
+        self.mainnet_hooks.appendStateSnapshotWal() catch |err| {
+            Log.warn("[WARN] Failed to append M4 state snapshot on shutdown: {s}", .{@errorName(err)});
+        };
         self.mainnet_hooks.setM4Wal(null);
         if (self.m4_wal) |w| {
             w.deinit();
             self.allocator.destroy(w);
         }
         self.mainnet_hooks.deinit();
+        if (self.indexer) |idx| idx.deinit();
+        if (self.epoch_bridge) |eb| eb.deinit();
+        if (self.quorum) |q| q.deinit();
+        if (self.stake_pool) |sp| sp.deinit();
+        if (self.epoch_manager) |em| em.deinit();
         if (self.runtime_metrics) |rm| {
             rm.deinit();
             self.allocator.destroy(rm);
@@ -257,6 +352,8 @@ pub const Node = struct {
     /// Recover node state from disk (checkpoint + WAL)
     pub fn recoverFromDisk(self: *Self) !void {
         try NodeLifecycleCoordinator.recoverFromDisk(self.object_store);
+        // Phase 2+: replay M4 WAL to restore stake/governance/epoch state
+        try self.replayMainnetM4Wal();
     }
 
     /// Replay M4 extension WAL into `mainnet_hooks` after object-store recovery.
@@ -274,6 +371,7 @@ pub const Node = struct {
                     .m4_stake_operation,
                     .m4_governance_proposal,
                     .m4_governance_status,
+                    .m4_governance_vote,
                     .m4_equivocation_evidence,
                     .m4_state_snapshot,
                     .m4_epoch_advance,
@@ -287,14 +385,16 @@ pub const Node = struct {
             }
         };
 
-        _ = try w.replayWithOptions(Cb.onReplay, self, .{
+        const result = try w.replayWithOptions(Cb.onReplay, self, .{
             .max_record_type = 20,
             .validate_types = true,
             .skip_corrupted = false,
         });
+        if (result.errors > 0) return error.ReadFailed;
     }
 
     pub fn getNodeInfo(self: *Self) NodeInfo {
+        const epoch_info = self.getEpochInfo();
         return .{
             .version = "0.1.0",
             .state = @tagName(self.state),
@@ -303,8 +403,12 @@ pub const Node = struct {
             .checkpoint_sequence = self.checkpoint_store.getLatestSequence(),
             .pending_transactions = self.getPendingTxnCount(),
             .committed_blocks = self.committed_blocks.count(),
+            .pending_blocks = self.pending_blocks.count(),
             .consensus_round = self.consensus_round,
             .blocks_committed_total = NodeStatsCoordinator.blocksCommitted(&self.stats),
+            .epoch = epoch_info.epoch_number,
+            .validator_count = epoch_info.validator_count,
+            .total_stake = epoch_info.total_stake,
         };
     }
 
@@ -316,8 +420,12 @@ pub const Node = struct {
         checkpoint_sequence: u64,
         pending_transactions: usize,
         committed_blocks: usize,
+        pending_blocks: usize,
         consensus_round: u64,
         blocks_committed_total: u64,
+        epoch: u64,
+        validator_count: usize,
+        total_stake: u128,
     };
 
     pub const ValidatorInfo = NodeInfoCoordinator.ValidatorInfo;
@@ -384,6 +492,9 @@ pub const Node = struct {
             &.{},
             self.allocator,
         );
+        if (self.pending_blocks.getPtr(block.digest)) |old| {
+            old.*.deinit(self.allocator);
+        }
         try self.pending_blocks.put(self.allocator, block.digest, block);
         return self.pending_blocks.getPtr(block.digest);
     }
@@ -395,6 +506,17 @@ pub const Node = struct {
 
     pub fn receiveBlock(self: *Self, block_data: []const u8) !void {
         if (self.state != .running) return error.NotRunning;
+
+        // Product-grade: prune oldest pending blocks when over limit
+        const max_pending = self.config.consensus.max_pending_blocks;
+        while (self.pending_blocks.count() >= max_pending) {
+            const first_key = self.pending_blocks.keys()[0];
+            if (self.pending_blocks.getPtr(first_key)) |block_ptr| {
+                block_ptr.*.deinit(self.allocator);
+            }
+            _ = self.pending_blocks.swapRemove(first_key);
+        }
+
         try ConsensusIngressCoordinator.receiveBlock(
             self.allocator,
             &self.pending_blocks,
@@ -424,7 +546,18 @@ pub const Node = struct {
             fn call(ctx: *anyopaque, block: *const Mysticeti.Block) void {
                 const typed_ctx = @as(*QuorumExecCtx, @ptrCast(@alignCast(ctx)));
                 if (typed_ctx.node.executeBlockTransactions(block)) |exec_results| {
+                    for (exec_results) |res| {
+                        res.deinit(typed_ctx.node.allocator);
+                    }
                     typed_ctx.node.allocator.free(exec_results);
+                    _ = typed_ctx.node.checkpoint_store.advance();
+                    const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
+                    if (cp_path) |p| {
+                        defer typed_ctx.node.allocator.free(p);
+                        typed_ctx.node.checkpoint_store.save(p) catch |err| {
+                            Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
+                        };
+                    }
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
                 }
@@ -467,7 +600,18 @@ pub const Node = struct {
             fn call(ctx: *anyopaque, block: *const Mysticeti.Block) void {
                 const typed_ctx = @as(*QuorumExecCtx, @ptrCast(@alignCast(ctx)));
                 if (typed_ctx.node.executeBlockTransactions(block)) |exec_results| {
+                    for (exec_results) |res| {
+                        res.deinit(typed_ctx.node.allocator);
+                    }
                     typed_ctx.node.allocator.free(exec_results);
+                    _ = typed_ctx.node.checkpoint_store.advance();
+                    const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
+                    if (cp_path) |p| {
+                        defer typed_ctx.node.allocator.free(p);
+                        typed_ctx.node.checkpoint_store.save(p) catch |err| {
+                            Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
+                        };
+                    }
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
                 }
@@ -523,13 +667,18 @@ pub const Node = struct {
         if (self.state != .running) return error.NotRunning;
         if (!self.committed_blocks.contains(block.digest)) return error.BlockNotFound;
         const results = try self.executeBlockTransactions(block);
+        defer {
+            for (results) |res| { res.deinit(self.allocator); }
+            self.allocator.free(results);
+        }
         var total_gas: u64 = 0;
         for (results) |res| total_gas += res.gas_used;
         const summary = ExecutionResult{
             .digest = block.digest,
             .status = .success,
             .gas_used = total_gas,
-            .output = &.{},
+            .output_objects = &.{},
+            .events = &.{},
         };
         try self.execution_results.put(self.allocator, block.digest, summary);
         return summary;
@@ -592,6 +741,43 @@ pub const Node = struct {
         };
     }
 
+    /// Generate a unique trace id for observability.
+    pub fn generateTraceId(self: *Self) [32]u8 {
+        const seq = self.trace_counter.fetchAdd(1, .monotonic);
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        var out: [32]u8 = undefined;
+        var ctx = std.crypto.hash.Blake3.init(.{});
+        ctx.update(std.mem.asBytes(&seq));
+        ctx.update(std.mem.asBytes(&ts.sec));
+        ctx.update(std.mem.asBytes(&ts.nsec));
+        ctx.final(&out);
+        return out;
+    }
+
+    fn indexExecutionResult(self: *Self, tx_digest: [32]u8, result: ExecutionResult) void {
+        const idx = self.indexer orelse return;
+        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk ts.sec; };
+        // Phase 2: index VM-emitted events
+        for (result.events) |evt| {
+            idx.indexEvent(.{
+                .transaction_digest = tx_digest,
+                .event_type = evt.event_type,
+                .contents = evt.payload,
+                .timestamp = now,
+                .event_index = evt.event_index,
+            }) catch continue;
+        }
+        // Synthetic execution-status event
+        idx.indexEvent(.{
+            .transaction_digest = tx_digest,
+            .event_type = @tagName(result.status),
+            .contents = &.{},
+            .timestamp = now,
+            .event_index = result.events.len,
+        }) catch return;
+    }
+
     pub fn executeTransaction(self: *Self, tx: pipeline.Transaction) !ExecutionResult {
         if (self.state != .running) return error.NotRunning;
         var ctx = self.txExecContext();
@@ -601,6 +787,7 @@ pub const Node = struct {
             else => return err,
         };
         NodeStatsCoordinator.onTransactionsExecuted(&self.stats, 1, result.gas_used);
+        self.indexExecutionResult(result.digest, result);
         return result;
     }
 
@@ -614,6 +801,9 @@ pub const Node = struct {
         };
         const gas_sum = NodeStatsCoordinator.gasSum(results);
         NodeStatsCoordinator.onTransactionsExecuted(&self.stats, results.len, gas_sum);
+        for (results) |result| {
+            self.indexExecutionResult(result.digest, result);
+        }
         return results;
     }
 
@@ -709,39 +899,25 @@ pub const Node = struct {
         var bls_bitmap = std.ArrayList(u8).empty;
         defer bls_bitmap.deinit(self.allocator);
 
+        // Use BLS signing seeds directly as private keys.  Previously the code
+        // incorrectly used Ed25519 public-key bytes as BLS private keys, which
+        // are public and allow anyone to forge BLS signatures.
         if (self.config.authority.bls_signing_seed) |seed| {
-            const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
-            const bls_material = kp.public_key.toBytes();
-            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(bls_material));
-            try bls_sigs.append(self.allocator, Bls.sign(bls_material, proof_bytes));
+            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(seed));
+            try bls_sigs.append(self.allocator, Bls.sign(seed, proof_bytes));
             try bls_bitmap.append(self.allocator, 1);
         }
         for (self.config.authority.extra_bls_signing_seeds) |seed| {
-            const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
-            const bls_material = kp.public_key.toBytes();
-            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(bls_material));
-            try bls_sigs.append(self.allocator, Bls.sign(bls_material, proof_bytes));
+            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(seed));
+            try bls_sigs.append(self.allocator, Bls.sign(seed, proof_bytes));
             try bls_bitmap.append(self.allocator, 1);
-        }
-        if (bls_pubkeys.items.len == 0) {
-            // Keep legacy config compatible by deriving BLS signers from Ed25519 seeds.
-            const kp_primary = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(primary);
-            const primary_material = kp_primary.public_key.toBytes();
-            try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(primary_material));
-            try bls_sigs.append(self.allocator, Bls.sign(primary_material, proof_bytes));
-            try bls_bitmap.append(self.allocator, 1);
-            for (self.config.authority.checkpoint_proof_extra_signing_seeds) |seed| {
-                const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
-                const bls_material = kp.public_key.toBytes();
-                try bls_pubkeys.append(self.allocator, Bls.derivePublicKey(bls_material));
-                try bls_sigs.append(self.allocator, Bls.sign(bls_material, proof_bytes));
-                try bls_bitmap.append(self.allocator, 1);
-            }
         }
 
-        const bls_sig_arr = Bls.aggregateSig(bls_sigs.items);
-        const bls_signature = try self.allocator.dupe(u8, &bls_sig_arr);
-        errdefer self.allocator.free(bls_signature);
+        const bls_signature = if (bls_sigs.items.len > 0) blk: {
+            const bls_sig_arr = Bls.aggregateSig(bls_sigs.items);
+            break :blk try self.allocator.dupe(u8, &bls_sig_arr);
+        } else try self.allocator.alloc(u8, 0);
+        errdefer if (bls_signature.len > 0) self.allocator.free(bls_signature);
         const bls_signer_bitmap = try bls_bitmap.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(bls_signer_bitmap);
 
@@ -759,7 +935,7 @@ pub const Node = struct {
     pub fn freeCheckpointProof(self: *Self, proof: MainnetExtensionHooks.CheckpointProof) void {
         self.allocator.free(proof.proof_bytes);
         self.allocator.free(proof.signatures);
-        self.allocator.free(proof.bls_signature);
+        if (proof.bls_signature.len > 0) self.allocator.free(proof.bls_signature);
         self.allocator.free(proof.bls_signer_bitmap);
     }
 
@@ -798,6 +974,47 @@ pub const Node = struct {
         return self.mainnet_hooks.getValidatorSetHash();
     }
 
+    /// Phase 2: advance epoch, sync stake changes to quorum, execute approved proposals.
+    pub fn advanceEpoch(self: *Self) !void {
+        const sp = self.stake_pool orelse return error.NotRunning;
+        const quorum = self.quorum orelse return error.NotRunning;
+        const epoch_bridge = self.epoch_bridge orelse return error.NotRunning;
+
+        // Sync stake_pool changes into quorum
+        var it = sp.validators.iterator();
+        while (it.next()) |entry| {
+            try quorum.updateValidatorStake(entry.key_ptr.*, entry.value_ptr.*);
+        }
+
+        // Advance epoch via bridge
+        try epoch_bridge.handleEpochChange(sp.getTotalStake(), sp.validators.count());
+
+        // Update mainnet hooks epoch
+        const new_epoch = self.epoch_manager.?.getCurrentEpoch().number;
+        try self.mainnet_hooks.advanceEpoch(new_epoch);
+
+        // Execute approved governance proposals
+        for (self.mainnet_hooks.proposals.items) |*p| {
+            if (p.status == .approved) {
+                self.mainnet_hooks.executeProposal(p.id) catch continue;
+            }
+        }
+
+        // Rotate validator set hash
+        var hash_ctx = std.crypto.hash.Blake3.init(.{});
+        for (quorum.members.items) |member| {
+            if (member.is_active) {
+                hash_ctx.update(&member.id);
+                var stake_buf: [16]u8 = undefined;
+                std.mem.writeInt(u128, &stake_buf, member.stake, .big);
+                hash_ctx.update(&stake_buf);
+            }
+        }
+        var new_hash: [32]u8 = undefined;
+        hash_ctx.final(&new_hash);
+        try self.mainnet_hooks.rotateValidatorSet(new_hash);
+    }
+
     /// Get an object from the object store
     pub fn getObject(self: *Self, id: core.ObjectID) !?ObjectStore.Object {
         return ObjectStoreCoordinator.getObject(self.object_store, id) catch |err| switch (err) {
@@ -829,32 +1046,56 @@ const ExecutionResult = @import("../pipeline/Executor.zig").ExecutionResult;
 
 test "Node initialization" {
     const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_init";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
     const config = try allocator.create(Config);
     config.* = Config.default();
+    config.storage.data_dir = test_dir;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
     try std.testing.expect(node.state == .initializing);
 }
 
 test "Node info" {
     const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_info";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
     const config = try allocator.create(Config);
     config.* = Config.default();
+    config.storage.data_dir = test_dir;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
     const info = node.getNodeInfo();
     try std.testing.expect(info.checkpoint_sequence == 0);
 }
 
 test "Node start/stop" {
     const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_start_stop";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
     const config = try allocator.create(Config);
     config.* = Config.default();
+    config.storage.data_dir = test_dir;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
     try node.start();
     try std.testing.expect(node.state == .running);
     node.stop();
@@ -863,11 +1104,19 @@ test "Node start/stop" {
 
 test "Node recoverFromDisk does not crash" {
     const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_recover";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
     const config = try allocator.create(Config);
     config.* = Config.default();
+    config.storage.data_dir = test_dir;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
 
     // recoverFromDisk should not error even with empty disk
     try node.recoverFromDisk();
@@ -876,11 +1125,19 @@ test "Node recoverFromDisk does not crash" {
 
 test "Node start calls recoverFromDisk" {
     const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_start_recover";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
     const config = try allocator.create(Config);
     config.* = Config.default();
+    config.storage.data_dir = test_dir;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
 
     // start() should call recoverFromDisk() internally
     try node.start();
@@ -896,13 +1153,21 @@ test "Node start calls recoverFromDisk" {
 
 test "Node mainnet extension hooks execute protocol state transitions" {
     const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_hooks";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
     const config = try allocator.create(Config);
     config.* = Config.default();
+    config.storage.data_dir = test_dir;
     config.authority.signing_key = [_]u8{0x77} ** 32;
     config.authority.stake = 1_000_000_000;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
 
     const stake_id = try node.submitStakeOperation(.{
         .validator = [_]u8{1} ** 32,

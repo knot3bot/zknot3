@@ -48,6 +48,7 @@ test "Transaction: object store basic operations" {
         .data = data,
     };
     try store.put(obj);
-    const got = try store.get(id);
+    var got = try store.get(id);
+    defer if (got) |*object| object.deinit(allocator);
     try std.testing.expect(got != null);
 }

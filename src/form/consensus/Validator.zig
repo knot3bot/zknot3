@@ -9,8 +9,12 @@ const Signature = @import("property/crypto/Signature");
 
 /// Validator stake information
 pub const ValidatorStake = struct {
-    /// Validator's public key
+    /// Validator's Ed25519 public key
     public_key: [32]u8,
+    /// Optional BLS12-381 public key (48 bytes) for checkpoint proof aggregation.
+    /// When null, LightClient may fall back to a deterministic derivation from
+    /// the Ed25519 public key (legacy mode).
+    bls_public_key: ?[48]u8 = null,
     /// Staked amount
     stake: u64,
     /// Commission rate (0-10000 = 0%-100%)
@@ -275,6 +279,6 @@ test "ValidatorSet top N" {
 
     const top2 = set.topN(2);
     try std.testing.expect(top2.len == 2);
-    // pk2 should be first (highest stake)
-    try std.testing.expect(std.mem.eql(u8, &top2[0], &pk2));
+    // v2 should be first (highest stake) — topN returns validator id, not raw public key
+    try std.testing.expect(std.mem.eql(u8, &top2[0], &v2.id));
 }

@@ -317,7 +317,10 @@ test "UserMetrics: computeZiZai" {
 test "RuntimeMetricsCollector: getTriSource" {
     const allocator = std.testing.allocator;
     var collector = try RuntimeMetricsCollector.init(allocator, 100);
-    defer collector.deinit();
+    defer {
+        collector.deinit();
+        allocator.destroy(collector);
+    }
 
     try collector.updateResource(.{ .cpu_util = 0.8, .mem_util = 0.7, .storage_util = 0.6, .network_util = 0.5 });
     try collector.updateKnowledge(.{ .unique_types = 100, .total_objects = 1000, .unique_tx_types = 20, .total_transactions = 50000, .ownership_entropy = 2.5 });

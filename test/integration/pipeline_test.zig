@@ -53,7 +53,8 @@ test "Pipeline: object store put and get" {
         .data = data,
     };
     try store.put(obj);
-    const got = try store.get(id);
+    var got = try store.get(id);
+    defer if (got) |*object| object.deinit(allocator);
     try std.testing.expect(got != null);
 }
 

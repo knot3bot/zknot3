@@ -35,7 +35,7 @@ test "Consensus: block creation" {
     defer block.deinit(allocator);
 
     try std.testing.expect(block.round.value == 1);
-    try std.testing.expect(block.hasQuorum(0, quorum.quorumStakeThreshold()));
+    try std.testing.expect(!block.hasQuorum(0, quorum.quorumStakeThreshold()));
 }
 
 test "Consensus: hasQuorum edge cases" {

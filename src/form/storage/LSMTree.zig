@@ -73,7 +73,7 @@ pub const BloomFilter = struct {
 
         var idx: usize = 0;
         while (idx < self.num_hashes) : (idx += 1) {
-            const bit_pos = (h1 +% idx * h2) % self.num_bits;
+            const bit_pos = (h1 +% (idx *% h2)) % self.num_bits;
             self.bits[bit_pos / 8] |= @as(u8, 1) << @as(u3, @intCast(bit_pos % 8));
         }
     }
@@ -84,7 +84,7 @@ pub const BloomFilter = struct {
 
         var idx: usize = 0;
         while (idx < self.num_hashes) : (idx += 1) {
-            const bit_pos = (h1 +% idx * h2) % self.num_bits;
+            const bit_pos = (h1 +% (idx *% h2)) % self.num_bits;
             if ((self.bits[bit_pos / 8] & (@as(u8, 1) << @as(u3, @intCast(bit_pos % 8)))) == 0) {
                 return false;
             }
@@ -149,7 +149,6 @@ pub const MemTable = struct {
         while (low < high) {
             const mid = (low + high) / 2;
             const entry = self.entries.items[mid];
-            
             if (new_entry.lessThan(entry)) {
                 high = mid;
             } else {
@@ -181,13 +180,11 @@ pub const MemTable = struct {
         }
 
         if (low < self.entries.items.len and std.mem.eql(u8, self.entries.items[low].key, key)) {
-            // Find first non-deleted entry with this key (considering sequence numbers)
-            var idx = low;
-            while (idx < self.entries.items.len and std.mem.eql(u8, self.entries.items[idx].key, key)) : (idx += 1) {
-                if (!self.entries.items[idx].deleted) {
-                    return self.entries.items[idx].value;
-                }
-            }
+            // Entries with same key are sorted by seq descending (newest first),
+            // so entries[low] is the latest version.
+            const latest = self.entries.items[low];
+            if (latest.deleted) return null;
+            return latest.value;
         }
         
         return null;
@@ -436,6 +433,7 @@ pub const SSTable = struct {
 
             const val_len = std.mem.readInt(u32, header_buf[4..8], .big);
             _ = header_buf[8]; // deleted flag
+            if (val_len > 10 * 1024 * 1024) return error.CorruptSSTable;
 
             // Read value (allocate exactly what we need)
             const value_buf = try self.allocator.alloc(u8, val_len);
@@ -712,7 +710,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
     pub fn init(allocator: std.mem.Allocator, config: LSMTreeConfig) !*Self {
         const self = try allocator.create(Self);
         // Initialize WAL for durability  
-        const wal_path = try std.fmt.allocPrint(allocator, "{s}.wal", .{config.sst_dir});
+        const wal_path = try std.fmt.allocPrint(allocator, "{s}/wal.log", .{config.sst_dir});
         const wal: ?WAL = initWALOrNull(allocator, wal_path);
         self.* = .{
             .allocator = allocator,
@@ -776,6 +774,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
                         .m4_stake_operation,
                         .m4_governance_proposal,
                         .m4_governance_status,
+                        .m4_governance_vote,
                         .m4_equivocation_evidence,
                         .m4_state_snapshot,
                         .m4_epoch_advance,
@@ -862,6 +861,10 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
         try sst.write(entries);
 
         try self.sstables.append(self.allocator, sst);
+
+        // Register with compaction manager so it can be selected for compaction.
+        // Levels are pre-allocated in CompactionManager.init, so index is safe.
+        try self.compaction.levels.items[level].append(self.allocator, sst);
     }
 
     pub fn batchInit(allocator: std.mem.Allocator) WriteBatch {

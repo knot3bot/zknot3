@@ -191,3 +191,64 @@ test "Epoch manager calls advance hook" {
     try std.testing.expectEqual(@as(u64, 0), ctx.previous_epoch);
     try std.testing.expectEqual(@as(u64, 1), ctx.current_epoch);
 }
+
+// Phase 0: epoch transition consistency and replay verification
+test "Epoch transition consistency: history, stake, validator count" {
+    const allocator = std.testing.allocator;
+    var manager = try EpochManager.init(allocator, .{
+        .duration_seconds = 3600,
+        .min_validators = 4,
+        .max_validators = 100,
+    }, 1000);
+    defer manager.deinit();
+
+    // Initial epoch
+    const e0 = manager.getCurrentEpoch();
+    try std.testing.expectEqual(@as(u64, 0), e0.number);
+    try std.testing.expectEqual(@as(u128, 0), e0.total_stake);
+    try std.testing.expectEqual(@as(usize, 0), e0.validator_count);
+
+    // Advance to epoch 1
+    try manager.advanceEpoch(10_000, 4);
+    const e1 = manager.getCurrentEpoch();
+    try std.testing.expectEqual(@as(u64, 1), e1.number);
+    try std.testing.expectEqual(@as(u128, 10_000), e1.total_stake);
+    try std.testing.expectEqual(@as(usize, 4), e1.validator_count);
+
+    // Advance to epoch 2 with new stake distribution
+    try manager.advanceEpoch(15_000, 5);
+    const e2 = manager.getCurrentEpoch();
+    try std.testing.expectEqual(@as(u64, 2), e2.number);
+    try std.testing.expectEqual(@as(u128, 15_000), e2.total_stake);
+    try std.testing.expectEqual(@as(usize, 5), e2.validator_count);
+
+    // History replay: verify archived epochs are finalized and sequential
+    try std.testing.expectEqual(@as(usize, 2), manager.epoch_history.items.len);
+    try std.testing.expect(manager.epoch_history.items[0].finalized);
+    try std.testing.expect(manager.epoch_history.items[1].finalized);
+    try std.testing.expectEqual(@as(u64, 0), manager.epoch_history.items[0].number);
+    try std.testing.expectEqual(@as(u64, 1), manager.epoch_history.items[1].number);
+    try std.testing.expectEqual(@as(i64, 1000 + 3600), manager.epoch_history.items[1].start_time);
+
+    // Reconfiguration detection
+    try std.testing.expect(!manager.needsReconfiguration());
+}
+
+test "Epoch boundary reconfiguration detection" {
+    const allocator = std.testing.allocator;
+    var manager = try EpochManager.init(allocator, .{
+        .duration_seconds = 3600,
+        .min_validators = 4,
+        .max_validators = 10,
+    }, 1000);
+    defer manager.deinit();
+
+    try manager.advanceEpoch(1000, 3); // below min
+    try std.testing.expect(manager.needsReconfiguration());
+
+    try manager.advanceEpoch(1000, 11); // above max
+    try std.testing.expect(manager.needsReconfiguration());
+
+    try manager.advanceEpoch(1000, 5); // within range
+    try std.testing.expect(!manager.needsReconfiguration());
+}

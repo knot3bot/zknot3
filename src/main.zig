@@ -368,6 +368,9 @@ pub fn main(init: std.process.Init) !void {
             ci.checkAndPropose() catch |err| {
                 Log.err("[MAIN] checkAndPropose error: {s}", .{@errorName(err)});
             };
+            // Deferred commit: heavy block execution is moved out of the
+            // P2P message handler so a single vote cannot freeze the loop.
+            ci.maybeCommit();
         }
 
         // Adaptive idle backoff:

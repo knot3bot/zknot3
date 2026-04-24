@@ -149,6 +149,7 @@ test "Egress certificate aggregation" {
         .status = .success,
         .gas_used = 100,
         .output_objects = &.{},
+        .events = &.{},
     };
 
     const signatures = &[_]SignaturePair{
@@ -157,5 +158,6 @@ test "Egress certificate aggregation" {
     };
 
     const cert = try egress.aggregate(execution, signatures);
+    defer allocator.free(cert.signatures);
     try std.testing.expect(cert.stake_total == 2500); // > 2000 quorum
 }

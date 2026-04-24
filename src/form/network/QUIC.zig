@@ -116,7 +116,11 @@ pub const QUICStream = struct {
         const len = @min(buf.len, self.data.items.len);
         @memcpy(buf[0..len], self.data.items[0..len]);
         if (len > 0) {
-            self.data.items = self.data.items[len..];
+            // Shift remaining data to the front so items.ptr stays at the
+            // allocation start (required for safe deinit).
+            const remaining = self.data.items[len..];
+            std.mem.copyForwards(u8, self.data.items[0..remaining.len], remaining);
+            self.data.items.len = remaining.len;
             self.bytes_received += len;
         }
         return len;
@@ -197,10 +201,29 @@ pub const QUICConnection = struct {
     pub fn setTCPConnection(self: *Self, conn: std.Io.net.Stream) void {
         self.tcp_connection = conn;
         self.state = .connected;
+
+        // Set short read/write timeout so recv doesn't block the event loop
+        const timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
+            .{ .tv_sec = 0, .tv_usec = 100000 }
+        else
+            .{ .sec = 0, .usec = 100000 };
+        std.posix.setsockopt(
+            conn.socket.handle,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.RCVTIMEO,
+            std.mem.asBytes(&timeout),
+        ) catch {};
+        std.posix.setsockopt(
+            conn.socket.handle,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.SNDTIMEO,
+            std.mem.asBytes(&timeout),
+        ) catch {};
     }
 
     /// Send data on a specific stream
     pub fn sendOnStream(self: *Self, stream_id: u64, data: []const u8) !void {
+        if (data.len > std.math.maxInt(u32)) return error.PayloadTooLarge;
         if (self.tcp_connection) |*conn| {
             // QUIC frame format: stream header + data
             var frame: [16]u8 = undefined;
@@ -364,9 +387,8 @@ pub const QUICTransport = struct {
     }
 
     pub fn closeConnection(self: *Self, cid: QUICConnectionID) void {
-        if (self.connections.getPtr(cid)) |conn| {
-            conn.*.close();
-            _ = self.connections.swapRemove(cid);
+        if (self.connections.fetchSwapRemove(cid)) |kv| {
+            kv.value.deinit();
         }
     }
 

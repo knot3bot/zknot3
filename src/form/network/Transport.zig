@@ -84,6 +84,9 @@ pub const Message = struct {
 
         const payload_len = std.mem.readInt(u32, buf[offset..][0..4], .big);
         offset += 4;
+        if (payload_len > Self.MAX_MESSAGE_SIZE) {
+            return error.MessageTooLarge;
+        }
 
         if (buf.len < offset + payload_len) {
             return error.InvalidMessage;
@@ -248,12 +251,20 @@ pub const Transport = struct {
         const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         var removed: usize = 0;
 
+        // Collect keys to remove (cannot remove during iteration)
+        var to_remove = std.ArrayList(std.net.Address).empty;
+        defer to_remove.deinit(self.allocator);
+
         var it = self.connections.iterator();
         while (it.next()) |entry| {
             if (now - entry.value_ptr.last_activity > self.config.connection_timeout) {
-                self.connections.remove(entry.key);
-                removed +%= 1;
+                try to_remove.append(self.allocator, entry.key_ptr.*);
             }
+        }
+
+        for (to_remove.items) |addr| {
+            self.connections.remove(addr);
+            removed +%= 1;
         }
 
         return removed;

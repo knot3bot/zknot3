@@ -65,9 +65,18 @@ pub const GovernanceProposal = struct {
 
 pub const GovernanceStatus = enum {
     pending,
+    voting,
     approved,
     rejected,
     executed,
+};
+
+pub const GovernanceVote = struct {
+    proposal_id: u64,
+    validator: [32]u8,
+    stake_weight: u64,
+    approve: bool,
+    voted_at: i64,
 };
 
 pub const CheckpointProofRequest = struct {
@@ -162,6 +171,7 @@ pub const Manager = struct {
     next_proposal_id: u64 = 1,
     stake_ops: std.ArrayList(StakeOperation),
     proposals: std.ArrayList(GovernanceProposal),
+    votes: std.ArrayList(GovernanceVote),
     validator_stake: std.AutoArrayHashMapUnmanaged([32]u8, u64),
     delegations: std.AutoArrayHashMapUnmanaged(DelegationKey, u64),
     processed_evidence: std.AutoArrayHashMapUnmanaged([32]u8, void),
@@ -177,6 +187,7 @@ pub const Manager = struct {
             .allocator = allocator,
             .stake_ops = std.ArrayList(StakeOperation).empty,
             .proposals = std.ArrayList(GovernanceProposal).empty,
+            .votes = std.ArrayList(GovernanceVote).empty,
             .validator_stake = .empty,
             .delegations = .empty,
             .processed_evidence = .empty,
@@ -198,6 +209,7 @@ pub const Manager = struct {
             self.allocator.free(p.description);
         }
         self.proposals.deinit(self.allocator);
+        self.votes.deinit(self.allocator);
         self.validator_stake.deinit(self.allocator);
         self.delegations.deinit(self.allocator);
         self.processed_evidence.deinit(self.allocator);
@@ -249,6 +261,99 @@ pub const Manager = struct {
             if (p.status == .executed) return error.InvalidGovernanceTransition;
             p.status = status;
             try self.appendGovernanceStatusWal(proposal_id, status);
+            return;
+        }
+        return error.ProposalNotFound;
+    }
+
+    /// Cast a stake-weighted vote on a governance proposal.
+    /// Auto-tallies after vote; transitions status to approved/rejected if thresholds met.
+    pub fn voteOnProposal(self: *Self, proposal_id: u64, validator: [32]u8, approve: bool) (ManagerError || anyerror)!void {
+        const stake = self.getValidatorStake(validator);
+        if (stake == 0) return error.InsufficientStake;
+
+        for (self.proposals.items) |*p| {
+            if (p.id != proposal_id) continue;
+            if (p.status != .pending and p.status != .voting) return error.InvalidGovernanceTransition;
+
+            // Check for duplicate vote from same validator
+            for (self.votes.items) |v| {
+                if (v.proposal_id == proposal_id and std.mem.eql(u8, &v.validator, &validator)) {
+                    return error.InvalidGovernanceTransition;
+                }
+            }
+
+            const vote = GovernanceVote{
+                .proposal_id = proposal_id,
+                .validator = validator,
+                .stake_weight = stake,
+                .approve = approve,
+                .voted_at = nowSeconds(),
+            };
+            try self.votes.append(self.allocator, vote);
+            try self.appendGovernanceVoteWal(&vote);
+
+            if (p.status == .pending) p.status = .voting;
+            try self.tallyVotes(p);
+            return;
+        }
+        return error.ProposalNotFound;
+    }
+
+    /// Tally votes for a proposal. Requires > 2/3 stake to approve, > 1/3 to reject.
+    fn tallyVotes(self: *Self, proposal: *GovernanceProposal) !void {
+        var yes_stake: u64 = 0;
+        var no_stake: u64 = 0;
+        var total_stake: u64 = 0;
+
+        var it = self.validator_stake.iterator();
+        while (it.next()) |entry| {
+            total_stake += entry.value_ptr.*;
+        }
+
+        for (self.votes.items) |v| {
+            if (v.proposal_id != proposal.id) continue;
+            if (v.approve) {
+                yes_stake += v.stake_weight;
+            } else {
+                no_stake += v.stake_weight;
+            }
+        }
+
+        // Quorum: > 2/3 of total stake to approve; > 1/3 against to reject
+        const approve_threshold = total_stake * 2 / 3;
+        const reject_threshold = total_stake / 3;
+
+        if (yes_stake >= approve_threshold) {
+            proposal.status = .approved;
+            try self.appendGovernanceStatusWal(proposal.id, .approved);
+        } else if (no_stake > reject_threshold) {
+            proposal.status = .rejected;
+            try self.appendGovernanceStatusWal(proposal.id, .rejected);
+        }
+    }
+
+    /// Execute an approved proposal. Transitions status to executed.
+    pub fn executeProposal(self: *Self, proposal_id: u64) (ManagerError || anyerror)!void {
+        for (self.proposals.items) |*p| {
+            if (p.id != proposal_id) continue;
+            if (p.status != .approved) return error.InvalidGovernanceTransition;
+
+            // Placeholder execution based on kind
+            switch (p.kind) {
+                .parameter_change => {
+                    // In production: apply parameter changes to config/state
+                },
+                .chain_upgrade => {
+                    // In production: schedule/dispatch chain upgrade
+                },
+                .treasury_action => {
+                    // In production: execute treasury transfer or allocation
+                },
+            }
+
+            p.status = .executed;
+            try self.appendGovernanceStatusWal(proposal_id, .executed);
             return;
         }
         return error.ProposalNotFound;
@@ -431,6 +536,18 @@ pub const Manager = struct {
         try w.logExtensionRecord(.m4_governance_status, &buf);
     }
 
+    fn appendGovernanceVoteWal(self: *Self, vote: *const GovernanceVote) !void {
+        const w = self.m4_wal orelse return;
+        var buf: [61]u8 = undefined;
+        @memcpy(buf[0..4], "m4v1");
+        std.mem.writeInt(u64, buf[4..12], vote.proposal_id, .big);
+        @memcpy(buf[12..44], &vote.validator);
+        std.mem.writeInt(u64, buf[44..52], vote.stake_weight, .big);
+        buf[52] = if (vote.approve) 1 else 0;
+        std.mem.writeInt(i64, buf[53..61], vote.voted_at, .big);
+        try w.logExtensionRecord(.m4_governance_vote, &buf);
+    }
+
     fn appendProcessedEvidenceWal(self: *Self, evidence_id: [32]u8) !void {
         const w = self.m4_wal orelse return;
         var buf: [36]u8 = undefined;
@@ -525,7 +642,13 @@ pub const Manager = struct {
                 if (value.len != 36 or !std.mem.eql(u8, value[0..4], "m4vr")) return error.InvalidWalPayload;
                 self.validator_set_hash = value[4..36].*;
             },
-            .m4_state_snapshot => return error.UnsupportedWalReplayOp,
+            .m4_governance_vote => {
+                const vote = try deserializeGovernanceVoteWal(value);
+                try self.injectReplayedGovernanceVote(vote);
+            },
+            .m4_state_snapshot => {
+                try self.deserializeStateSnapshot(value);
+            },
             .insert, .delete, .commit, .abort => return error.UnsupportedWalReplayOp,
         }
     }
@@ -588,6 +711,21 @@ pub const Manager = struct {
         });
         self.allocator.free(p.title);
         self.allocator.free(p.description);
+    }
+
+    fn injectReplayedGovernanceVote(self: *Self, vote: GovernanceVote) !void {
+        try self.votes.append(self.allocator, vote);
+    }
+
+    fn deserializeGovernanceVoteWal(value: []const u8) !GovernanceVote {
+        if (value.len != 61 or !std.mem.eql(u8, value[0..4], "m4v1")) return error.InvalidWalPayload;
+        return .{
+            .proposal_id = std.mem.readInt(u64, value[4..12], .big),
+            .validator = value[12..44].*,
+            .stake_weight = std.mem.readInt(u64, value[44..52], .big),
+            .approve = value[52] != 0,
+            .voted_at = std.mem.readInt(i64, value[53..61], .big),
+        };
     }
 
     fn deserializeStakeOperationWal(self: *Self, value: []const u8) !StakeOperation {
@@ -826,6 +964,326 @@ pub const Manager = struct {
         ctx.final(&out);
         return out;
     }
+
+    /// Serialize full M4 manager state into a binary blob for snapshot WAL records.
+    /// Format: "m4ss" v1 + all fields in deterministic order.
+    pub fn serializeStateSnapshot(self: *Self) ![]u8 {
+        var buf = std.ArrayList(u8).empty;
+        errdefer buf.deinit(self.allocator);
+        const W = struct {
+            fn appendU64(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u64) !void {
+                var b: [8]u8 = undefined;
+                std.mem.writeInt(u64, &b, v, .big);
+                try list.appendSlice(allocator, &b);
+            }
+            fn appendI64(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: i64) !void {
+                var b: [8]u8 = undefined;
+                std.mem.writeInt(i64, &b, v, .big);
+                try list.appendSlice(allocator, &b);
+            }
+            fn appendU32(list: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u32) !void {
+                var b: [4]u8 = undefined;
+                std.mem.writeInt(u32, &b, v, .big);
+                try list.appendSlice(allocator, &b);
+            }
+        };
+
+        try buf.appendSlice(self.allocator, "m4ss");
+        try buf.append(self.allocator, 1); // version
+
+        try W.appendU64(&buf, self.allocator, self.next_stake_operation_id);
+        try W.appendU64(&buf, self.allocator, self.next_proposal_id);
+        try W.appendU64(&buf, self.allocator, self.total_slashed);
+        try W.appendU64(&buf, self.allocator, self.current_epoch);
+        try buf.appendSlice(self.allocator, &self.validator_set_hash);
+
+        // Stake operations (sorted by id)
+        {
+            const n = self.stake_ops.items.len;
+            try W.appendU32(&buf, self.allocator, @intCast(n));
+            const ids = try self.allocator.alloc(u64, n);
+            defer self.allocator.free(ids);
+            for (self.stake_ops.items, 0..) |op, j| ids[j] = op.id;
+            std.mem.sort(u64, ids, {}, struct { fn less(_: void, a: u64, b: u64) bool { return a < b; } }.less);
+            for (ids) |id| {
+                for (self.stake_ops.items) |op| {
+                    if (op.id != id) continue;
+                    try W.appendU64(&buf, self.allocator, op.id);
+                    try W.appendI64(&buf, self.allocator, op.submitted_at);
+                    try buf.appendSlice(self.allocator, &op.validator);
+                    try buf.appendSlice(self.allocator, &op.delegator);
+                    try W.appendU64(&buf, self.allocator, op.amount);
+                    try buf.append(self.allocator, @intFromEnum(op.action));
+                    try W.appendU32(&buf, self.allocator, @intCast(op.metadata.len));
+                    try buf.appendSlice(self.allocator, op.metadata);
+                    break;
+                }
+            }
+        }
+
+        // Proposals (sorted by id)
+        {
+            const n = self.proposals.items.len;
+            try W.appendU32(&buf, self.allocator, @intCast(n));
+            const ids = try self.allocator.alloc(u64, n);
+            defer self.allocator.free(ids);
+            for (self.proposals.items, 0..) |p, j| ids[j] = p.id;
+            std.mem.sort(u64, ids, {}, struct { fn less(_: void, a: u64, b: u64) bool { return a < b; } }.less);
+            for (ids) |id| {
+                for (self.proposals.items) |p| {
+                    if (p.id != id) continue;
+                    try W.appendU64(&buf, self.allocator, p.id);
+                    try buf.appendSlice(self.allocator, &p.proposer);
+                    try W.appendU32(&buf, self.allocator, @intCast(p.title.len));
+                    try buf.appendSlice(self.allocator, p.title);
+                    try W.appendU32(&buf, self.allocator, @intCast(p.description.len));
+                    try buf.appendSlice(self.allocator, p.description);
+                    try buf.append(self.allocator, @intFromEnum(p.kind));
+                    if (p.activation_epoch) |ae| {
+                        try buf.append(self.allocator, 1);
+                        try W.appendU64(&buf, self.allocator, ae);
+                    } else {
+                        try buf.append(self.allocator, 0);
+                    }
+                    try W.appendI64(&buf, self.allocator, p.created_at);
+                    try buf.append(self.allocator, @intFromEnum(p.status));
+                    break;
+                }
+            }
+        }
+
+        // Votes
+        {
+            try W.appendU32(&buf, self.allocator, @intCast(self.votes.items.len));
+            for (self.votes.items) |v| {
+                try W.appendU64(&buf, self.allocator, v.proposal_id);
+                try buf.appendSlice(self.allocator, &v.validator);
+                try W.appendU64(&buf, self.allocator, v.stake_weight);
+                try buf.append(self.allocator, if (v.approve) 1 else 0);
+                try W.appendI64(&buf, self.allocator, v.voted_at);
+            }
+        }
+
+        // Validator stake (sorted by key)
+        {
+            const n = self.validator_stake.count();
+            try W.appendU32(&buf, self.allocator, @intCast(n));
+            var keys = try self.allocator.alloc([32]u8, n);
+            defer self.allocator.free(keys);
+            var it = self.validator_stake.iterator();
+            var i: usize = 0;
+            while (it.next()) |e| : (i += 1) keys[i] = e.key_ptr.*;
+            std.mem.sort([32]u8, keys, {}, struct { fn less(_: void, a: [32]u8, b: [32]u8) bool { return std.mem.order(u8, &a, &b) == .lt; } }.less);
+            for (keys) |k| {
+                const st = self.validator_stake.get(k) orelse continue;
+                try buf.appendSlice(self.allocator, &k);
+                try W.appendU64(&buf, self.allocator, st);
+            }
+        }
+
+        // Delegations (sorted composite key)
+        {
+            const n = self.delegations.count();
+            try W.appendU32(&buf, self.allocator, @intCast(n));
+            var keys = try self.allocator.alloc(DelegationKey, n);
+            defer self.allocator.free(keys);
+            var dit = self.delegations.iterator();
+            var j: usize = 0;
+            while (dit.next()) |e| : (j += 1) keys[j] = e.key_ptr.*;
+            std.mem.sort(DelegationKey, keys, {}, struct {
+                fn lt(_: void, a: DelegationKey, b: DelegationKey) bool {
+                    const o = std.mem.order(u8, &a.validator, &b.validator);
+                    if (o != .eq) return o == .lt;
+                    return std.mem.order(u8, &a.delegator, &b.delegator) == .lt;
+                }
+            }.lt);
+            for (keys) |k| {
+                const amt = self.delegations.get(k) orelse continue;
+                try buf.appendSlice(self.allocator, &k.validator);
+                try buf.appendSlice(self.allocator, &k.delegator);
+                try W.appendU64(&buf, self.allocator, amt);
+            }
+        }
+
+        // Processed evidence (sorted)
+        {
+            const n = self.processed_evidence.count();
+            try W.appendU32(&buf, self.allocator, @intCast(n));
+            var ev = try self.allocator.alloc([32]u8, n);
+            defer self.allocator.free(ev);
+            var eit = self.processed_evidence.iterator();
+            var k: usize = 0;
+            while (eit.next()) |e| : (k += 1) ev[k] = e.key_ptr.*;
+            std.mem.sort([32]u8, ev, {}, struct { fn less(_: void, a: [32]u8, b: [32]u8) bool { return std.mem.order(u8, &a, &b) == .lt; } }.less);
+            for (ev) |h| try buf.appendSlice(self.allocator, &h);
+        }
+
+        return buf.toOwnedSlice(self.allocator);
+    }
+
+    /// Deserialize a state snapshot blob and replace all in-memory M4 state.
+    pub fn deserializeStateSnapshot(self: *Self, data: []const u8) !void {
+        if (data.len < 5 or !std.mem.eql(u8, data[0..4], "m4ss")) return error.InvalidWalPayload;
+        if (data[4] != 1) return error.InvalidWalPayload;
+        var off: usize = 5;
+
+        const R = struct {
+            fn readU64(d: []const u8, o: *usize) !u64 {
+                if (o.* + 8 > d.len) return error.InvalidWalPayload;
+                const v = std.mem.readInt(u64, d[o.*..][0..8], .big);
+                o.* += 8;
+                return v;
+            }
+            fn readI64(d: []const u8, o: *usize) !i64 {
+                if (o.* + 8 > d.len) return error.InvalidWalPayload;
+                const v = std.mem.readInt(i64, d[o.*..][0..8], .big);
+                o.* += 8;
+                return v;
+            }
+            fn readU32(d: []const u8, o: *usize) !u32 {
+                if (o.* + 4 > d.len) return error.InvalidWalPayload;
+                const v = std.mem.readInt(u32, d[o.*..][0..4], .big);
+                o.* += 4;
+                return v;
+            }
+            fn readBytes(d: []const u8, o: *usize, len: usize) ![]const u8 {
+                if (o.* + len > d.len) return error.InvalidWalPayload;
+                const v = d[o.*..][0..len];
+                o.* += len;
+                return v;
+            }
+            fn readArray(comptime N: usize, d: []const u8, o: *usize) ![N]u8 {
+                if (o.* + N > d.len) return error.InvalidWalPayload;
+                const v = d[o.*..][0..N].*;
+                o.* += N;
+                return v;
+            }
+        };
+
+        self.next_stake_operation_id = try R.readU64(data, &off);
+        self.next_proposal_id = try R.readU64(data, &off);
+        self.total_slashed = try R.readU64(data, &off);
+        self.current_epoch = try R.readU64(data, &off);
+        self.validator_set_hash = try R.readArray(32, data, &off);
+
+        // Clear existing collections
+        for (self.stake_ops.items) |op| self.allocator.free(op.metadata);
+        self.stake_ops.clearRetainingCapacity();
+        for (self.proposals.items) |p| {
+            self.allocator.free(p.title);
+            self.allocator.free(p.description);
+        }
+        self.proposals.clearRetainingCapacity();
+        self.votes.clearRetainingCapacity();
+        self.validator_stake.clearRetainingCapacity();
+        self.delegations.clearRetainingCapacity();
+        self.processed_evidence.clearRetainingCapacity();
+
+        // Stake operations
+        {
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const id = try R.readU64(data, &off);
+                const submitted_at = try R.readI64(data, &off);
+                const validator = try R.readArray(32, data, &off);
+                const delegator = try R.readArray(32, data, &off);
+                const amount = try R.readU64(data, &off);
+                const action = std.enums.fromInt(StakeAction, data[off]) orelse return error.InvalidWalPayload;
+                off += 1;
+                const meta_len = try R.readU32(data, &off);
+                const metadata = try self.allocator.dupe(u8, try R.readBytes(data, &off, meta_len));
+                try self.stake_ops.append(self.allocator, .{
+                    .id = id, .submitted_at = submitted_at, .validator = validator,
+                    .delegator = delegator, .amount = amount, .action = action, .metadata = metadata,
+                });
+            }
+        }
+
+        // Proposals
+        {
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const id = try R.readU64(data, &off);
+                const proposer = try R.readArray(32, data, &off);
+                const title_len = try R.readU32(data, &off);
+                const title = try self.allocator.dupe(u8, try R.readBytes(data, &off, title_len));
+                const desc_len = try R.readU32(data, &off);
+                const description = try self.allocator.dupe(u8, try R.readBytes(data, &off, desc_len));
+                const kind = std.enums.fromInt(GovernanceKind, data[off]) orelse return error.InvalidWalPayload;
+                off += 1;
+                const ae_flag = data[off];
+                off += 1;
+                var activation_epoch: ?u64 = null;
+                if (ae_flag == 1) {
+                    activation_epoch = try R.readU64(data, &off);
+                } else if (ae_flag != 0) {
+                    return error.InvalidWalPayload;
+                }
+                const created_at = try R.readI64(data, &off);
+                const status = std.enums.fromInt(GovernanceStatus, data[off]) orelse return error.InvalidWalPayload;
+                off += 1;
+                try self.proposals.append(self.allocator, .{
+                    .id = id, .proposer = proposer, .title = title, .description = description,
+                    .kind = kind, .activation_epoch = activation_epoch, .created_at = created_at, .status = status,
+                });
+            }
+        }
+
+        // Votes
+        {
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const proposal_id = try R.readU64(data, &off);
+                const validator = try R.readArray(32, data, &off);
+                const stake_weight = try R.readU64(data, &off);
+                const approve = data[off] != 0;
+                off += 1;
+                const voted_at = try R.readI64(data, &off);
+                try self.votes.append(self.allocator, .{
+                    .proposal_id = proposal_id, .validator = validator, .stake_weight = stake_weight,
+                    .approve = approve, .voted_at = voted_at,
+                });
+            }
+        }
+
+        // Validator stake
+        {
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const key = try R.readArray(32, data, &off);
+                const val = try R.readU64(data, &off);
+                try self.validator_stake.put(self.allocator, key, val);
+            }
+        }
+
+        // Delegations
+        {
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const validator = try R.readArray(32, data, &off);
+                const delegator = try R.readArray(32, data, &off);
+                const amt = try R.readU64(data, &off);
+                try self.delegations.put(self.allocator, .{ .validator = validator, .delegator = delegator }, amt);
+            }
+        }
+
+        // Processed evidence
+        {
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const eid = try R.readArray(32, data, &off);
+                try self.processed_evidence.put(self.allocator, eid, {});
+            }
+        }
+    }
+
+    pub fn appendStateSnapshotWal(self: *Self) !void {
+        const w = self.m4_wal orelse return;
+        const payload = try self.serializeStateSnapshot();
+        defer self.allocator.free(payload);
+        try w.logExtensionRecord(.m4_state_snapshot, payload);
+        try w.syncAll();
+    }
 };
 
 fn nowSeconds() i64 {
@@ -943,4 +1401,93 @@ test "equivocation evidence replay is deduplicated" {
     try std.testing.expect(!second_applied);
     try std.testing.expectEqual(@as(u64, 10), mgr.getTotalSlashed());
     try std.testing.expectEqual(@as(u64, 40), mgr.getValidatorStake(validator));
+}
+
+test "governance vote WAL roundtrip" {
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+
+    const validator = [_]u8{0x11} ** 32;
+    try mgr.validator_stake.put(allocator, validator, 500);
+
+    // Create a proposal first (votes need a proposal to exist)
+    _ = try mgr.submitGovernanceProposal(.{
+        .proposer = validator,
+        .title = "test",
+        .description = "desc",
+        .kind = .parameter_change,
+        .activation_epoch = 5,
+    });
+
+    // Cast a vote
+    try mgr.voteOnProposal(1, validator, true);
+    try std.testing.expectEqual(@as(usize, 1), mgr.votes.items.len);
+
+    // Simulate WAL replay by clearing votes and re-injecting
+    mgr.votes.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(usize, 0), mgr.votes.items.len);
+
+    // Manually construct the WAL payload and replay
+    var buf: [61]u8 = undefined;
+    @memcpy(buf[0..4], "m4v1");
+    std.mem.writeInt(u64, buf[4..12], 1, .big);
+    @memcpy(buf[12..44], &validator);
+    std.mem.writeInt(u64, buf[44..52], 500, .big);
+    buf[52] = 1;
+    std.mem.writeInt(i64, buf[53..61], 1234567890, .big);
+
+    const vote = try Manager.deserializeGovernanceVoteWal(&buf);
+    try mgr.injectReplayedGovernanceVote(vote);
+
+    try std.testing.expectEqual(@as(usize, 1), mgr.votes.items.len);
+    try std.testing.expectEqual(@as(u64, 1), mgr.votes.items[0].proposal_id);
+    try std.testing.expect(mgr.votes.items[0].approve);
+    try std.testing.expectEqual(@as(u64, 500), mgr.votes.items[0].stake_weight);
+}
+
+test "M4 state snapshot roundtrip" {
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+
+    const validator = [_]u8{0x22} ** 32;
+    const delegator = [_]u8{0x33} ** 32;
+
+    // Populate some state
+    try mgr.validator_stake.put(allocator, validator, 1000);
+    try mgr.delegations.put(allocator, .{ .validator = validator, .delegator = delegator }, 500);
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator, .delegator = delegator, .amount = 500, .action = .stake, .metadata = "test",
+    });
+    _ = try mgr.submitGovernanceProposal(.{
+        .proposer = validator, .title = "p1", .description = "d1", .kind = .parameter_change, .activation_epoch = 3,
+    });
+    try mgr.voteOnProposal(1, validator, true);
+    try mgr.processed_evidence.put(allocator, [_]u8{0xEE} ** 32, {});
+    mgr.current_epoch = 7;
+    mgr.validator_set_hash = [_]u8{0xAA} ** 32;
+    mgr.total_slashed = 50;
+
+    // Serialize snapshot
+    const snapshot = try mgr.serializeStateSnapshot();
+    defer allocator.free(snapshot);
+    try std.testing.expect(std.mem.startsWith(u8, snapshot, "m4ss"));
+
+    // Clear and restore
+    var mgr2 = try Manager.init(allocator);
+    defer mgr2.deinit();
+    try mgr2.deserializeStateSnapshot(snapshot);
+
+    // Verify restored state
+    try std.testing.expectEqual(@as(u64, 7), mgr2.current_epoch);
+    try std.testing.expectEqual(@as(u64, 50), mgr2.total_slashed);
+    try std.testing.expectEqual(@as(u64, 1), mgr2.stake_ops.items.len);
+    try std.testing.expectEqual(@as(u64, 1), mgr2.proposals.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mgr2.votes.items.len);
+    // submitStakeOperation added 500 to the pre-existing 1000/500 stakes
+    try std.testing.expectEqual(@as(u64, 1500), mgr2.validator_stake.get(validator).?);
+    try std.testing.expectEqual(@as(u64, 1000), mgr2.delegations.get(.{ .validator = validator, .delegator = delegator }).?);
+    try std.testing.expect(mgr2.processed_evidence.contains([_]u8{0xEE} ** 32));
+    try std.testing.expect(std.mem.eql(u8, &mgr2.validator_set_hash, &[_]u8{0xAA} ** 32));
 }

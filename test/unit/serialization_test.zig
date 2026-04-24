@@ -41,6 +41,7 @@ test "ObjectID: hash is deterministic" {
 test "Ownership: encode produces bytes" {
     const original = Ownership.ownedBy([_]u8{0xAB} ** 32);
     const encoded = try original.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Owned));
 }
@@ -48,6 +49,7 @@ test "Ownership: encode produces bytes" {
 test "Ownership: shared object encode" {
     const original = Ownership.shared(1234);
     const encoded = try original.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Shared));
     const context_back = std.mem.readInt(u64, encoded[33..41], .big);
@@ -57,6 +59,7 @@ test "Ownership: shared object encode" {
 test "Ownership: immutable encode" {
     const original = Ownership.immutable();
     const encoded = try original.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
     try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Immutable));
 }

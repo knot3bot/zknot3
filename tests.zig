@@ -4,6 +4,10 @@ comptime {
     _ = @import("test/unit/bls_checkpoint_test.zig");
     _ = @import("test/unit/m4_rpc_params_test.zig");
     _ = @import("test/unit/serialization_test.zig");
+    _ = @import("test/unit/transaction_golden_vectors.zig");
+    _ = @import("test/unit/sdk_protocol_test.zig");
+    _ = @import("test/unit/move_vm_native_test.zig");
+    _ = @import("test/unit/governance_vote_test.zig");
     _ = @import("test/unit/test_framework.zig");
     _ = @import("test/integration/cluster_integration_test.zig");
     _ = @import("test/integration/consensus_flow_test.zig");
@@ -18,6 +22,8 @@ comptime {
     _ = @import("test/integration/p2p_async_test.zig");
     _ = @import("test/integration/test_cluster.zig");
     _ = @import("test/integration/transaction_execution_test.zig");
+    _ = @import("test/integration/indexing_end_to_end_test.zig");
+    _ = @import("test/integration/epoch_advance_test.zig");
     _ = @import("test/property/property_test.zig");
     _ = @import("test/property/mysticeti_concurrency_test.zig");
     _ = @import("test/fuzz/fuzz_framework.zig");

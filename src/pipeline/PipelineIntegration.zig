@@ -148,6 +148,7 @@ test "Pipeline: Egress quorum validation" {
         .status = .success,
         .gas_used = 100,
         .output_objects = &.{},
+        .events = &.{},
     };
     
     // Insufficient stake should fail
@@ -179,6 +180,7 @@ test "Pipeline: Certificate signature verification" {
         .status = .success,
         .gas_used = 50,
         .output_objects = &.{},
+        .events = &.{},
     };
     
     const signatures = &[_]SignaturePair{

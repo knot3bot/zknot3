@@ -353,8 +353,11 @@ fn generatePython(sdk: *ClientSDK) ![]const u8 {
 
     // Generate methods
     for (KNOT3_RPC_METHODS) |method| {
+        const method_name = method.name["knot3_".len..];
+        var snake_buf: [256]u8 = undefined;
+        const snake_name = convertToSnakeCase(method_name, &snake_buf);
         try buf.appendSlice("    def ");
-        try buf.appendSlice(method.name["knot3_".len..]);
+        try buf.appendSlice(snake_name);
         try buf.appendSlice("(");
         for (method.params, 0..) |param, i| {
             if (i > 0) try buf.appendSlice(", ");
@@ -468,11 +471,13 @@ fn generateGo(sdk: *ClientSDK) ![]const u8 {
         for (method.params, 0..) |param, i| {
             if (i > 0) try buf.appendSlice(", ");
             const kind = if (method.param_json) |p| p[i] else RpcParamJsonKind.string;
-            switch (kind) {
-                .string => try buf.appendSlice(try std.fmt.allocPrint(sdk.allocator, "{s} string", .{param})),
-                .integer => try buf.appendSlice(try std.fmt.allocPrint(sdk.allocator, "{s} int64", .{param})),
-                .optional_integer => try buf.appendSlice(try std.fmt.allocPrint(sdk.allocator, "{s} *int64", .{param})),
-            }
+            const temp = switch (kind) {
+                .string => try std.fmt.allocPrint(sdk.allocator, "{s} string", .{param}),
+                .integer => try std.fmt.allocPrint(sdk.allocator, "{s} int64", .{param}),
+                .optional_integer => try std.fmt.allocPrint(sdk.allocator, "{s} *int64", .{param}),
+            };
+            defer sdk.allocator.free(temp);
+            try buf.appendSlice(temp);
         }
         try buf.appendSlice(") (interface{}, error) {\n");
         if (method.object_params) {
@@ -565,7 +570,8 @@ fn generateRust(sdk: *ClientSDK) ![]const u8 {
     // Generate methods
     for (KNOT3_RPC_METHODS) |method| {
         const method_name = method.name["knot3_".len..];
-        const snake_name = convertToSnakeCase(method_name);
+        var snake_buf: [256]u8 = undefined;
+        const snake_name = convertToSnakeCase(method_name, &snake_buf);
 
         try buf.appendSlice("    pub async fn ");
         try buf.appendSlice(snake_name);
@@ -801,21 +807,18 @@ fn generateZig(sdk: *ClientSDK) ![]const u8 {
     return buf.toOwnedSlice();
 }
 
-/// Convert CamelCase to snake_case
-fn convertToSnakeCase(name: []const u8) []const u8 {
-    var result: [256]u8 = undefined;
+/// Convert CamelCase to snake_case into caller-provided buffer.
+fn convertToSnakeCase(name: []const u8, out: []u8) []const u8 {
     var j: usize = 0;
-
     for (name, 0..) |c, i| {
         if (i > 0 and c >= 'A' and c <= 'Z') {
-            result[j] = '_';
+            out[j] = '_';
             j += 1;
         }
-        result[j] = std.ascii.toLower(c);
+        out[j] = std.ascii.toLower(c);
         j += 1;
     }
-
-    return result[0..j];
+    return out[0..j];
 }
 
 test "ClientSDK TypeScript generation" {
@@ -830,6 +833,7 @@ test "ClientSDK TypeScript generation" {
     defer sdk.deinit();
 
     const code = try sdk.generateCode();
+    defer allocator.free(code);
     try std.testing.expect(code.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, code, "knot3_getObject") != null);
 }
@@ -851,11 +855,12 @@ test "ClientSDK Zig generation" {
     defer sdk.deinit();
 
     const code = try sdk.generateCode();
+    defer allocator.free(code);
     try std.testing.expect(code.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, code, "pub const Knot3Client") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "pub fn getObject") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "std.http.Client") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "\"jsonrpc\":\"2.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "\\\"jsonrpc\\\":\\\"2.0\\\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "std.ArrayList(u8).empty") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "std.ArrayList(u8).init(") == null);
     // M4 v2 Zig SDK: object params + typed integers
@@ -878,6 +883,7 @@ test "ClientSDK multi-language smoke generation" {
         var sdk = try ClientSDK.init(allocator, config);
         defer sdk.deinit();
         const code = try sdk.generateCode();
+        defer allocator.free(code);
         try std.testing.expect(code.len > 0);
         try std.testing.expect(std.mem.indexOf(u8, code, "knot3_getObject") != null);
     }
@@ -893,6 +899,7 @@ test "ClientSDK Python M4 receipt dataclasses and return hints" {
     var sdk = try ClientSDK.init(allocator, config);
     defer sdk.deinit();
     const code = try sdk.generateCode();
+    defer allocator.free(code);
     try std.testing.expect(std.mem.indexOf(u8, code, "class StakeOperationReceipt:") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "class GovernanceProposalReceipt:") != null);
     try std.testing.expect(std.mem.indexOf(u8, code, "class CheckpointProof:") != null);

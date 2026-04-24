@@ -69,6 +69,15 @@ pub const Block = struct {
         while (it.next()) |entry| {
             stake_sum += entry.value_ptr.stake;
         }
+        // Avoid u128 overflow: stake_sum * 3 >= threshold * 2
+        // Equivalent to stake_sum >= ceil(threshold * 2 / 3) when no overflow,
+        // but we rewrite to use division first to stay safe.
+        // stake_sum * 3 >= threshold * 2  <=>  stake_sum / 2 >= threshold / 3 (not exact for ints)
+        // Safe form: 3 * stake_sum >= 2 * threshold.  Check each side for overflow.
+        if (stake_sum > std.math.maxInt(u128) / 3 or threshold > std.math.maxInt(u128) / 2) {
+            // In overflow territory, use saturated comparison via division
+            return stake_sum >= @divFloor(threshold * 2, 3);
+        }
         return stake_sum * 3 >= threshold * 2;
     }
 
@@ -100,7 +109,8 @@ pub const Block = struct {
     }
 
     pub fn deserialize(allocator: std.mem.Allocator, data: []const u8) !Self {
-        if (data.len < 32 + 8 + 4 + 32) return error.InvalidFormat;
+        // Minimum: author(32) + round(8) + payload_len(4) + parents_len(4) + digest(32) = 80
+        if (data.len < 80) return error.InvalidFormat;
 
         var offset: usize = 0;
 
@@ -113,17 +123,21 @@ pub const Block = struct {
 
         const payload_len = std.mem.readInt(u32, data[offset..][0..4], .big);
         offset += 4;
+        if (offset + payload_len > data.len) return error.InvalidFormat;
         const payload = try allocator.dupe(u8, data[offset..][0..payload_len]);
         offset += payload_len;
 
+        if (offset + 4 > data.len) return error.InvalidFormat;
         const parents_len = std.mem.readInt(u32, data[offset..][0..4], .big);
         offset += 4;
+        if (offset + parents_len * 8 > data.len) return error.InvalidFormat;
         const parents = try allocator.alloc(Round, parents_len);
         for (0..parents_len) |i| {
             parents[i] = Round{ .value = std.mem.readInt(u64, data[offset..][0..8], .big) };
             offset += 8;
         }
 
+        if (offset + 32 > data.len) return error.InvalidFormat;
         const digest = data[offset..][0..32].*;
 
         return Self{
@@ -161,7 +175,7 @@ pub const Vote = struct {
     }
 
     pub fn deserialize(_: std.mem.Allocator, data: []const u8) !Self {
-        if (data.len < 128) return error.InvalidFormat;
+        if (data.len < 32 + 16 + 8 + 32 + 64) return error.InvalidFormat;
         var offset: usize = 0;
         const voter = data[offset..][0..32].*;
         offset += 32;
@@ -337,13 +351,28 @@ pub const Mysticeti = struct {
         }
         self.dag.deinit(self.allocator);
         self.committed_rounds.deinit(self.allocator);
+        self.allocator.destroy(self);
     }
 
     pub fn addBlock(self: *Self, block: Block) !void {
         if (!self.dag.contains(block.round)) {
             try self.dag.put(self.allocator, block.round, std.AutoArrayHashMapUnmanaged([32]u8, Block).empty);
         }
-        try self.dag.getPtr(block.round).?.put(self.allocator, block.author, block);
+        // Deep-copy the block so the DAG owns its own payload/parents/votes
+        var block_copy = block;
+        block_copy.payload = try self.allocator.dupe(u8, block.payload);
+        errdefer self.allocator.free(block_copy.payload);
+        block_copy.parents = try self.allocator.dupe(Round, block.parents);
+        errdefer self.allocator.free(block_copy.parents);
+        if (block.votes.count() > 0) {
+            var new_votes = std.AutoArrayHashMapUnmanaged([32]u8, Vote).empty;
+            var vit = block.votes.iterator();
+            while (vit.next()) |entry| {
+                try new_votes.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+            }
+            block_copy.votes = new_votes;
+        }
+        try self.dag.getPtr(block.round).?.put(self.allocator, block.author, block_copy);
     }
 
     pub fn proposeBlock(self: *Self, author: [32]u8, payload: []const u8) !Block {
@@ -400,6 +429,7 @@ pub const Mysticeti = struct {
     }
 
     pub fn tryCommit(self: *Self, round: Round, block_digest: [32]u8) !?CommitCertificate {
+        if (round.value < 2) return null;
         const next_round = Round{ .value = round.value + 1 };
 
         if (self.dag.get(next_round)) |blocks| {

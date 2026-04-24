@@ -39,7 +39,8 @@ pub fn serializeBlock(block: Block, allocator: std.mem.Allocator) ![]u8 {
 
 /// Optimized block deserialization from network transmission
 pub fn deserializeBlock(data: []const u8, allocator: std.mem.Allocator) !Block {
-    if (data.len < 32 + 8 + 4 + 32) return error.InvalidFormat;
+    // Minimum: author(32) + round(8) + payload_len(4) + parents_len(4) + digest(32) = 80
+    if (data.len < 80) return error.InvalidFormat;
     var offset: usize = 0;
 
     const author = data[offset..][0..32].*;
@@ -49,15 +50,19 @@ pub fn deserializeBlock(data: []const u8, allocator: std.mem.Allocator) !Block {
     const round = Round{ .value = round_value };
     const payload_len = std.mem.readInt(u32, data[offset..][0..4], .big);
     offset += 4;
+    if (offset + payload_len > data.len) return error.InvalidFormat;
     const payload = try allocator.dupe(u8, data[offset..][0..payload_len]);
     offset += payload_len;
+    if (offset + 4 > data.len) return error.InvalidFormat;
     const parents_len = std.mem.readInt(u32, data[offset..][0..4], .big);
     offset += 4;
+    if (offset + parents_len * 8 > data.len) return error.InvalidFormat;
     const parents = try allocator.alloc(Round, parents_len);
     for (0..parents_len) |i| {
         parents[i] = Round{ .value = std.mem.readInt(u64, data[offset..][0..8], .big) };
         offset += 8;
     }
+    if (offset + 32 > data.len) return error.InvalidFormat;
     const digest = data[offset..][0..32].*;
 
     return Block{

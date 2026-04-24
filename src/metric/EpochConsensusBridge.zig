@@ -96,8 +96,8 @@ pub const EpochConsensusBridge = struct {
         const epoch = self.epoch_manager.getCurrentEpoch();
         return ConsensusEpochInfo{
             .epoch_number = epoch.number,
-            .total_stake = epoch.total_stake,
-            .validator_count = epoch.validator_count,
+            .total_stake = self.stake_pool.getTotalStake(),
+            .validator_count = self.stake_pool.validators.count(),
             .quorum_threshold = self.stake_pool.quorumThreshold(),
         };
     }

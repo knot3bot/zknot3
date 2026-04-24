@@ -35,12 +35,13 @@ pub fn executeOne(ctx: *Context, tx: pipeline.Transaction) (ExecuteError || std.
         .status = .success,
         .gas_used = tx.gas_budget / 2,
         .output_objects = &.{},
+        .events = &.{},
     };
 
     try ctx.execution_results.put(ctx.allocator, digest, result);
     try ctx.txn_history.put(ctx.allocator, digest, .{
         .digest = digest,
-        .status = .success,
+        .status = .executed,
         .gas_used = result.gas_used,
         .sender = tx.sender,
     });
@@ -50,14 +51,14 @@ pub fn executeOne(ctx: *Context, tx: pipeline.Transaction) (ExecuteError || std.
 }
 
 pub fn executeBatch(ctx: *Context, txs: []const pipeline.Transaction) (ExecuteError || std.mem.Allocator.Error)![]ExecutionResult {
-    var results = std.ArrayList(ExecutionResult).init(ctx.allocator);
-    errdefer results.deinit();
+    var results = std.ArrayList(ExecutionResult).empty;
+    errdefer results.deinit(ctx.allocator);
 
     for (txs) |tx| {
         const result = try executeOne(ctx, tx);
-        try results.append(result);
+        try results.append(ctx.allocator, result);
     }
-    return results.toOwnedSlice();
+    return results.toOwnedSlice(ctx.allocator);
 }
 
 test "TxExecutionCoordinator executeOne updates sequence and history" {

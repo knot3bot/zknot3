@@ -64,7 +64,7 @@ pub const ObjectID = struct {
     }
 
     /// Get bytes as slice
-    pub fn asBytes(self: Self) []const u8 {
+    pub fn asBytes(self: *const Self) []const u8 {
         return &self.bytes;
     }
 

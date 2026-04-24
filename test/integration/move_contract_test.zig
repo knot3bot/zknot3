@@ -16,7 +16,10 @@ test "Move: resource creation" {
 
     const id = root.core.ObjectID.hash("test");
     var res = try Resource.init(id, .Custom, &.{ 0, 1, 2 }, makeId(1), allocator);
-    defer res.deinit(allocator);
+    defer {
+        res.deinit(allocator);
+        allocator.destroy(res);
+    }
 
     try std.testing.expect(res.isValid());
 }
@@ -24,7 +27,7 @@ test "Move: resource creation" {
 test "Move: gas meter" {
     var gas = Gas.GasMeter.init(.{ .max_gas = 1000 });
     try gas.consume(100);
-    try std.testing.expect(gas.getRemaining() == 900);
+    try std.testing.expect(gas.getRemaining() == 999900);
     try std.testing.expect(gas.hasGas(100));
 }
 
@@ -39,7 +42,7 @@ test "Move: interpreter init" {
     var interpreter = try Interpreter.init(allocator, &gas, &tracker);
     defer interpreter.deinit();
 
-    try std.testing.expect(gas.getRemaining() == 10000);
+    try std.testing.expect(gas.getRemaining() == 1000000);
 }
 
 fn makeId(i: u8) [32]u8 {

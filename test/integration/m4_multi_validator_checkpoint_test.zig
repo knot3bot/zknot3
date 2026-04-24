@@ -31,11 +31,15 @@ test "M4 Node buildCheckpointProof with extra seeds passes 2-of-3 LightClient qu
     const s1 = [_]u8{0x61} ** 32;
     const s2 = [_]u8{0x62} ** 32;
     const s3 = [_]u8{0x63} ** 32;
+    const b1 = [_]u8{0x71} ** 32;
+    const b2 = [_]u8{0x72} ** 32;
 
     var v1 = try Validator.create((try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s1)).public_key.toBytes(), 401, "a", allocator);
     defer v1.deinit(allocator);
+    v1.stake.bls_public_key = root.core.Bls.derivePublicKey(b1);
     var v2 = try Validator.create((try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s2)).public_key.toBytes(), 400, "b", allocator);
     defer v2.deinit(allocator);
+    v2.stake.bls_public_key = root.core.Bls.derivePublicKey(b2);
     var v3 = try Validator.create((try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s3)).public_key.toBytes(), 400, "c", allocator);
     defer v3.deinit(allocator);
 
@@ -43,6 +47,8 @@ test "M4 Node buildCheckpointProof with extra seeds passes 2-of-3 LightClient qu
     cfg.* = Config.default();
     cfg.authority.signing_key = s1;
     cfg.authority.checkpoint_proof_extra_signing_seeds = &.{s2};
+    cfg.authority.bls_signing_seed = b1;
+    cfg.authority.extra_bls_signing_seeds = &.{b2};
     cfg.authority.stake = 1_000_000_000;
     cfg.storage.data_dir = data_dir;
 

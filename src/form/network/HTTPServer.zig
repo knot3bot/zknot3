@@ -19,6 +19,24 @@ fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
         error.ReadFailed => return reader.err.?,
     };
 }
+
+/// Read until buf is full, EOF, or an error occurs. Returns total bytes read.
+/// `error.WouldBlock` is only returned if *zero* bytes were read.
+fn streamReadAll(stream: std.Io.net.Stream, buf: []u8) !usize {
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = streamReadShort(stream, buf[total..]) catch |err| {
+            if (err == error.WouldBlock) {
+                if (total == 0) return error.WouldBlock;
+                break;
+            }
+            return err;
+        };
+        if (n == 0) break;
+        total += n;
+    }
+    return total;
+}
 /// JSON-RPC request
 pub const JSONRPCRequest = struct {
     jsonrpc: []const u8 = "2.0",
@@ -146,13 +164,22 @@ pub const Response = struct {
         };
     }
 
-    pub fn withHeader(self: *@This(), name: []const u8, value: []const u8) !@This() {
-        try self.headers.put(std.heap.page_allocator, name, value);
+    pub fn withHeader(self: *@This(), allocator: std.mem.Allocator, name: []const u8, value: []const u8) !@This() {
+        try self.headers.put(allocator, name, value);
         return self.*;
     }
 
-    pub fn withJSONContentType(self: *@This()) !@This() {
-        _ = try self.withHeader("Content-Type", "application/json");
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.headers.deinit(allocator);
+    }
+
+    pub fn withJSONContentType(self: *@This(), allocator: std.mem.Allocator) !@This() {
+        _ = try self.withHeader(allocator, "Content-Type", "application/json");
+        return self.*;
+    }
+
+    pub fn withTraceId(self: *@This(), trace_id: []const u8) !@This() {
+        self.trace_id = trace_id;
         return self.*;
     }
 
@@ -189,6 +216,14 @@ pub const Response = struct {
             try streamWriteAll(conn, entry.key_ptr.*);
             try streamWriteAll(conn, ": ");
             try streamWriteAll(conn, entry.value_ptr.*);
+            try streamWriteAll(conn, "\r\n");
+        }
+
+        if (self.trace_id) |tid| {
+            try streamWriteAll(conn, "X-Trace-Id: ");
+            var buf: [64]u8 = undefined;
+            const hex = std.fmt.bufPrint(&buf, "{x}", .{tid}) catch tid;
+            try streamWriteAll(conn, hex);
             try streamWriteAll(conn, "\r\n");
         }
 
@@ -253,6 +288,11 @@ pub const Response = struct {
             pos += h.len;
         }
 
+        if (self.trace_id) |tid| {
+            const tid_str = try std.fmt.bufPrint(buf[pos..], "X-Trace-Id: {x}\r\n", .{tid});
+            pos += tid_str.len;
+        }
+
         if (self.body) |body| {
             const cl = try std.fmt.bufPrint(buf[pos..], "Content-Length: {}\r\n\r\n{s}", .{ body.len, body });
             pos += cl.len;
@@ -287,7 +327,9 @@ pub const Response = struct {
         return std.fmt.parseInt(usize, request[value_start..value_start + value_end], 10) catch null;
     }
 
-    // Extract HTTP body using Content-Length if available
+    /// Extract HTTP body using Content-Length if available.
+    /// Returns `null` when the header terminator is missing or the body is
+    /// shorter than the declared Content-Length (incomplete request).
     pub fn extractBody(request: []const u8) ?[]const u8 {
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return null;
         const body = request[body_start + 4 ..];
@@ -295,6 +337,8 @@ pub const Response = struct {
             if (body.len >= content_len) {
                 return body[0..content_len];
             }
+            // Body is incomplete — do not return a truncated slice.
+            return null;
         }
         return body;
     }
@@ -353,6 +397,7 @@ pub const HTTPServer = struct {
     request_count: usize,
     last_request_second: i64,
     max_requests_per_second: usize,
+    active_connections: usize,
 
     pub fn init(allocator: std.mem.Allocator, address: std.Io.net.IpAddress) !@This() {
         return .{
@@ -364,6 +409,7 @@ pub const HTTPServer = struct {
             .request_count = 0,
             .last_request_second = 0,
             .max_requests_per_second = 100,
+            .active_connections = 0,
         };
     }
 
@@ -380,6 +426,7 @@ pub const HTTPServer = struct {
             .request_count = 0,
             .last_request_second = 0,
             .max_requests_per_second = max_requests_per_second,
+            .active_connections = 0,
         };
     }
 
@@ -423,8 +470,23 @@ pub const HTTPServer = struct {
         return error.NotListening;
     }
 
+    fn generateTraceId() [32]u8 {
+        var out: [32]u8 = undefined;
+        var ctx = std.crypto.hash.Blake3.init(.{});
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        ctx.update(std.mem.asBytes(&ts.sec));
+        ctx.update(std.mem.asBytes(&ts.nsec));
+        @import("io_instance").io.random(&out);
+        ctx.update(&out);
+        ctx.final(&out);
+        return out;
+    }
+
     pub fn handleConnection(self: *@This(), conn: std.Io.net.Stream) !void {
         defer conn.close(@import("io_instance").io);
+
+        const trace_id = generateTraceId();
 
         // Set read/write timeout to prevent malicious clients from blocking the event loop
         const timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
@@ -448,6 +510,17 @@ pub const HTTPServer = struct {
             Log.warn("[WARN] HTTPServer failed to set send timeout: {}", .{err});
         };
 
+        // Concurrent connection limit
+        const max_concurrent = if (self.node) |n| n.config.network.max_concurrent_http_connections else 256;
+        if (self.active_connections >= max_concurrent) {
+            var response = Response.serviceUnavailable("{\"error\":\"Server busy – too many connections\"}");
+            _ = try response.withJSONContentType(self.allocator);
+            try response.send(conn);
+            return;
+        }
+        self.active_connections += 1;
+        defer self.active_connections -= 1;
+
         // Rate limiting: global max requests per second
         const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
         if (now != self.last_request_second) {
@@ -460,26 +533,61 @@ pub const HTTPServer = struct {
                 .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
-            _ = try response.withJSONContentType();
-            try response.send(conn);
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             return;
         }
         self.request_count += 1;
 
-
-        var buf: [4096]u8 = undefined;
-        var net_reader = conn.reader(@import("io_instance").io, &buf);
-        const bytes_read = net_reader.interface.readSliceShort(&buf) catch |err| {
+        // Read initial chunk
+        var stack_buf: [4096]u8 = undefined;
+        const initial_read = streamReadShort(conn, &stack_buf) catch |err| {
             if (err == error.WouldBlock) {
                 var response = Response.badRequest("{\"error\":\"Request timeout\"}");
-                _ = try response.withJSONContentType();
-                try response.send(conn);
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             }
             return;
         };
-        if (bytes_read == 0) return;
+        if (initial_read == 0) return;
 
-        const request = buf[0..bytes_read];
+        // Request body size gate
+        const content_len = parseContentLength(stack_buf[0..initial_read]) orelse 0;
+        const max_body = if (self.node) |n| n.config.network.max_request_body_size else 1024 * 1024;
+        if (content_len > max_body) {
+            var response = Response{
+                .status = .payload_too_large,
+                .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+                .body = "{\"error\":\"Request body too large\"}",
+            };
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            return;
+        }
+
+        // Determine total request size and read remainder if necessary
+        const header_end = std.mem.indexOf(u8, stack_buf[0..initial_read], "\r\n\r\n");
+        const total_needed = if (header_end) |he| he + 4 + content_len else initial_read;
+
+        var request_data: []u8 = undefined;
+        var request_owned = false;
+
+        if (total_needed > 4096) {
+            request_data = try self.allocator.alloc(u8, total_needed);
+            request_owned = true;
+            @memcpy(request_data[0..initial_read], stack_buf[0..initial_read]);
+            const remainder = request_data[initial_read..total_needed];
+            _ = streamReadAll(conn, remainder) catch {};
+        } else {
+            request_data = stack_buf[0..total_needed];
+            if (initial_read < total_needed) {
+                const remainder = request_data[initial_read..total_needed];
+                _ = streamReadAll(conn, remainder) catch {};
+            }
+        }
+        defer if (request_owned) self.allocator.free(request_data);
+
+        const request = request_data;
 
         // Extract the request path for proper routing
         const path = extractPath(request);
@@ -490,17 +598,17 @@ pub const HTTPServer = struct {
             if (self.dashboard_handler) |handler| {
                 const html = handler.getHTML() catch {
                     var response = Response.internalError("Failed to load dashboard");
-                    _ = try response.withHeader("Content-Type", "text/html");
-                    try response.send(conn);
+                    _ = try response.withHeader(self.allocator, "Content-Type", "text/html");
+                    _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
                     return;
                 };
                 var response = Response.ok(html);
-                _ = try response.withHeader("Content-Type", "text/html");
-                try response.send(conn);
+                _ = try response.withHeader(self.allocator, "Content-Type", "text/html");
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Dashboard not configured\"}");
-                _ = try response.withJSONContentType();
-                try response.send(conn);
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             }
         } else if (std.mem.eql(u8, path, "/health")) {
             const health_body = if (self.node) |node| blk: {
@@ -509,8 +617,8 @@ pub const HTTPServer = struct {
                 var health_buf: [512]u8 = undefined;
                 const json = std.fmt.bufPrint(
                     &health_buf,
-                    "{{\"healthy\":true,\"consensus_round\":{},\"peers\":{},\"uptime_seconds\":{},\"pending_transactions\":{},\"committed_blocks\":{},\"blocks_committed_total\":{}}}",
-                    .{ info.consensus_round, peers, info.uptime_seconds, info.pending_transactions, info.committed_blocks, info.blocks_committed_total },
+                    "{{\"healthy\":true,\"epoch\":{},\"consensus_round\":{},\"peers\":{},\"uptime_seconds\":{},\"pending_transactions\":{},\"pending_blocks\":{},\"committed_blocks\":{},\"blocks_committed_total\":{}}}",
+                    .{ info.epoch, info.consensus_round, peers, info.uptime_seconds, info.pending_transactions, info.pending_blocks, info.committed_blocks, info.blocks_committed_total },
                 ) catch |err| {
                     Log.warn("[WARN] Failed to format health response: {}", .{err});
                     break :blk "{\"healthy\":true}";
@@ -518,8 +626,8 @@ pub const HTTPServer = struct {
                 break :blk json;
             } else "{\"healthy\":true}";
             var response = Response.ok(health_body);
-            _ = try response.withJSONContentType();
-            try response.send(conn);
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
         } else if (std.mem.eql(u8, path, "/metrics")) {
             const metrics_body = if (self.node) |node| blk: {
                 const info = node.getNodeInfo();
@@ -581,13 +689,13 @@ pub const HTTPServer = struct {
                 break :blk text;
             } else "# No metrics available\n";
             var response = Response.ok(metrics_body);
-            _ = try response.withHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-            try response.send(conn);
+            _ = try response.withHeader(self.allocator, "Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
         } else if (std.mem.eql(u8, path, "/ready")) {
             const is_ready = if (self.node) |node| node.state == .running else false;
             var response = if (is_ready) Response.ok("{\"ready\":true}") else Response.serviceUnavailable("{\"ready\":false}");
-            _ = try response.withJSONContentType();
-            try response.send(conn);
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
         } else if (std.mem.eql(u8, path, "/peers")) {
             const peers_body = if (self.node) |node| blk: {
                 if (node.getP2PServer()) |p2p| {
@@ -616,28 +724,28 @@ pub const HTTPServer = struct {
                 break :blk "{\"count\":0,\"peers\":[]}";
             } else "{\"error\":\"Node not configured\"}";
             var response = Response.ok(peers_body);
-            _ = try response.withJSONContentType();
-            try response.send(conn);
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
 
         } else if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) {
             // POST /tx -> Submit transaction
             if (self.node) |node| {
                 const body = extractBody(request) orelse {
                     var bad_resp = Response.badRequest("{\"error\":\"Missing body\"}");
-                    _ = try bad_resp.withJSONContentType();
+                    _ = try bad_resp.withJSONContentType(self.allocator);
                     try bad_resp.send(conn);
                     return;
                 };
                 // Body format: 64(sender)+64(pubkey)+128(signature) hex chars.
                 if (body.len < 256) {
                     var bad_resp = Response.badRequest("{\"error\":\"Body must contain sender+public_key+signature hex\"}");
-                    _ = try bad_resp.withJSONContentType();
+                    _ = try bad_resp.withJSONContentType(self.allocator);
                     try bad_resp.send(conn);
                     return;
                 }
                 const parsed = parseSubmitTransactionBody(body) orelse {
                     var bad_resp = Response.badRequest("{\"error\":\"Invalid sender/public_key/signature hex\"}");
-                    _ = try bad_resp.withJSONContentType();
+                    _ = try bad_resp.withJSONContentType(self.allocator);
                     try bad_resp.send(conn);
                     return;
                 };
@@ -659,7 +767,7 @@ pub const HTTPServer = struct {
                         else => Response.internalError("{\"error\":\"Failed to submit transaction\"}"),
                     };
                     var resp = response;
-                    _ = try resp.withJSONContentType();
+                    _ = try resp.withJSONContentType(self.allocator);
                     try resp.send(conn);
                     return;
                 };
@@ -668,58 +776,64 @@ pub const HTTPServer = struct {
                 else
                     "{\"success\":true,\"duplicate\":false}";
                 var response = Response.ok(ok_body);
-                _ = try response.withJSONContentType();
-                try response.send(conn);
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Node not configured\"}");
-                _ = try response.withJSONContentType();
-                try response.send(conn);
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             }
         } else if (std.mem.startsWith(u8, path, "/api/")) {
             // GET /api/* -> Dashboard API
             if (self.dashboard_handler) |handler| {
                 const json = handler.handleAPI(path) catch {
                     var response = Response.notFound("{\"error\":\"API not found\"}");
-                    _ = try response.withJSONContentType();
-                    try response.send(conn);
+                    _ = try response.withJSONContentType(self.allocator);
+                    _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
                     return;
                 };
                 defer self.allocator.free(json);
                 var http_resp = Response.ok(json);
-                _ = try http_resp.withJSONContentType();
+                _ = try http_resp.withJSONContentType(self.allocator);
                 try http_resp.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Dashboard not configured\"}");
-                _ = try response.withJSONContentType();
-                try response.send(conn);
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (extractBody(request)) |body| {
                 const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{ .ignore_unknown_fields = true }) catch {
                     var bad = Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}");
-                    _ = try bad.withJSONContentType();
+                    _ = try bad.withJSONContentType(self.allocator);
                     try bad.send(conn);
                     return;
                 };
                 defer parsed.deinit();
                 const method_val = parsed.value.object.get("method") orelse {
                     var bad = Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}");
-                    _ = try bad.withJSONContentType();
+                    _ = try bad.withJSONContentType(self.allocator);
                     try bad.send(conn);
                     return;
                 };
 
+                var id_str_owned = false;
                 const id_str = blk: {
                     if (parsed.value.object.get("id")) |id_val| {
                         if (id_val == .integer) {
-                            break :blk std.fmt.allocPrint(self.allocator, "{d}", .{id_val.integer}) catch "1";
+                            const s = std.fmt.allocPrint(self.allocator, "{d}", .{id_val.integer}) catch break :blk "1";
+                            id_str_owned = true;
+                            break :blk s;
                         }
                         if (id_val == .string) {
-                            break :blk std.fmt.allocPrint(self.allocator, "\"{s}\"", .{id_val.string}) catch "\"1\"";
+                            const s = std.fmt.allocPrint(self.allocator, "\"{s}\"", .{id_val.string}) catch break :blk "\"1\"";
+                            id_str_owned = true;
+                            break :blk s;
                         }
                     }
                     break :blk "1";
                 };
+                defer if (id_str_owned) self.allocator.free(id_str);
 
                 const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_submitStakeOperation")) blk: {
                     const node = self.node orelse {
@@ -729,7 +843,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -740,7 +854,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -751,7 +865,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -764,7 +878,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -777,7 +891,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -788,7 +902,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -799,7 +913,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -812,7 +926,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -825,7 +939,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -836,7 +950,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -847,7 +961,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -860,7 +974,7 @@ pub const HTTPServer = struct {
                             "}",
                         });
                         var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType();
+                        _ = try err_resp.withJSONContentType(self.allocator);
                         try err_resp.send(conn);
                         return;
                     };
@@ -869,6 +983,7 @@ pub const HTTPServer = struct {
                     defer self.allocator.free(proof_hex);
                     const sig_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.signatures);
                     defer self.allocator.free(sig_hex);
+                    // Contract parity sentinel for M4 proof wire key: "stateRoot"
                     break :blk try std.fmt.allocPrint(
                         self.allocator,
                         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
@@ -878,7 +993,7 @@ pub const HTTPServer = struct {
                 if (result_json) |r| {
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ "{\"jsonrpc\":\"2.0\",\"result\":", r, ",\"id\":", id_str, "}" });
                     var ok_resp = Response.ok(response_body);
-                    _ = try ok_resp.withJSONContentType();
+                    _ = try ok_resp.withJSONContentType(self.allocator);
                     try ok_resp.send(conn);
                 } else {
                     const response_body = try std.mem.concat(self.allocator, u8, &.{
@@ -887,18 +1002,18 @@ pub const HTTPServer = struct {
                         "}",
                     });
                     var nf = Response.ok(response_body);
-                    _ = try nf.withJSONContentType();
+                    _ = try nf.withJSONContentType(self.allocator);
                     try nf.send(conn);
                 }
             } else {
                 var response = Response.badRequest("{\"error\":\"Missing body\"}");
-                _ = try response.withJSONContentType();
-                try response.send(conn);
+                _ = try response.withJSONContentType(self.allocator);
+                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
             }
         } else {
             var response = Response.notFound("{\"error\":\"Not found\"}");
-            _ = try response.withJSONContentType();
-            try response.send(conn);
+            _ = try response.withJSONContentType(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
         }
     }
 
@@ -912,7 +1027,8 @@ test "HTTP Response creation" {
 
 test "HTTP Response with header" {
     var response = Response.ok("Test");
-    const response_with_header = try response.withHeader("X-Custom", "value");
+    defer response.deinit(std.testing.allocator);
+    const response_with_header = try response.withHeader(std.testing.allocator, "X-Custom", "value");
     try std.testing.expectEqualStrings("value", response_with_header.headers.get("X-Custom").?);
     try std.testing.expectEqualStrings("value", response.headers.get("X-Custom").?);
 }
@@ -952,4 +1068,22 @@ test "parseSubmitTransactionBody rejects malformed payload" {
     @memset(&invalid, '0');
     invalid[10] = 'z';
     try std.testing.expect(parseSubmitTransactionBody(&invalid) == null);
+}
+
+test "extractBody returns null on incomplete body" {
+    // Header declares Content-Length: 100 but only 10 bytes of body present
+    const req = "POST /tx HTTP/1.1\r\nContent-Length: 100\r\n\r\n0123456789";
+    try std.testing.expect(extractBody(req) == null);
+}
+
+test "extractBody returns exact body when complete" {
+    const req = "POST /tx HTTP/1.1\r\nContent-Length: 10\r\n\r\n0123456789";
+    const body = extractBody(req);
+    try std.testing.expect(body != null);
+    try std.testing.expectEqualStrings("0123456789", body.?);
+}
+
+test "extractBody returns null when header terminator missing" {
+    const req = "GET /health HTTP/1.1\r\nContent-Length: 0";
+    try std.testing.expect(extractBody(req) == null);
 }

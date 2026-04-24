@@ -6,7 +6,8 @@ const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
 
 pub fn recoverFromDisk(object_store: ?*ObjectStore) !void {
     if (object_store) |store| {
-        _ = try store.recover();
+        const result = try store.recover();
+        if (result.errors > 0) return error.RecoveryFailed;
     }
     Log.info("Node recovered from disk", .{});
 }

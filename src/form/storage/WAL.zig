@@ -22,6 +22,7 @@ pub const WalRecordType = enum(u8) {
     m4_state_snapshot = 14,
     m4_epoch_advance = 15,
     m4_validator_set_rotate = 16,
+    m4_governance_vote = 17,
 };
 
 /// WAL record header (16 bytes)
@@ -64,6 +65,7 @@ pub const RecoveryResult = struct {
 /// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
 const CompatFile = struct {
     file: std.Io.File,
+    read_pos: u64 = 0,
 
     pub fn close(self: CompatFile) void {
         self.file.close(@import("io_instance").io);
@@ -73,9 +75,8 @@ const CompatFile = struct {
         return self.file.stat(@import("io_instance").io);
     }
 
-    pub fn seekTo(self: CompatFile, offset: u64) !void {
-        var reader = self.file.reader(@import("io_instance").io, &.{});
-        try reader.seekTo(offset);
+    pub fn seekTo(self: *CompatFile, offset: u64) !void {
+        self.read_pos = offset;
     }
 
     pub fn writeAll(self: CompatFile, bytes: []const u8) !void {
@@ -90,11 +91,10 @@ const CompatFile = struct {
         try self.file.setLength(@import("io_instance").io, length);
     }
 
-    pub fn readAll(self: CompatFile, buf: []u8) !usize {
-        var reader = self.file.reader(@import("io_instance").io, &.{});
-        return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-            error.ReadFailed => return reader.err.?,
-        };
+    pub fn readAll(self: *CompatFile, buf: []u8) !usize {
+        const n = try self.file.readPositionalAll(@import("io_instance").io, buf, self.read_pos);
+        self.read_pos += n;
+        return n;
     }
 };
 /// Write-Ahead Log for durability
@@ -191,14 +191,12 @@ pub const WAL = struct {
         return try initWithOptions(allocator, db_path, null);
     }
     pub fn deinit(self: *Self) void {
-        // Flush any pending async writes first. Legacy behavior is preserved
-        // verbatim (seek to current_offset, write, sync) to avoid altering
-        // teardown semantics in this perf-focused change.
+        // Flush any pending async writes first.
         if (self.async_write) |*async_w| {
             if (async_w.write_offset > 0) {
+                const write_offset = async_w.write_offset;
                 const data = async_w.getAndReset();
-                self.file.seekTo(self.current_offset) catch {};
-                self.file.writeAll(data) catch {};
+                self.file.file.writePositionalAll(@import("io_instance").io, data, self.current_offset - write_offset) catch {};
                 self.syncBarrier() catch {};
             }
             async_w.deinit();
@@ -228,8 +226,7 @@ pub const WAL = struct {
             if (n != data.len) return error.ShortWrite;
             return;
         }
-        try self.file.seekTo(offset);
-        try self.file.writeAll(data);
+        try self.file.file.writePositionalAll(@import("io_instance").io, data, offset);
         try self.file.sync();
     }
 
@@ -251,10 +248,9 @@ pub const WAL = struct {
         // Fallback path: no gather syscall available, write each segment at
         // incrementing offsets, then one fsync.
         var cur = offset;
-        try self.file.seekTo(cur);
         for (iovecs) |iov| {
             const bytes = @as([*]const u8, @ptrCast(iov.base))[0..iov.len];
-            try self.file.writeAll(bytes);
+            try self.file.file.writePositionalAll(@import("io_instance").io, bytes, cur);
             cur += iov.len;
         }
         try self.file.sync();
@@ -384,11 +380,11 @@ pub const WAL = struct {
         const async_w = &self.async_write.?;
 
         if (async_w.write_offset > 0) {
+            const write_offset = async_w.write_offset;
             const data = async_w.getAndReset();
-            // Preserve the existing offset-computation behavior (buffered bytes
-            // were accounted in current_offset at append time), but collapse
-            // write+fsync on the io_uring path.
-            try self.writeDurable(data, self.current_offset - async_w.write_offset);
+            // Buffered bytes were accounted in current_offset at append time,
+            // so compute the start offset before getAndReset zeroes write_offset.
+            try self.writeDurable(data, self.current_offset - write_offset);
         }
     }
     
@@ -400,6 +396,7 @@ pub const WAL = struct {
 
     /// Clear WAL after commit
     pub fn clear(self: *Self) !void {
+        try self.flushAsync();
         try self.file.setEndPos(0);
         try self.syncBarrier();
         self.current_offset = 0;
@@ -413,6 +410,7 @@ pub const WAL = struct {
 
     /// Recovery with options
     pub fn replayWithOptions(self: *Self, callback: ReplayCallback, ctx: *anyopaque, options: RecoveryOptions) !RecoveryResult {
+        try self.flushAsync();
         try self.file.seekTo(0);
 
         var buf: [@sizeOf(WalRecordHeader)]u8 = undefined;
@@ -464,9 +462,9 @@ pub const WAL = struct {
 
             // Read value
             var value_buf: ?[]u8 = null;
+            defer if (value_buf) |v| self.allocator.free(v);
             if (header.value_len > 0) {
                 value_buf = try self.allocator.alloc(u8, header.value_len);
-                defer if (value_buf) |v| self.allocator.free(v);
                 _ = try self.file.readAll(value_buf.?);
             }
 

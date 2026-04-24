@@ -166,14 +166,30 @@ Configuration is in `deploy/config/production.toml`.
 ### Known Issues Already Fixed
 
 **13-Hour Freeze**: The node previously froze after ~13 hours because P2P socket I/O had no timeouts. Half-open TCP connections would block `writeAll()` indefinitely.
-- Socket timeouts are now enforced (`SO_RCVTIMEO` / `SO_SNDTIMEO` = 100ms)
+- Socket timeouts are now enforced (`SO_RCVTIMEO` / `SO_SNDTIMEO` = 100ms) — set **before** handshake so a stalled peer cannot freeze the accept loop
 - HTTP connections have 5-second read/write timeouts
 - Event loop limits P2P message batch size to 10 per peer
+- Handshake failure no longer leaks sockets: `errdefer` closes the raw stream when `PeerConnection.init` or `performHandshake` fails
+- Outbound `dial()` now respects `max_connections` and cleans up on failure
 
 **Double-Free in P2P**: `PeerConnection.deinit()` used to `destroy(self)`, but `P2PServer` also destroyed the same pointer — a textbook double-free.
 - `PeerConnection.deinit()` now only closes the stream
 - `QUICPeerConnection.deinit()` no longer self-destructs
 - Memory ownership is strictly: `P2PServer` creates → `P2PServer` destroys
+
+**QUIC Peer Type Confusion / Wrong-Size Free**: `handleQUICConnection` used `@ptrCast` to store `*QUICPeerConnection` in the TCP `peers` map, causing `removePeer` to free with the wrong size.
+- Added a separate `quic_peers` map; all peer operations iterate both maps
+- `QUICConnection.setTCPConnection` now sets 100ms socket timeouts
+- `QUICTransport.closeConnection` now calls `deinit()` instead of just `close()`, fixing stream/receive_buffer leaks
+
+**Consensus Loop Blocking**: A single vote could trigger a large batch of block executions inside `processPeerMessages()`, freezing the main loop.
+- `ConsensusIntegration` uses deferred commit: `onVoteReceived` / `checkAndPropose` set `should_commit = true`
+- The main loop calls `ci.maybeCommit()` **after** `processPeerMessages()`, so heavy commit work never blocks P2P recv
+
+**HTTP Layer Robustness**
+- `HTTPServer.handleConnection` now enforces `max_concurrent_http_connections` (returns 503 when exceeded)
+- Requests with `Content-Length` larger than the 4096-byte stack buffer are now read into a heap-allocated buffer so the full body is available
+- `extractBody` returns `null` when the body is shorter than `Content-Length`, preventing silent truncation of large POSTs
 
 **Dashboard Panic / Leaks**: Integer underflow in round arithmetic and missing `ArrayList.deinit()` calls caused panics and memory growth.
 
@@ -212,6 +228,26 @@ When modifying storage code, always:
 1. Log to WAL before modifying memtable
 2. Flush memtable to SSTable when full
 3. Include checkpoint verification in `Node.recoverFromDisk()`
+
+### Checkpoint Commitment Consistency
+
+`Checkpoint.digest()`, `serialize()`, and `signingCommitment()` must all bind the **same** data scope. Any change to `serialize()` must be mirrored in `digest()` so that chain-linking (`verify()`) and signature verification agree on the canonical commitment. Rule: `digest()` should hash the full `serialize()` output.
+
+### WAL Recovery for M4 State
+
+Any mutable M4 state (stake, governance, epoch) must:
+1. Append a WAL record **before** or **immediately after** the in-memory mutation
+2. Provide both `appendXxxWal()` (write) and `replayWalExtension()` handler (read)
+3. Update `LSMTree.recoverWithOptions` switch if adding a new `WalRecordType`
+4. Update `Node.replayMainnetM4Wal` switch to route the new record type
+
+### M4 State Snapshot
+
+For fast recovery (avoiding replaying thousands of individual WAL records):
+- Implement `serializeStateSnapshot()` that dumps all in-memory M4 state to a binary blob
+- Implement `deserializeStateSnapshot(blob)` that replaces all in-memory state from the blob
+- Call `appendStateSnapshotWal()` during graceful shutdown (see `Node.deinit()`)
+- The snapshot WAL record is replayed like any other record in `replayWalExtension()`
 
 ### Error Handling
 

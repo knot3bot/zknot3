@@ -33,6 +33,7 @@ pub const Transaction = struct {
     }
 
     /// Compute transaction digest (the data that gets signed)
+    /// Protocol v1 frozen commitment: sender || inputs || program || gas_budget (be64) || sequence (be64)
     pub fn digest(self: Self) [32]u8 {
         var ctx = std.crypto.hash.Blake3.init(.{});
         ctx.update(&self.sender);
@@ -40,9 +41,104 @@ pub const Transaction = struct {
             ctx.update(id.asBytes());
         }
         ctx.update(self.program);
+        var gas_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &gas_buf, self.gas_budget, .big);
+        ctx.update(&gas_buf);
+        var seq_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &seq_buf, self.sequence, .big);
+        ctx.update(&seq_buf);
         var tx_digest: [32]u8 = undefined;
         ctx.final(&tx_digest);
         return tx_digest;
+    }
+
+    /// Canonical serialization for protocol v1 wire format.
+    /// Layout: sender[32] | inputs_len[4] | inputs[] | program_len[4] | program[] | gas_budget[8] | sequence[8] | sig_flag[1] | sig[64]? | pk[32]?
+    pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        var buf = std.ArrayList(u8).empty;
+        errdefer buf.deinit(allocator);
+        try buf.appendSlice(allocator, &self.sender);
+        var inputs_len: [4]u8 = undefined;
+        std.mem.writeInt(u32, &inputs_len, @intCast(self.inputs.len), .big);
+        try buf.appendSlice(allocator, &inputs_len);
+        for (self.inputs) |id| {
+            try buf.appendSlice(allocator, id.asBytes());
+        }
+        var prog_len: [4]u8 = undefined;
+        std.mem.writeInt(u32, &prog_len, @intCast(self.program.len), .big);
+        try buf.appendSlice(allocator, &prog_len);
+        try buf.appendSlice(allocator, self.program);
+        var gas_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &gas_buf, self.gas_budget, .big);
+        try buf.appendSlice(allocator, &gas_buf);
+        var seq_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &seq_buf, self.sequence, .big);
+        try buf.appendSlice(allocator, &seq_buf);
+        const has_sig: u8 = if (self.signature != null) 1 else 0;
+        try buf.append(allocator, has_sig);
+        if (self.signature) |sig| {
+            try buf.appendSlice(allocator, &sig);
+        }
+        const has_pk: u8 = if (self.public_key != null) 1 else 0;
+        try buf.append(allocator, has_pk);
+        if (self.public_key) |pk| {
+            try buf.appendSlice(allocator, &pk);
+        }
+        return buf.toOwnedSlice(allocator);
+    }
+
+    /// Deserialize protocol v1 wire format.
+    pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !Transaction {
+        if (bytes.len < 32 + 4 + 4 + 8 + 8 + 1 + 1) return error.MalformedTransaction;
+        var pos: usize = 0;
+        const sender: [32]u8 = bytes[0..32].*;
+        pos += 32;
+        const inputs_len = std.mem.readInt(u32, bytes[pos..][0..4], .big);
+        pos += 4;
+        const input_size: usize = @as(usize, inputs_len) * 32;
+        if (bytes.len < pos + input_size) return error.MalformedTransaction;
+        var inputs = try allocator.alloc(core.ObjectID, inputs_len);
+        errdefer allocator.free(inputs);
+        for (0..inputs_len) |i| {
+            inputs[i] = core.ObjectID{ .bytes = bytes[pos..][0..32].* };
+            pos += 32;
+        }
+        const prog_len = std.mem.readInt(u32, bytes[pos..][0..4], .big);
+        pos += 4;
+        if (bytes.len < pos + prog_len) return error.MalformedTransaction;
+        const program = try allocator.dupe(u8, bytes[pos..][0..prog_len]);
+        errdefer allocator.free(program);
+        pos += prog_len;
+        if (bytes.len < pos + 8 + 8 + 1 + 1) return error.MalformedTransaction;
+        const gas_budget = std.mem.readInt(u64, bytes[pos..][0..8], .big);
+        pos += 8;
+        const sequence = std.mem.readInt(u64, bytes[pos..][0..8], .big);
+        pos += 8;
+        const has_sig = bytes[pos];
+        pos += 1;
+        var signature: ?[64]u8 = null;
+        if (has_sig != 0) {
+            if (bytes.len < pos + 64) return error.MalformedTransaction;
+            signature = bytes[pos..][0..64].*;
+            pos += 64;
+        }
+        const has_pk = bytes[pos];
+        pos += 1;
+        var public_key: ?[32]u8 = null;
+        if (has_pk != 0) {
+            if (bytes.len < pos + 32) return error.MalformedTransaction;
+            public_key = bytes[pos..][0..32].*;
+            pos += 32;
+        }
+        return .{
+            .sender = sender,
+            .inputs = inputs,
+            .program = program,
+            .gas_budget = gas_budget,
+            .sequence = sequence,
+            .signature = signature,
+            .public_key = public_key,
+        };
     }
 
     /// Verify the transaction signature
@@ -124,29 +220,35 @@ pub const Ingress = struct {
             tx.deinit(self.allocator);
         }
         self.verified.deinit(self.allocator);
+        self.allocator.destroy(self);
     }
 
-    /// Submit a new transaction
+    /// Submit a new transaction (deep-copies slices so Ingress owns the data)
     pub fn submit(self: *Self, transaction: Transaction) !void {
         if (self.pending.items.len >= self.config.max_pending) {
             return error.TooManyPending;
         }
-        try self.pending.append(self.allocator, transaction);
+        var tx_copy = transaction;
+        tx_copy.inputs = try self.allocator.dupe(core.ObjectID, transaction.inputs);
+        tx_copy.program = try self.allocator.dupe(u8, transaction.program);
+        try self.pending.append(self.allocator, tx_copy);
     }
 
     /// Verify pending transactions with full signature verification
     pub fn verify(self: *Self) !void {
         // Move transactions from pending to verified after verification
         while (self.pending.items.len > 0) {
-            const tx = self.pending.pop().?;
+            var tx = self.pending.pop().?;
             // 1. Check minimum gas budget
             if (tx.gas_budget < self.config.min_gas_budget) {
+                tx.deinit(self.allocator);
                 continue;
             }
 
             // 2. Verify signature if required
             if (self.config.require_signatures) {
                 if (!tx.verifySignature()) {
+                    tx.deinit(self.allocator);
                     continue; // Invalid signature - discard
                 }
             }
@@ -178,11 +280,11 @@ pub const Ingress = struct {
 
 test "Ingress basic operations" {
     const allocator = std.testing.allocator;
-    const config = IngressConfig{};
+    const config = IngressConfig{ .require_signatures = false };
     var ingress = try Ingress.init(allocator, config);
     defer ingress.deinit();
 
-    const tx = Transaction{
+    var tx = Transaction{
         .sender = [_]u8{1} ** 32,
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
@@ -191,6 +293,7 @@ test "Ingress basic operations" {
         .signature = null,
         .public_key = null,
     };
+    defer tx.deinit(allocator);
 
     try ingress.submit(tx);
     try std.testing.expect(ingress.pendingCount() == 1);
@@ -256,7 +359,7 @@ test "Transaction without signature fails when signatures required" {
     var ingress = try Ingress.init(allocator, config);
     defer ingress.deinit();
 
-    const tx = Transaction{
+    var tx = Transaction{
         .sender = [_]u8{1} ** 32,
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
@@ -265,6 +368,7 @@ test "Transaction without signature fails when signatures required" {
         .signature = null, // No signature
         .public_key = null,
     };
+    defer tx.deinit(allocator);
 
     try ingress.submit(tx);
     try ingress.verify();
@@ -279,7 +383,7 @@ test "Transaction without signature passes when signatures disabled" {
     var ingress = try Ingress.init(allocator, config);
     defer ingress.deinit();
 
-    const tx = Transaction{
+    var tx = Transaction{
         .sender = [_]u8{1} ** 32,
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
@@ -288,6 +392,7 @@ test "Transaction without signature passes when signatures disabled" {
         .signature = null,
         .public_key = null,
     };
+    defer tx.deinit(allocator);
 
     try ingress.submit(tx);
     try ingress.verify();

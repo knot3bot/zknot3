@@ -3,6 +3,7 @@
 //! - PublicKey compressed: 48 bytes (G1)
 //! - Signature compressed: 96 bytes (G2)
 
+const std = @import("std");
 const blst = @import("blst");
 
 pub const PublicKey = [48]u8;
@@ -60,6 +61,44 @@ pub fn verifyAggregated(message: []const u8, aggregated_pk: PublicKey, aggregate
     const pk = decodePk(aggregated_pk) orelse return false;
     const sig = decodeSig(aggregated_sig) orelse return false;
     return sig.core_verify(&pk, true, message, Dst, null) == .SUCCESS;
+}
+
+
+test "BLS sign and verify single" {
+    const sk = [_]u8{0x31} ** 32;
+    const pk = derivePublicKey(sk);
+    const msg = "hello";
+    const sig = sign(sk, msg);
+    try std.testing.expect(verifyAggregated(msg, pk, sig));
+}
+
+test "BLS aggregate sign and verify" {
+    const sk1 = [_]u8{0x31} ** 32;
+    const sk2 = [_]u8{0x32} ** 32;
+    const pk1 = derivePublicKey(sk1);
+    const pk2 = derivePublicKey(sk2);
+    const msg = "hello";
+    const sig1 = sign(sk1, msg);
+    const sig2 = sign(sk2, msg);
+    const agg_sig = aggregateSig(&[_]Signature{sig1, sig2});
+    const agg_pk = aggregatePk(&[_]PublicKey{pk1, pk2});
+    try std.testing.expect(verifyAggregated(msg, agg_pk, agg_sig));
+}
+
+test "BLS aggregate 3 signers" {
+    const sk1 = [_]u8{0x31} ** 32;
+    const sk2 = [_]u8{0x32} ** 32;
+    const sk3 = [_]u8{0x33} ** 32;
+    const pk1 = derivePublicKey(sk1);
+    const pk2 = derivePublicKey(sk2);
+    const pk3 = derivePublicKey(sk3);
+    const msg = [_]u8{0xAB} ** 32;
+    const sig1 = sign(sk1, &msg);
+    const sig2 = sign(sk2, &msg);
+    const sig3 = sign(sk3, &msg);
+    const agg_sig = aggregateSig(&[_]Signature{sig1, sig2, sig3});
+    const agg_pk = aggregatePk(&[_]PublicKey{pk1, pk2, pk3});
+    try std.testing.expect(verifyAggregated(&msg, agg_pk, agg_sig));
 }
 
 /// Compatibility helper for legacy callers.

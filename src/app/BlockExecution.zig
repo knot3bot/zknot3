@@ -42,6 +42,7 @@ pub fn executePayloadTransactions(ctx: *ExecuteContext, payload: []const u8) ![]
                 .status = if (err == error.OutOfGas) .out_of_gas else .invalid_bytecode,
                 .gas_used = 0,
                 .output_objects = &.{},
+                .events = &.{},
             });
             continue;
         };

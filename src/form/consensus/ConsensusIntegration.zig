@@ -48,6 +48,10 @@ pub const ConsensusIntegration = struct {
     last_commit_drain: usize = 0,
     quarantined_peers: std.AutoArrayHashMapUnmanaged([32]u8, i64) = .empty,
     equivocation_events: u64 = 0,
+    /// Deferred commit flag. Set when a vote/block suggests a commit may be
+    /// possible; cleared by `maybeCommit` in the main loop. Prevents the
+    /// heavy commit path from blocking P2P message processing.
+    should_commit: bool = false,
 
     const Self = @This();
 
@@ -151,7 +155,7 @@ pub const ConsensusIntegration = struct {
                 });
             },
         }
-        try self.tryCommit();
+        self.should_commit = true;
     }
 
     pub fn onCertificateReceived(_self: *Self, _: [32]u8, _: []const u8) !void {
@@ -228,6 +232,17 @@ pub const ConsensusIntegration = struct {
         _ = self.commit_batch.observe(drained);
     }
 
+    /// Run the deferred commit path if `should_commit` was set during message
+    /// processing or proposal. Called from the main loop so heavy commit work
+    /// does not block P2P recv.
+    pub fn maybeCommit(self: *Self) void {
+        if (!self.should_commit) return;
+        self.should_commit = false;
+        self.tryCommit() catch |err| {
+            Log.err("maybeCommit tryCommit error: {s}", .{@errorName(err)});
+        };
+    }
+
     pub fn checkAndPropose(self: *Self) !void {
         if (!self.node.isRunning()) return;
 
@@ -275,7 +290,7 @@ pub const ConsensusIntegration = struct {
 
                 // Self-vote to ensure block can be committed even without peers
                 try self.createAndBroadcastVote(b);
-                try self.tryCommit();
+                self.should_commit = true;
             }
         }
     }
@@ -288,13 +303,18 @@ pub const ConsensusIntegration = struct {
         var dead_peers: std.ArrayList([32]u8) = .empty;
         defer dead_peers.deinit(self.allocator);
         var processed_messages: usize = 0;
-        if (self.p2p_server.peers.count() == 0) return 0;
+        const total_peers = self.p2p_server.peers.count() + self.p2p_server.quic_peers.count();
+        if (total_peers == 0) return 0;
 
         var peer_ids: std.ArrayList([32]u8) = .empty;
         defer peer_ids.deinit(self.allocator);
 
         var it_collect = self.p2p_server.peers.iterator();
         while (it_collect.next()) |entry| {
+            try peer_ids.append(self.allocator, entry.key_ptr.*);
+        }
+        var qit_collect = self.p2p_server.quic_peers.iterator();
+        while (qit_collect.next()) |entry| {
             try peer_ids.append(self.allocator, entry.key_ptr.*);
         }
         if (peer_ids.items.len == 0) return 0;
@@ -362,14 +382,28 @@ pub const ConsensusIntegration = struct {
             for (0..per_peer_batch_limit) |_| {
                 if (processed_messages >= self.max_messages_per_tick) break :outer;
 
-                // Re-validate peer before each recv in case map mutated during callbacks
-                const peer_conn = self.p2p_server.peers.getPtr(peer_id) orelse break;
-                const msg = peer_conn.*.recvMessage() catch |err| switch (err) {
-                    error.WouldBlock => break,
-                    else => {
-                        peer_dead = true;
-                        break;
-                    },
+                // Re-validate peer before each recv in case map mutated during callbacks.
+                // Try TCP peers first, then QUIC peers.
+                const msg = blk: {
+                    if (self.p2p_server.peers.getPtr(peer_id)) |peer| {
+                        break :blk peer.*.recvMessage() catch |err| switch (err) {
+                            error.WouldBlock => break,
+                            else => {
+                                peer_dead = true;
+                                break;
+                            },
+                        };
+                    }
+                    if (self.p2p_server.quic_peers.getPtr(peer_id)) |peer| {
+                        break :blk peer.*.recvMessage() catch |err| switch (err) {
+                            error.WouldBlock => break,
+                            else => {
+                                peer_dead = true;
+                                break;
+                            },
+                        };
+                    }
+                    break;
                 };
                 if (msg) |m| {
                     defer self.allocator.free(m.payload);

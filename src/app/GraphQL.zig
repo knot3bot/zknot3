@@ -45,6 +45,7 @@ pub const Schema = struct {
         query_type: ?*ObjectType = null,
         mutation_type: ?*ObjectType = null,
         types: std.StringArrayHashMapUnmanaged(*const TypeDefinition),
+        object_types: std.ArrayList(*ObjectType),
 
     /// Type definition
     pub const TypeDefinition = struct {
@@ -102,6 +103,7 @@ pub const Schema = struct {
             .query_type = null,
             .mutation_type = null,
             .types = std.StringArrayHashMapUnmanaged(*const TypeDefinition).empty,
+            .object_types = std.ArrayList(*ObjectType).empty,
         };
 
         // Build Knot3-compatible schema
@@ -113,7 +115,7 @@ pub const Schema = struct {
     /// Build Knot3-compatible GraphQL schema
     fn buildKnot3Schema(self: *Self) !void {
         // Register Knot3Object type
-        try self.registerObject("Knot3Object", &.{
+        _ = try self.registerObject("Knot3Object", &.{
             .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveObjectId },
             .{ .name = "version", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveObjectVersion },
             .{ .name = "owner", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveObjectOwner },
@@ -124,7 +126,7 @@ pub const Schema = struct {
         }, &.{});
 
         // Register Knot3Checkpoint type
-        try self.registerObject("Checkpoint", &.{
+        _ = try self.registerObject("Checkpoint", &.{
             .{ .name = "sequence", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointSequence },
             .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointDigest },
             .{ .name = "timestamp", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCheckpointTimestamp },
@@ -132,7 +134,7 @@ pub const Schema = struct {
         }, &.{});
 
         // Register Knot3Transaction type
-        try self.registerObject("Knot3Transaction", &.{
+        _ = try self.registerObject("Knot3Transaction", &.{
             .{ .name = "digest", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveTxDigest },
             .{ .name = "sender", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .args = &.{}, .resolve = resolveTxSender },
             .{ .name = "gasBudget", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveTxGasBudget },
@@ -142,7 +144,7 @@ pub const Schema = struct {
         }, &.{});
 
         // Register Coin type
-        try self.registerObject("Coin", &.{
+        _ = try self.registerObject("Coin", &.{
             .{ .name = "coinObjectId", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .args = &.{}, .resolve = resolveCoinObjectId },
             .{ .name = "coinType", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .args = &.{}, .resolve = resolveCoinType },
             .{ .name = "balance", .type = .{ .kind = .Scalar, .named_type = "Int", .of_type = null }, .args = &.{}, .resolve = resolveCoinBalance },
@@ -150,17 +152,17 @@ pub const Schema = struct {
         }, &.{});
 
         // M4 mainnet extension types
-        try self.registerObject("StakeOperationReceipt", &.{
+        _ = try self.registerObject("StakeOperationReceipt", &.{
             .{ .name = "status", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveStakeOpStatus },
             .{ .name = "operationId", .type = m4_gql_nn.int_req, .args = &.{}, .resolve = resolveStakeOpId },
         }, &.{});
 
-        try self.registerObject("GovernanceProposalReceipt", &.{
+        _ = try self.registerObject("GovernanceProposalReceipt", &.{
             .{ .name = "status", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveGovStatus },
             .{ .name = "proposalId", .type = m4_gql_nn.int_req, .args = &.{}, .resolve = resolveGovProposalId },
         }, &.{});
 
-        try self.registerObject("CheckpointProof", &.{
+        _ = try self.registerObject("CheckpointProof", &.{
             .{ .name = "sequence", .type = m4_gql_nn.int_req, .args = &.{}, .resolve = resolveProofSequence },
             .{ .name = "stateRoot", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofStateRoot },
             .{ .name = "proof", .type = m4_gql_nn.string_req, .args = &.{}, .resolve = resolveProofBytes },
@@ -170,7 +172,7 @@ pub const Schema = struct {
         }, &.{});
 
         // Build query type with root fields
-        try self.registerObject("Query", &.{
+        self.query_type = try self.registerObject("Query", &.{
             .{ .name = "knot3_getObject", .type = .{ .kind = .Object, .named_type = "Knot3Object", .of_type = null }, .args = &.{
                 .{ .name = "id", .type = .{ .kind = .Scalar, .named_type = "ID", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetObject },
@@ -196,7 +198,7 @@ pub const Schema = struct {
         }, &.{});
 
         // Mutation root for M4 write-like hooks with typed inputs.
-        try self.registerObject("Mutation", &.{
+        self.mutation_type = try self.registerObject("Mutation", &.{
             .{ .name = "knot3_submitStakeOperation", .type = m4_gql_nn.stake_receipt_req, .args = &.{
                 .{ .name = "validator", .type = m4_gql_nn.id_req, .default_value = null },
                 .{ .name = "delegator", .type = m4_gql_nn.id_req, .default_value = null },
@@ -215,7 +217,7 @@ pub const Schema = struct {
     }
 
     /// Register an object type
-    fn registerObject(self: *Self, name: []const u8, fields: []const FieldDefinition, interfaces: []const []const u8) !void {
+    fn registerObject(self: *Self, name: []const u8, fields: []const FieldDefinition, interfaces: []const []const u8) !*ObjectType {
         const obj = try self.allocator.create(ObjectType);
         obj.* = .{
             .name = name,
@@ -237,6 +239,8 @@ pub const Schema = struct {
         };
 
         try self.types.put(self.allocator, name, type_def);
+        try self.object_types.append(self.allocator, obj);
+        return obj;
     }
 
     /// Render `TypeRef` as GraphQL SDL type syntax (e.g. `Int!`, `[ID!]!`).
@@ -267,6 +271,12 @@ pub const Schema = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Clean up all registered object types
+        for (self.object_types.items) |obj| {
+            obj.fields.deinit(self.allocator);
+            self.allocator.destroy(obj);
+        }
+        self.object_types.deinit(self.allocator);
         // Clean up allocated types
         var it = self.types.iterator();
         while (it.next()) |entry| {
@@ -337,6 +347,23 @@ pub const Value = struct {
         List,
         Object,
     };
+
+    pub fn deinit(self: *Value, allocator: std.mem.Allocator) void {
+        if (self.object) |*obj| {
+            var it = obj.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.deinit(allocator);
+            }
+            obj.deinit(allocator);
+        }
+        if (self.list) |list| {
+            for (0..list.len) |i| {
+                var item = list[i];
+                item.deinit(allocator);
+            }
+        }
+        self.* = .{ .kind = .Null, .string = null, .int = null, .float = null, .bool = null, .list = null, .object = null };
+    }
 };
 
 // Helper to create common Value types
@@ -400,9 +427,10 @@ fn resolveObjectBalance(ctx: *const ResolverContext, args: []const ArgValue) any
 }
 
 fn resolveCheckpointSequence(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
-    _ = ctx;
     _ = args;
-    return intValue(0);
+    const node = ctx.node orelse return intValue(0);
+    const info = node.getNodeInfo();
+    return intValue(@intCast(info.checkpoint_sequence));
 }
 
 fn resolveCheckpointDigest(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
@@ -448,9 +476,10 @@ fn resolveTxGasPrice(ctx: *const ResolverContext, args: []const ArgValue) anyerr
 }
 
 fn resolveTxEpoch(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
-    _ = ctx;
     _ = args;
-    return intValue(0);
+    const node = ctx.node orelse return intValue(0);
+    const epoch = node.getEpochInfo();
+    return intValue(@intCast(epoch.epoch_number));
 }
 
 fn resolveTxStatus(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
@@ -676,6 +705,7 @@ pub const Query = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.allocator.free(self.operation.selections);
         self.variables.deinit(self.allocator);
     }
 };
@@ -698,7 +728,15 @@ fn parseSelections(allocator: std.mem.Allocator, query_str: []const u8) ![]const
         } else if (c == '}') {
             depth -= 1;
             if (depth == 0 and in_field) {
-                const field_name = std.mem.trim(u8, query_str[field_start..i], " \n\t");
+                // Simple field name extraction: stop at '(' (args) or '{' (sub-selections)
+                var field_end = i;
+                for (query_str[field_start..i], field_start..) |fc, fi| {
+                    if (fc == '(' or fc == '{') {
+                        field_end = fi;
+                        break;
+                    }
+                }
+                const field_name = std.mem.trim(u8, query_str[field_start..field_end], " \n\t");
                 if (field_name.len > 0) {
                     try selections.append(allocator, .{
                         .kind = .Field,
@@ -734,6 +772,15 @@ pub const Response = struct {
             .data = data,
             .errors = &.{},
         };
+    }
+
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        if (self.data) |*data| {
+            data.deinit(allocator);
+            self.data = null;
+        }
+        allocator.free(self.errors);
+        self.errors = &.{};
     }
 
     /// Create error response
@@ -950,7 +997,8 @@ test "GraphQL compiler executes query" {
     };
 
     const query = "{ knot3_getCheckpoint(id: 1) { sequence digest } }";
-    const resp = try compiler.execute(query, &ctx);
+    var resp = try compiler.execute(query, &ctx);
+    defer resp.deinit(allocator);
 
     try std.testing.expect(resp.data != null);
 }
@@ -982,6 +1030,7 @@ test "GraphQL M4 resolvers call node hooks" {
     const config = try allocator.create(Config);
     defer allocator.destroy(config);
     config.* = Config.default();
+    config.authority.signing_key = [_]u8{0x55} ** 32;
 
     const node = try Node.init(allocator, config, NodeDependencies{});
     defer node.deinit();
@@ -1000,8 +1049,10 @@ test "GraphQL M4 resolvers call node hooks" {
         .{ .name = "action", .value = "stake" },
         .{ .name = "metadata", .value = "gql-test" },
     };
-    const stake_1 = try resolveSubmitStakeOperation(&ctx, &stake_args);
-    const stake_2 = try resolveSubmitStakeOperation(&ctx, &stake_args);
+    var stake_1 = try resolveSubmitStakeOperation(&ctx, &stake_args);
+    defer stake_1.deinit(allocator);
+    var stake_2 = try resolveSubmitStakeOperation(&ctx, &stake_args);
+    defer stake_2.deinit(allocator);
     const stake_1_id = stake_1.object.?.get("operationId").?.int.?;
     const stake_2_id = stake_2.object.?.get("operationId").?.int.?;
     try std.testing.expectEqual(@as(i64, 1), stake_1_id);
@@ -1013,7 +1064,8 @@ test "GraphQL M4 resolvers call node hooks" {
         .{ .name = "description", .value = "d" },
         .{ .name = "kind", .value = "parameter_change" },
     };
-    const gov = try resolveSubmitGovernanceProposal(&ctx, &gov_args);
+    var gov = try resolveSubmitGovernanceProposal(&ctx, &gov_args);
+    defer gov.deinit(allocator);
     const proposal_id = gov.object.?.get("proposalId").?.int.?;
     try std.testing.expectEqual(@as(i64, 1), proposal_id);
 
@@ -1021,7 +1073,18 @@ test "GraphQL M4 resolvers call node hooks" {
         .{ .name = "sequence", .value = "9" },
         .{ .name = "objectId", .value = hex64 },
     };
-    const proof = try resolveGetCheckpointProof(&ctx, &proof_args);
+    var proof = try resolveGetCheckpointProof(&ctx, &proof_args);
+    defer {
+        // Free dynamically allocated hex strings inside the proof object
+        if (proof.object) |obj| {
+            if (obj.get("proof")) |v| allocator.free(v.string.?);
+            if (obj.get("signatures")) |v| allocator.free(v.string.?);
+            if (obj.get("blsSignature")) |v| allocator.free(v.string.?);
+            if (obj.get("blsSignerBitmap")) |v| allocator.free(v.string.?);
+            if (obj.get("stateRoot")) |v| allocator.free(v.string.?);
+        }
+        proof.deinit(allocator);
+    }
     const proof_seq = proof.object.?.get("sequence").?.int.?;
     try std.testing.expectEqual(@as(i64, 9), proof_seq);
 }
