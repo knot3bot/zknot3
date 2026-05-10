@@ -1,12 +1,31 @@
-//! QUIC-style transport for libp2p-compatible networking
+//! TCP framing transport (QUIC-inspired API, not real QUIC on UDP).
 //!
-//! Reference: rust-libp2p QUIC implementation
+//! This module provides a QUIC-like stream multiplexing API built on TCP.
+//! It is NOT a QUIC implementation — it does not use UDP, TLS 1.3, connection
+//! migration, loss recovery, or congestion control.
 //!
-//! This is a simplified QUIC-inspired transport for Zig:
-//! - Connection-oriented with 0-RTT handshake potential
-//! - Stream-based multiplexing within connections
-//! - Built on UDP (simulated on top of TCP for cross-platform)
-//! - TLS 1.3 encryption patterns (without actual TLS)
+//! Capabilities:
+//! - Connection-oriented transport over TCP
+//! - Stream-based multiplexing within a connection (framing layer)
+//! - Stream ID tracking with frame-header validation
+//! - Noise protocol encryption integration point
+//!
+//! Limitations (vs real QUIC RFC 9000):
+//! - No UDP transport (TCP-only)
+//! - No TLS 1.3 native encryption (use Noise.zig for encryption)
+//! - No 0-RTT handshake
+//! - No connection migration
+//! - No built-in congestion control
+//!
+//! Migration path to real QUIC:
+//! 1. Replace TCP socket with UDP (std.Io.net.Stream → std.Io.net.Socket)
+//! 2. Add TLS 1.3 handshake per RFC 9001
+//! 3. Implement QUIC varint frame encoding per RFC 9000
+//! 4. Add packet number spaces and loss detection (RFC 9002)
+//! 5. Add connection migration with PATH_CHALLENGE/RESPONSE
+//! For now, this transport is suitable for trusted-LAN and single-DC deployments
+//! where TCP's reliability guarantees are sufficient.
+//!   (caller must track active streams and filter accordingly)
 //!
 //! Key concepts from QUIC:
 //! - Connection ID for NAT traversal
@@ -25,7 +44,8 @@ fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
 fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
     var reader = stream.reader(@import("io_instance").io, &.{});
     return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
+        error.ReadFailed => return reader.err orelse error.StreamReadFailed,
+        else => |e| return e,
     };
 }
 pub const QUICConfig = struct {
@@ -163,6 +183,10 @@ pub const QUICConnection = struct {
     created_at: i64,
     tcp_connection: ?std.Io.net.Stream,
     receive_buffer: std.ArrayList(u8),
+    /// Integration point: Noise session for per-connection encryption.
+    /// Set after Noise XX handshake completes; send/recv encrypt/decrypt
+    /// payloads through the NoiseSession's CipherState before framing.
+    noise_session: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator, connection_id: QUICConnectionID) !*Self {
         const self = try allocator.create(Self);
@@ -239,16 +263,21 @@ pub const QUICConnection = struct {
         }
     }
 
-    /// Receive data on a specific stream
+    /// Receive data on a specific stream. Validates that the in-frame stream_id
+    /// matches the requested stream and the stream is tracked.
     pub fn receiveOnStream(self: *Self, stream_id: u64, buf: []u8) !usize {
-        _ = stream_id;
+        if (!self.streams.contains(stream_id)) return error.InvalidStreamId;
         if (self.tcp_connection) |*conn| {
-            // Try to read a frame
             var header: [12]u8 = undefined;
             const header_len = try streamReadShort(conn, &header);
-            if (header_len == 0) return 0;
-            
+            if (header_len < 12) return 0;
+
+            const frame_stream_id = std.mem.readIntLittle(u64, &header[0..8].*);
             const data_len = std.mem.readIntLittle(u32, &header[8..12].*);
+
+            // Validate frame stream_id matches the requested stream
+            if (frame_stream_id != stream_id) return error.InvalidStreamId;
+
             const len = @min(buf.len, data_len);
             const received = try streamReadShort(conn, buf[0..len]);
             self.bytes_received += received;

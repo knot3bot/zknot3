@@ -141,12 +141,35 @@ fn rpcBodyHasWriteMethod(allocator: std.mem.Allocator, body: []const u8) bool {
     return false;
 }
 
+/// Extracts the HTTP method token from a request line. Returns null if the request
+/// does not contain a valid method prefix.
+fn extractHttpMethod(request: []const u8) ?[]const u8 {
+    const end = std.mem.indexOfScalar(u8, request, ' ') orelse return null;
+    return request[0..end];
+}
+
+/// Returns true if the request uses a write-class HTTP method (POST, PUT, DELETE, PATCH).
+fn isWriteMethod(method: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(method, "POST") or
+        std.ascii.eqlIgnoreCase(method, "PUT") or
+        std.ascii.eqlIgnoreCase(method, "DELETE") or
+        std.ascii.eqlIgnoreCase(method, "PATCH");
+}
+
 fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) bool {
     const n = node orelse return false;
-    if (n.config.network.admin_token.len == 0) return false;
+    if (n.config.network.admin_token.len == 0) {
+        // No admin token configured — all write endpoints require auth by default.
+        // Set admin_token to enable write access with X-Zknot3-Admin-Token header.
+        const method = extractHttpMethod(request) orelse return false;
+        return isWriteMethod(method);
+    }
 
-    if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) return true;
-    if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
+    const method = extractHttpMethod(request) orelse return false;
+    if (!isWriteMethod(method)) return false;
+
+    if (std.mem.eql(u8, path, "/tx")) return true;
+    if (std.mem.eql(u8, path, "/rpc")) {
         const body = extractBody(request) orelse return true;
         return rpcBodyHasWriteMethod(n.allocator, body);
     }
@@ -155,7 +178,7 @@ fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) b
 
 fn isAuthorizedAdmin(node: ?*Node, request: []const u8) bool {
     const n = node orelse return true;
-    if (n.config.network.admin_token.len == 0) return true;
+    if (n.config.network.admin_token.len == 0) return false; // No token set = writes denied
     const token = findHeaderValue(request, "X-Zknot3-Admin-Token") orelse return false;
     return std.mem.eql(u8, token, n.config.network.admin_token);
 }
@@ -165,6 +188,7 @@ pub const Response = struct {
     status: StatusCode,
     headers: std.StringArrayHashMapUnmanaged([]const u8),
     body: ?[]const u8,
+    trace_id: []const u8 = &.{},
 
     pub fn ok(body: []const u8) @This() {
         return .{
@@ -235,9 +259,8 @@ pub const Response = struct {
         return self.*;
     }
 
-    pub fn withTraceId(self: *@This(), trace_id: []const u8) !@This() {
+    pub fn withTraceId(self: *@This(), trace_id: []const u8) void {
         self.trace_id = trace_id;
-        return self.*;
     }
 
     pub fn send(self: *const @This(), conn: std.Io.net.Stream) !void {
@@ -589,7 +612,7 @@ pub const HTTPServer = struct {
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
             return;
         }
         self.request_count += 1;
@@ -600,7 +623,7 @@ pub const HTTPServer = struct {
             if (err == error.WouldBlock) {
                 var response = Response.badRequest("{\"error\":\"Request timeout\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             }
             return;
         };
@@ -616,7 +639,7 @@ pub const HTTPServer = struct {
                 .body = "{\"error\":\"Request body too large\"}",
             };
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
             return;
         }
 
@@ -636,7 +659,7 @@ pub const HTTPServer = struct {
             if (got < remainder.len) {
                 var response = Response.badRequest("{\"error\":\"Incomplete request body\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {};
+                response.withTraceId(&trace_id);
                 try response.send(conn);
                 return;
             }
@@ -648,7 +671,7 @@ pub const HTTPServer = struct {
                 if (got < remainder.len) {
                     var response = Response.badRequest("{\"error\":\"Incomplete request body\"}");
                     _ = try response.withJSONContentType(self.allocator);
-                    _ = response.withTraceId(&trace_id) catch {};
+                    response.withTraceId(&trace_id);
                     try response.send(conn);
                     return;
                 }
@@ -668,7 +691,7 @@ pub const HTTPServer = struct {
                 .body = "{\"error\":\"Unauthorized\"}",
             };
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {};
+            response.withTraceId(&trace_id);
             try response.send(conn);
             return;
         }
@@ -680,16 +703,16 @@ pub const HTTPServer = struct {
                 const html = handler.getHTML() catch {
                     var response = Response.internalError("Failed to load dashboard");
                     _ = try response.withHeader(self.allocator, "Content-Type", "text/html");
-                    _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                    response.withTraceId(&trace_id); try response.send(conn);
                     return;
                 };
                 var response = Response.ok(html);
                 _ = try response.withHeader(self.allocator, "Content-Type", "text/html");
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Dashboard not configured\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             }
         } else if (std.mem.eql(u8, path, "/health")) {
             const health_body = if (self.node) |node| blk: {
@@ -708,7 +731,7 @@ pub const HTTPServer = struct {
             } else "{\"healthy\":true}";
             var response = Response.ok(health_body);
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
         } else if (std.mem.eql(u8, path, "/metrics")) {
             const metrics_body = if (self.node) |node| blk: {
                 const info = node.getNodeInfo();
@@ -771,12 +794,15 @@ pub const HTTPServer = struct {
             } else "# No metrics available\n";
             var response = Response.ok(metrics_body);
             _ = try response.withHeader(self.allocator, "Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
         } else if (std.mem.eql(u8, path, "/ready")) {
-            const is_ready = if (self.node) |node| node.state == .running else false;
+            // Readiness: node must be running AND consensus must be advancing
+            const is_ready = if (self.node) |node|
+                node.state == .running and node.consensus_round > 0
+            else false;
             var response = if (is_ready) Response.ok("{\"ready\":true}") else Response.serviceUnavailable("{\"ready\":false}");
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
         } else if (std.mem.eql(u8, path, "/peers")) {
             const peers_body = if (self.node) |node| blk: {
                 if (node.getP2PServer()) |p2p| {
@@ -806,7 +832,7 @@ pub const HTTPServer = struct {
             } else "{\"error\":\"Node not configured\"}";
             var response = Response.ok(peers_body);
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
 
         } else if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) {
             // POST /tx -> Submit transaction
@@ -858,11 +884,11 @@ pub const HTTPServer = struct {
                     "{\"success\":true,\"duplicate\":false}";
                 var response = Response.ok(ok_body);
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Node not configured\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             }
         } else if (std.mem.startsWith(u8, path, "/api/")) {
             // GET /api/* -> Dashboard API
@@ -870,7 +896,7 @@ pub const HTTPServer = struct {
                 const json = handler.handleAPI(path) catch {
                     var response = Response.notFound("{\"error\":\"API not found\"}");
                     _ = try response.withJSONContentType(self.allocator);
-                    _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                    response.withTraceId(&trace_id); try response.send(conn);
                     return;
                 };
                 defer self.allocator.free(json);
@@ -880,7 +906,7 @@ pub const HTTPServer = struct {
             } else {
                 var response = Response.notFound("{\"error\":\"Dashboard not configured\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (extractBody(request)) |body| {
@@ -950,10 +976,10 @@ pub const HTTPServer = struct {
                         try err_resp.send(conn);
                         return;
                     };
-                    const operation_id = node.submitStakeOperation(input) catch |err| {
+                    const operation_id = node.submitStakeOperation(input) catch {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
                             "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
-                            @errorName(err),
+                            "Internal error",
                             "\"},\"id\":",
                             id_str,
                             "}",
@@ -998,10 +1024,10 @@ pub const HTTPServer = struct {
                         try err_resp.send(conn);
                         return;
                     };
-                    const proposal_id = node.submitGovernanceProposal(input) catch |err| {
+                    const proposal_id = node.submitGovernanceProposal(input) catch {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
                             "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
-                            @errorName(err),
+                            "Internal error",
                             "\"},\"id\":",
                             id_str,
                             "}",
@@ -1046,10 +1072,10 @@ pub const HTTPServer = struct {
                         try err_resp.send(conn);
                         return;
                     };
-                    const proof = node.buildCheckpointProof(req) catch |err| {
+                    const proof = node.buildCheckpointProof(req) catch {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
                             "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
-                            @errorName(err),
+                            "Internal error",
                             "\"},\"id\":",
                             id_str,
                             "}",
@@ -1089,12 +1115,12 @@ pub const HTTPServer = struct {
             } else {
                 var response = Response.badRequest("{\"error\":\"Missing body\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+                response.withTraceId(&trace_id); try response.send(conn);
             }
         } else {
             var response = Response.notFound("{\"error\":\"Not found\"}");
             _ = try response.withJSONContentType(self.allocator);
-            _ = response.withTraceId(&trace_id) catch {}; try response.send(conn);
+            response.withTraceId(&trace_id); try response.send(conn);
         }
     }
 

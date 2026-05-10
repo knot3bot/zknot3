@@ -148,6 +148,9 @@ pub const WAL = struct {
     async_write: ?AsyncWriteBuffer = null,
     use_async_writes: bool = true,
     durability_io: ?*IOUring.AsyncIO = null,
+    /// Group commit: buffer N writes before fsync (trades latency for TPS)
+    group_commit_count: u64 = 0,
+    group_commit_threshold: u64 = 0, // 0 = disabled, N = sync every N writes
 
     /// Initialize WAL with async options
     pub fn initWithOptions(allocator: std.mem.Allocator, db_path: []const u8, use_async: ?bool) !Self {
@@ -191,13 +194,18 @@ pub const WAL = struct {
         return try initWithOptions(allocator, db_path, null);
     }
     pub fn deinit(self: *Self) void {
-        // Flush any pending async writes first.
+        // Flush any pending async writes — best-effort during shutdown.
+        // Errors are logged but not propagated since deinit cannot fail.
         if (self.async_write) |*async_w| {
             if (async_w.write_offset > 0) {
                 const write_offset = async_w.write_offset;
                 const data = async_w.getAndReset();
-                self.file.file.writePositionalAll(@import("io_instance").io, data, self.current_offset - write_offset) catch {};
-                self.syncBarrier() catch {};
+                self.file.file.writePositionalAll(@import("io_instance").io, data, self.current_offset - write_offset) catch |err| {
+                    std.log.err("WAL deinit: flush failed ({s}) — buffered data may be lost", .{@errorName(err)});
+                };
+                self.syncBarrier() catch |err| {
+                    std.log.err("WAL deinit: sync failed ({s})", .{@errorName(err)});
+                };
             }
             async_w.deinit();
         }
@@ -216,7 +224,24 @@ pub const WAL = struct {
         return self.file.sync();
     }
 
-    /// Durable write at `offset`. When the io_uring durability ring is attached
+    /// Truncate the WAL after a checkpoint — all data is safely in SSTables.
+    /// Resets offset to 0 and truncates the file to remove old records.
+    pub fn truncate(self: *Self) !void {
+        // Flush any pending async writes first
+        if (self.async_write) |*async_w| {
+            if (async_w.write_offset > 0) {
+                const wo = async_w.write_offset;
+                const data = async_w.getAndReset();
+                try self.file.file.writePositionalAll(@import("io_instance").io, data, self.current_offset - wo);
+                try self.syncBarrier();
+            }
+        }
+        self.current_offset = 0;
+        // Truncate the file to zero length
+        try self.file.setEndPos(0);
+    }
+
+    /// When the io_uring durability ring is attached
     /// this submits write+fsync as a linked chain (one submit_and_wait instead
     /// of two), preserving the same ordering guarantees as the legacy
     /// `writeAll` + `syncBarrier` pair on non-Linux / fallback backends.
@@ -392,6 +417,23 @@ pub const WAL = struct {
     pub fn syncAll(self: *Self) !void {
         try self.flushAsync();
         try self.syncBarrier();
+        self.group_commit_count = 0;
+    }
+
+    /// Group commit sync: only syncs if threshold writes have accumulated.
+    /// Returns true if a sync was performed, false if skipped.
+    pub fn maybeGroupSync(self: *Self) !bool {
+        self.group_commit_count += 1;
+        if (self.group_commit_threshold == 0 or self.group_commit_count >= self.group_commit_threshold) {
+            try self.syncAll();
+            return true;
+        }
+        return false;
+    }
+
+    /// Enable group commit with the given threshold (writes per sync).
+    pub fn enableGroupCommit(self: *Self, threshold: u64) void {
+        self.group_commit_threshold = threshold;
     }
 
     /// Clear WAL after commit

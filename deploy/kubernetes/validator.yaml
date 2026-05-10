@@ -180,3 +180,14 @@ spec:
   - name: p2p
     port: 8083
     targetPort: 8083
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zknot3-validator-pdb
+  namespace: zknot3
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: zknot3

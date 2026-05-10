@@ -1,0 +1,44 @@
+{
+  "title": "zknot3 Validator Metrics",
+  "uid": "zknot3-validator",
+  "panels": [
+    {
+      "title": "Consensus Rounds",
+      "targets": [
+        {"expr": "rate(zknot3_consensus_rounds_total[5m])", "legendFormat": "rounds/s"},
+        {"expr": "zknot3_consensus_current_round", "legendFormat": "current round"}
+      ]
+    },
+    {
+      "title": "Transaction Throughput",
+      "targets": [
+        {"expr": "rate(zknot3_transactions_total[1m])", "legendFormat": "tx/s"},
+        {"expr": "rate(zknot3_transactions_executed_total[1m])", "legendFormat": "executed/s"}
+      ]
+    },
+    {
+      "title": "Memory & Storage",
+      "targets": [
+        {"expr": "zknot3_lsm_memtable_bytes", "legendFormat": "memtable"},
+        {"expr": "zknot3_lsm_sstables_count", "legendFormat": "SSTables"},
+        {"expr": "zknot3_dag_rounds_count", "legendFormat": "DAG rounds"}
+      ]
+    },
+    {
+      "title": "P2P Peers",
+      "targets": [
+        {"expr": "zknot3_p2p_connected_peers", "legendFormat": "connected"},
+        {"expr": "zknot3_p2p_banned_peers", "legendFormat": "banned"},
+        {"expr": "rate(zknot3_p2p_messages_total[5m])", "legendFormat": "msgs/s"}
+      ]
+    },
+    {
+      "title": "Node Health",
+      "targets": [
+        {"expr": "zknot3_node_uptime_seconds", "legendFormat": "uptime"},
+        {"expr": "rate(zknot3_checkpoint_saves_total[5m])", "legendFormat": "checkpoints/s"},
+        {"expr": "zknot3_wal_bytes", "legendFormat": "WAL size"}
+      ]
+    }
+  ]
+}

@@ -32,6 +32,8 @@ pub const Checkpoint = struct {
     /// BLS aggregate signatures may be added later without changing validator_id keys.
     signatures: std.AutoArrayHashMapUnmanaged([32]u8, [64]u8),
     bls_signature: ?Bls.Signature = null,
+    /// BLS signer participation bitmap (little-endian bits). Borrowed reference —
+    /// caller must keep the underlying buffer alive for the lifetime of this Checkpoint.
     bls_signer_bitmap: ?[]const u8 = null,
 
     const Self = @This();
@@ -202,6 +204,55 @@ pub const Checkpoint = struct {
         try self.signatures.put(allocator, validator_id, signature);
     }
 
+    /// Generate a Merkle inclusion proof for a specific object change in this checkpoint.
+    /// Returns the sibling hashes needed to reconstruct the state root from the leaf.
+    /// The proof is a list of sibling [32]u8 hashes from leaf to root.
+    pub fn generateInclusionProof(self: *const Self, change_idx: usize, allocator: std.mem.Allocator) ![]const [32]u8 {
+        if (change_idx >= self.object_changes.len) return error.IndexOutOfBounds;
+
+        // Build leaf hashes
+        var leaves = try allocator.alloc([32]u8, self.object_changes.len);
+        defer allocator.free(leaves);
+        for (self.object_changes, 0..) |change, i| {
+            var ctx = std.crypto.hash.Blake3.init(.{});
+            ctx.update(&change.id.bytes);
+            ctx.update(std.mem.asBytes(&change.version.seq));
+            ctx.update(&[_]u8{@intFromEnum(change.status)});
+            ctx.final(&leaves[i]);
+        }
+
+        // Build proof path
+        var level = leaves;
+        var proof = std.ArrayList([32]u8).init(allocator);
+        errdefer proof.deinit();
+
+        var idx = change_idx;
+        while (level.len > 1) {
+            const sibling_idx = if (idx % 2 == 0) idx + 1 else idx - 1;
+            if (sibling_idx < level.len) {
+                try proof.append(level[sibling_idx]);
+            } else {
+                try proof.append([_]u8{0} ** 32); // padding for odd leaf
+            }
+            idx /= 2;
+
+            const next_len = (level.len + 1) / 2;
+            var next_level = try allocator.alloc([32]u8, next_len);
+            defer allocator.free(next_level);
+            for (0..next_len) |i| {
+                var ctx = std.crypto.hash.Blake3.init(.{});
+                ctx.update(&level[i * 2]);
+                if (i * 2 + 1 < level.len) {
+                    ctx.update(&level[i * 2 + 1]);
+                }
+                ctx.final(&next_level[i]);
+            }
+            level = next_level;
+        }
+
+        return proof.toOwnedSlice();
+    }
+
     /// Deinitialize checkpoint and free resources
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         allocator.free(self.object_changes);
@@ -227,7 +278,8 @@ pub fn verifyStateRoot(changes: []const Checkpoint.ObjectChange, allocator: std.
 
     while (level.len > 1) {
         const next_len = (level.len + 1) / 2;
-        var next_level = try allocator.alloc([32]u8, next_len);
+        var next_level: []align(@alignOf([32]u8)) [32]u8 = &.{};
+        next_level = try allocator.alloc([32]u8, next_len);
         errdefer allocator.free(next_level);
 
         for (0..next_len) |i| {
@@ -569,4 +621,18 @@ test "CheckpointSequence load missing file returns init" {
 
     const loaded = try CheckpointSequence.load(path);
     try std.testing.expectEqual(@as(u64, 0), loaded.current);
+}
+
+test "Checkpoint state root determinism" {
+    const allocator = std.testing.allocator;
+    const changes = [_]Checkpoint.ObjectChange{
+        .{ .id = .{ .bytes = [_]u8{1} ** 32 }, .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 }, .status = .created },
+        .{ .id = .{ .bytes = [_]u8{2} ** 32 }, .version = .{ .seq = 2, .causal = [_]u8{0} ** 16 }, .status = .modified },
+        .{ .id = .{ .bytes = [_]u8{3} ** 32 }, .version = .{ .seq = 3, .causal = [_]u8{0} ** 16 }, .status = .deleted },
+    };
+
+    const root1 = try verifyStateRoot(&changes, allocator);
+    const root2 = try verifyStateRoot(&changes, allocator);
+    try std.testing.expect(std.mem.eql(u8, &root1, &root2));
+    try std.testing.expect(!std.mem.eql(u8, &root1, &([_]u8{0} ** 32)));
 }

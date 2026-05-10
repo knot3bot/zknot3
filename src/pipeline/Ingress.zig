@@ -14,8 +14,45 @@ const Signature = @import("../property/crypto/Signature.zig");
 const MIN_GAS_BUDGET = 100;
 
 /// Transaction input
+/// Programmable Transaction Block operation types.
+/// AI agents compose these into atomic multi-step transactions.
+pub const Operation = union(enum) {
+    MoveCall: struct { module: []const u8, function: []const u8, args: []const []const u8 },
+    TransferObjects: struct { objects: []const core.ObjectID, recipient: [32]u8 },
+    SplitCoins: struct { coin: core.ObjectID, amounts: []const u64 },
+    MergeCoins: struct { coins: []const core.ObjectID },
+    Publish: struct { modules: []const []const u8 },
+    MakeMoveVec: struct { type_tag: []const u8, elements: []const core.ObjectID },
+
+    pub fn deinit(self: *Operation, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .MoveCall => |mc| {
+                allocator.free(mc.module);
+                allocator.free(mc.function);
+                for (mc.args) |arg| allocator.free(arg);
+                allocator.free(mc.args);
+            },
+            .TransferObjects => |to| allocator.free(to.objects),
+            .SplitCoins => |sc| allocator.free(sc.amounts),
+            .MergeCoins => |mc| allocator.free(mc.coins),
+            .Publish => |p| {
+                for (p.modules) |m| allocator.free(m);
+                allocator.free(p.modules);
+            },
+            .MakeMoveVec => |mv| {
+                allocator.free(mv.type_tag);
+                allocator.free(mv.elements);
+            },
+        }
+    }
+};
+
 pub const Transaction = struct {
+    /// Transaction sender (executing party, must sign)
     sender: [32]u8,
+    /// Optional gas payer (sponsor). When set, gas is deducted from payer
+    /// instead of sender. Payer does NOT need to sign — only sender signs.
+    payer: ?[32]u8 = null,
     inputs: []const core.ObjectID,
     program: []const u8,
     gas_budget: u64,
@@ -24,12 +61,21 @@ pub const Transaction = struct {
     signature: ?[64]u8 = null,
     /// Public key for signature verification
     public_key: ?[32]u8 = null,
+    /// Fast Path: bypass consensus ordering when all inputs are single-owner.
+    /// Transaction executes immediately upon ingress if sender owns all inputs.
+    bypass_consensus: bool = false,
+    /// Programmable Transaction Block: atomic sequence of operations.
+    /// When non-empty, the executor runs these sequentially in one atomic block
+    /// instead of the single `program`. Enables AI agents to compose complex transactions.
+    operations: []const Operation = &.{},
 
     const Self = @This();
 
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         allocator.free(self.inputs);
         allocator.free(self.program);
+        for (self.operations) |*op| (@constCast(op)).deinit(allocator);
+        if (self.operations.len > 0) allocator.free(self.operations);
     }
 
     /// Compute transaction digest (the data that gets signed)
@@ -195,6 +241,9 @@ pub const Ingress = struct {
     config: IngressConfig,
     pending: std.ArrayList(Transaction),
     verified: std.ArrayList(Transaction),
+    /// Mempool dedup: prevents processing the same transaction twice
+    seen_digests: std.AutoArrayHashMapUnmanaged([32]u8, void) = .empty,
+    dedup_hits: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: IngressConfig) !*Self {
         const self = try allocator.create(Self);
@@ -211,27 +260,41 @@ pub const Ingress = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.pending.items) |*tx| {
-            tx.deinit(self.allocator);
-        }
+        for (self.pending.items) |*tx| tx.deinit(self.allocator);
         self.pending.deinit(self.allocator);
-
-        for (self.verified.items) |*tx| {
-            tx.deinit(self.allocator);
-        }
+        for (self.verified.items) |*tx| tx.deinit(self.allocator);
         self.verified.deinit(self.allocator);
+        self.seen_digests.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
     /// Submit a new transaction (deep-copies slices so Ingress owns the data)
     pub fn submit(self: *Self, transaction: Transaction) !void {
-        if (self.pending.items.len >= self.config.max_pending) {
-            return error.TooManyPending;
-        }
+        if (self.pending.items.len >= self.config.max_pending) return error.TooManyPending;
+        const tx_digest = transaction.digest();
+        if (self.seen_digests.contains(tx_digest)) { self.dedup_hits += 1; return; }
+        if (self.seen_digests.count() > self.config.max_pending * 2) self.seen_digests.clearRetainingCapacity();
+        try self.seen_digests.put(self.allocator, tx_digest, {});
         var tx_copy = transaction;
         tx_copy.inputs = try self.allocator.dupe(core.ObjectID, transaction.inputs);
         tx_copy.program = try self.allocator.dupe(u8, transaction.program);
         try self.pending.append(self.allocator, tx_copy);
+    }
+
+    /// Zero-copy submit: takes ownership of the transaction's heap data.
+    /// Caller must NOT free inputs/program after this call.
+    pub fn submitOwned(self: *Self, transaction: Transaction) !void {
+        if (self.pending.items.len >= self.config.max_pending) return error.TooManyPending;
+        const tx_digest = transaction.digest();
+        if (self.seen_digests.contains(tx_digest)) {
+            self.dedup_hits += 1;
+            var tx = transaction;
+            tx.deinit(self.allocator);
+            return;
+        }
+        if (self.seen_digests.count() > self.config.max_pending * 2) self.seen_digests.clearRetainingCapacity();
+        try self.seen_digests.put(self.allocator, tx_digest, {});
+        try self.pending.append(self.allocator, transaction); // no copy — ownership transferred
     }
 
     /// Verify pending transactions with full signature verification
@@ -262,9 +325,36 @@ pub const Ingress = struct {
         }
     }
 
+    /// Batch-verify all pending transactions in one pass.
+    /// More efficient than per-transaction verify() for high throughput.
+    /// Filters invalid txs and moves valid ones to verified list.
+    pub fn verifyBatch(self: *Self) !void {
+        var valid_count: usize = 0;
+        var i: usize = self.pending.items.len;
+        while (i > 0) {
+            i -= 1;
+            var tx = self.pending.swapRemove(i);
+            // Fast-reject: gas budget check (cheapest check first)
+            if (tx.gas_budget < self.config.min_gas_budget) {
+                tx.deinit(self.allocator);
+                continue;
+            }
+            // Signature check
+            if (self.config.require_signatures) {
+                if (!tx.verifySignature()) {
+                    tx.deinit(self.allocator);
+                    continue;
+                }
+            }
+            try self.verified.append(self.allocator, tx);
+            valid_count += 1;
+        }
+        self.pending.clearRetainingCapacity();
+    }
+
     /// Get next verified transaction
     pub fn getVerified(self: *Self) ?Transaction {
-        return self.verified.popOrNull();
+        return self.verified.pop();
     }
 
     /// Peek at pending count

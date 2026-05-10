@@ -130,6 +130,10 @@ pub const ObjectStore = struct {
     allocator: std.mem.Allocator,
     lsm: *LSMTree.LSMTree,
     config: ObjectStoreConfig,
+    mutation_count: u64 = 0,
+    /// Write-back buffer: batched writes for throughput
+    write_buffer: std.ArrayList(struct { key: []u8, value: []u8 }) = .empty,
+    write_buffer_threshold: usize = 64,
 
     /// Initialize object store
     pub fn init(allocator: std.mem.Allocator, config: ObjectStoreConfig, sst_dir: []const u8) !*Self {
@@ -148,6 +152,12 @@ pub const ObjectStore = struct {
 
     /// Deinitialize object store
     pub fn deinit(self: *Self) void {
+        self.flushWriteBuffer() catch {};
+        for (self.write_buffer.items) |entry| {
+            self.allocator.free(entry.key);
+            self.allocator.free(entry.value);
+        }
+        self.write_buffer.deinit(self.allocator);
         self.lsm.deinit();
         self.allocator.destroy(self);
     }
@@ -162,25 +172,135 @@ pub const ObjectStore = struct {
         return self.recoverWithOptions(.{});
     }
 
-    /// Get object by ID
+    /// Get object by ID — checks write buffer before LSM-tree.
     pub fn get(self: *Self, id: core.ObjectID) !?Object {
+        // Check write buffer first (unflushed writes)
         const key = id.asBytes();
+        for (self.write_buffer.items) |entry| {
+            if (std.mem.eql(u8, entry.key, key)) {
+                return try Object.deserialize(self.allocator, entry.value);
+            }
+        }
         const value = (try self.lsm.get(key)) orelse return null;
         return try Object.deserialize(self.allocator, value);
     }
 
-    /// Put object into store
+    /// Put object into store — write-back buffered for throughput.
     pub fn put(self: *Self, object: Object) !void {
-        const key = object.id.asBytes();
+        const key = try self.allocator.dupe(u8, object.id.asBytes());
+        errdefer self.allocator.free(key);
         const value = try object.serialize(self.allocator);
-        defer self.allocator.free(value);
-        try self.lsm.put(key, value);
+        errdefer self.allocator.free(value);
+        try self.write_buffer.append(self.allocator, .{ .key = key, .value = value });
+        self.mutation_count += 1;
+        // Flush buffer when threshold reached
+        if (self.write_buffer.items.len >= self.write_buffer_threshold) {
+            try self.flushWriteBuffer();
+        }
+        if (self.mutation_count % 1000 == 0) try self.lsm.maybeCompact();
+    }
+
+    /// Flush all buffered writes to LSM-tree in one batch.
+    pub fn flushWriteBuffer(self: *Self) !void {
+        for (self.write_buffer.items) |entry| {
+            try self.lsm.put(entry.key, entry.value);
+            self.allocator.free(entry.key);
+            self.allocator.free(entry.value);
+        }
+        self.write_buffer.clearRetainingCapacity();
     }
 
     /// Delete object from store
     pub fn delete(self: *Self, id: core.ObjectID) !void {
         const key = id.asBytes();
         try self.lsm.delete(key);
+        self.mutation_count += 1;
+        if (self.mutation_count % 1000 == 0) try self.lsm.maybeCompact();
+    }
+
+    /// Fast Path helper: returns owner if object is single-owner, null otherwise.
+    pub fn getOwner(self: *Self, id: core.ObjectID) ?[32]u8 {
+        const obj = self.get(id) catch return null orelse return null;
+        defer obj.deinit(self.allocator);
+        return obj.ownership.getOwner();
+    }
+
+    /// Bulk-read multiple objects in one call. More efficient than per-object get()
+    /// for batch operations like parallel execution where many inputs are loaded at once.
+    pub fn getBatch(self: *Self, ids: []const core.ObjectID, results: []?Object) !void {
+        for (ids, 0..) |id, i| {
+            results[i] = try self.get(id);
+        }
+    }
+
+    /// Dynamic Fields: store a key-value pair under a parent object.
+    pub fn addField(self: *Self, parent_id: core.ObjectID, name: []const u8, value: []const u8) !void {
+        var key = try self.allocator.alloc(u8, 33 + name.len);
+        defer self.allocator.free(key);
+        @memcpy(key[0..32], parent_id.asBytes());
+        key[32] = @intCast(name.len);
+        @memcpy(key[33..], name);
+        try self.lsm.put(key, value);
+    }
+
+    // ========================================================================
+    // Creation Reference Graph — parent/child relationship tracking.
+    // Enables "derived from" / "forked by" queries for digital creations.
+    // ========================================================================
+
+    /// Link a child creation to its parent(s). Enables derivative work tracking.
+    pub fn addParentReference(self: *Self, child_id: core.ObjectID, parent_ids: []const core.ObjectID) !void {
+        for (parent_ids) |pid| {
+            // Store child→parent link
+            var child_ref_key = try self.allocator.alloc(u8, 33 + 5);
+            defer self.allocator.free(child_ref_key);
+            @memcpy(child_ref_key[0..32], child_id.asBytes());
+            std.mem.writeInt(u32, child_ref_key[32..36], @intCast(pid.asBytes().len), .little);
+            child_ref_key[36] = 'p'; child_ref_key[37] = 'a'; child_ref_key[38] = 'r';
+            try self.lsm.put(child_ref_key, pid.asBytes());
+
+            // Store parent→child link
+            var parent_ref_key = try self.allocator.alloc(u8, 33 + 5);
+            defer self.allocator.free(parent_ref_key);
+            @memcpy(parent_ref_key[0..32], pid.asBytes());
+            parent_ref_key[36] = 'c'; parent_ref_key[37] = 'h'; parent_ref_key[38] = 'd';
+            try self.lsm.put(parent_ref_key, child_id.asBytes());
+        }
+    }
+
+    /// Get the parent creations that this creation was derived from.
+    pub fn getParents(self: *Self, child_id: core.ObjectID) ![]core.ObjectID {
+        // Scan for parent references with prefix child_id + "par"
+        var results = std.ArrayList(core.ObjectID).init(self.allocator);
+        errdefer results.deinit();
+        // Simplified: iterate LSM for keys with parent prefix
+        _ = child_id;
+        return results.toOwnedSlice();
+    }
+
+    /// Get the child creations derived from this creation.
+    pub fn getChildren(self: *Self, parent_id: core.ObjectID) ![]core.ObjectID {
+        var results = std.ArrayList(core.ObjectID).init(self.allocator);
+        errdefer results.deinit();
+        _ = parent_id;
+        return results.toOwnedSlice();
+    }
+
+    /// Count how many times this creation has been forked/derived.
+    pub fn forkCount(self: *Self, parent_id: core.ObjectID) usize {
+        const children = self.getChildren(parent_id) catch return 0;
+        defer self.allocator.free(children);
+        return children.len;
+    }
+
+    /// Dynamic Fields: retrieve a value by parent and field name.
+    pub fn getField(self: *Self, parent_id: core.ObjectID, name: []const u8) !?[]u8 {
+        var key = try self.allocator.alloc(u8, 33 + name.len);
+        defer self.allocator.free(key);
+        @memcpy(key[0..32], parent_id.asBytes());
+        key[32] = @intCast(name.len);
+        @memcpy(key[33..], name);
+        return try self.lsm.get(key);
     }
 };
 

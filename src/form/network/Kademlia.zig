@@ -264,7 +264,107 @@ pub const RoutingTable = struct {
         }
         return total;
     }
+
+    /// Find peers closest to target with distance-based ranking.
+    /// Returns peers sorted by XOR distance (closest first). When network I/O
+    /// is available, this becomes the iterative FIND_NODE lookup. Currently
+    /// returns the best local results ranked by proximity.
+    pub fn iterativeFindNode(self: *Self, target_id: [32]u8, alpha: usize) ![]const [32]u8 {
+        const k = @min(alpha, MAX_BUCKET_SIZE);
+        const peers = try self.getClosestPeers(target_id, k);
+        // Results are already sorted by XOR distance from getClosestPeers.
+        // Full iterative lookup would recursively query each peer for even
+        // closer peers until convergence (Kademlia alpha=3 convergence).
+        return peers;
+    }
+
+    /// Estimate how close the local routing table is to a target.
+    /// Returns 0.0-1.0 where 1.0 means we have peers in the target's bucket.
+    pub fn proximityScore(self: *const Self, target_id: [32]u8) f64 {
+        const bucket_idx = self.getBucketIndex(target_id);
+        var peer_count: usize = 0;
+        if (self.buckets[bucket_idx]) |bucket| {
+            peer_count = bucket.peerCount();
+        }
+        if (peer_count >= MAX_BUCKET_SIZE) return 1.0;
+        return @as(f64, @floatFromInt(peer_count)) / @as(f64, @floatFromInt(MAX_BUCKET_SIZE));
+    }
 };
+
+/// Kademlia wire protocol message types.
+pub const KadMessageType = enum(u8) {
+    ping = 0x01,
+    pong = 0x02,
+    find_node = 0x03,
+    nodes = 0x04,
+};
+
+/// A decoded Kademlia protocol message.
+pub const KadMessage = struct {
+    msg_type: KadMessageType,
+    sender_id: [32]u8,
+    /// For FIND_NODE: the target ID being searched.
+    /// For NODES: empty (peers are in the peers field).
+    target_id: ?[32]u8,
+    /// For NODES responses: list of peer IDs close to the target.
+    peers: []const [32]u8,
+
+    pub fn deinit(self: *KadMessage, allocator: std.mem.Allocator) void {
+        if (self.peers.len > 0) allocator.free(self.peers);
+        self.* = undefined;
+    }
+};
+
+/// Encode a Kademlia message for wire transmission.
+/// Format: [msg_type: u8][sender_id: 32][target_id: 32][peer_count: u16][peers...]
+pub fn encodeKadMessage(allocator: std.mem.Allocator, msg: KadMessage) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+
+    try buf.append(allocator,@intFromEnum(msg.msg_type));
+    try buf.appendSlice(allocator, &msg.sender_id);
+    const tid = msg.target_id orelse [_]u8{0} ** 32;
+    try buf.appendSlice(allocator, &tid);
+    const peer_count: u16 = @intCast(msg.peers.len);
+    var count_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, &count_bytes, peer_count, .big);
+    try buf.appendSlice(allocator, &count_bytes);
+    for (msg.peers) |peer| {
+        try buf.appendSlice(allocator, &peer);
+    }
+
+    return buf.toOwnedSlice(allocator);
+}
+
+/// Decode a Kademlia wire message.
+pub fn decodeKadMessage(allocator: std.mem.Allocator, data: []const u8) !KadMessage {
+    if (data.len < 1 + 32 + 32 + 2) return error.MessageTooShort;
+    const msg_type: KadMessageType = @enumFromInt(data[0]);
+    var sender_id: [32]u8 = undefined;
+    @memcpy(&sender_id, data[1..33]);
+    var target_id: [32]u8 = undefined;
+    @memcpy(&target_id, data[33..65]);
+    const peer_count = std.mem.readInt(u16, data[65..67], .big);
+    const peers_start = 67;
+
+    const has_target = !std.mem.eql(u8, &target_id, &([_]u8{0} ** 32));
+    var peers: []const [32]u8 = &.{};
+    if (peer_count > 0 and data.len >= peers_start + peer_count * 32) {
+        const raw = try allocator.alloc([32]u8, peer_count);
+        errdefer allocator.free(raw);
+        for (0..peer_count) |i| {
+            @memcpy(&raw[i], data[peers_start + i * 32 .. peers_start + (i + 1) * 32]);
+        }
+        peers = raw;
+    }
+
+    return KadMessage{
+        .msg_type = msg_type,
+        .sender_id = sender_id,
+        .target_id = if (has_target) target_id else null,
+        .peers = peers,
+    };
+}
 
 test "KBucket distance calculation" {
     const a = [_]u8{0x00} ** 32;
@@ -320,4 +420,84 @@ test "RoutingTable closest peers" {
     defer allocator.free(closest);
     
     try std.testing.expect(closest.len == 2);
+}
+
+test "KadMessage encode/decode round-trip" {
+    const allocator = std.testing.allocator;
+
+    const sender_id = [_]u8{0xAB} ** 32;
+    const target_id = [_]u8{0xCD} ** 32;
+    const peers = [_][32]u8{ [_]u8{0x01} ** 32, [_]u8{0x02} ** 32 };
+
+    // Test FIND_NODE message
+    const msg = KadMessage{
+        .msg_type = .find_node,
+        .sender_id = sender_id,
+        .target_id = target_id,
+        .peers = &.{},
+    };
+
+    const encoded = try encodeKadMessage(allocator, msg);
+    defer allocator.free(encoded);
+
+    var decoded = try decodeKadMessage(allocator, encoded);
+
+    try std.testing.expectEqual(msg.msg_type, decoded.msg_type);
+    try std.testing.expect(std.mem.eql(u8, &sender_id, &decoded.sender_id));
+    try std.testing.expect(decoded.target_id != null);
+    try std.testing.expect(std.mem.eql(u8, &target_id, &decoded.target_id.?));
+    try std.testing.expectEqual(@as(usize, 0), decoded.peers.len);
+    decoded.deinit(allocator);
+
+    // Test NODES response with peer list
+    const nodes_msg = KadMessage{
+        .msg_type = .nodes,
+        .sender_id = sender_id,
+        .target_id = null,
+        .peers = &peers,
+    };
+
+    const encoded2 = try encodeKadMessage(allocator, nodes_msg);
+    defer allocator.free(encoded2);
+
+    var decoded2 = try decodeKadMessage(allocator, encoded2);
+    defer decoded2.deinit(allocator);
+
+    try std.testing.expectEqual(KadMessageType.nodes, decoded2.msg_type);
+    try std.testing.expect(decoded2.target_id == null);
+    try std.testing.expectEqual(@as(usize, 2), decoded2.peers.len);
+    try std.testing.expect(std.mem.eql(u8, &peers[0], &decoded2.peers[0]));
+}
+
+test "KadMessage ping/pong" {
+    const allocator = std.testing.allocator;
+    const sender = [_]u8{0xEE} ** 32;
+
+    const ping = KadMessage{
+        .msg_type = .ping,
+        .sender_id = sender,
+        .target_id = null,
+        .peers = &.{},
+    };
+    const encoded = try encodeKadMessage(allocator, ping);
+    defer allocator.free(encoded);
+
+    var decoded = try decodeKadMessage(allocator, encoded);
+    defer decoded.deinit(allocator);
+
+    try std.testing.expectEqual(KadMessageType.ping, decoded.msg_type);
+
+    const pong = KadMessage{
+        .msg_type = .pong,
+        .sender_id = sender,
+        .target_id = null,
+        .peers = &.{},
+    };
+    const encoded2 = try encodeKadMessage(allocator, pong);
+    defer allocator.free(encoded2);
+
+    var decoded2 = try decodeKadMessage(allocator, encoded2);
+    defer decoded2.deinit(allocator);
+
+    try std.testing.expectEqual(KadMessageType.pong, decoded2.msg_type);
 }

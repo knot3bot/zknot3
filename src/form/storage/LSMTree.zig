@@ -21,10 +21,22 @@ pub const LSMTreeConfig = struct {
     level_multiplier: usize = 10,
     /// Maximum level count
     max_levels: usize = 7,
+    /// Bloom filter expected element count
+    bloom_expected_elements: usize = 1_000_000,
     /// Bloom filter bits per key
     bloom_bits: usize = 10,
     /// SSTable directory
     sst_dir: []const u8 = "./data/sst",
+    /// Direct I/O: bypass OS page cache for reduced latency
+    direct_io: bool = false,
+    /// Compress SSTable data blocks (RLE — best for repetitive blockchain data)
+    compress_blocks: bool = false,
+    /// Memory-mapped I/O for SSTable reads (Linux/macOS, reduces syscall overhead)
+    mmap_io: bool = false,
+    /// Enable background async compaction (non-blocking put/delete)
+    async_compaction: bool = false,
+    /// Async compaction interval in seconds
+    compaction_interval_secs: u64 = 10,
 };
 
 /// Key-Value pair for LSM-Tree
@@ -36,7 +48,14 @@ pub const KeyValue = struct {
 
     pub fn lessThan(self: @This(), other: @This()) bool {
         const key_cmp = std.mem.lessThan(u8, self.key, other.key);
-        return key_cmp or (std.mem.eql(u8, self.key, other.key) and self.seq > other.seq);
+        if (key_cmp) return true;
+        if (std.mem.eql(u8, self.key, other.key)) {
+            // Higher sequence = newer = "less" (sorts first in dedup)
+            if (self.seq != other.seq) return self.seq > other.seq;
+            // Tiebreaker for equal key+seq: non-deleted comes first
+            return !self.deleted and other.deleted;
+        }
+        return false;
     }
 };
 
@@ -106,7 +125,7 @@ pub const MemTable = struct {
     pub fn init(allocator: std.mem.Allocator, max_size: usize) !Self {
         const bloom = try allocator.create(BloomFilter);
         errdefer allocator.destroy(bloom);
-        bloom.* = try BloomFilter.init(allocator, 1000000, 10);
+        bloom.* = try BloomFilter.init(allocator, 1_000_000, 10);
 
         return .{
             .allocator = allocator,
@@ -208,6 +227,17 @@ pub const MemTable = struct {
     pub fn getEntries(self: Self) []const KeyValue {
         return self.entries.items;
     }
+
+    pub fn clear(self: *Self) !void {
+        self.entries.clearRetainingCapacity();
+        self.bloom.deinit(self.allocator);
+        self.allocator.destroy(self.bloom);
+        // Re-create bloom filter for fresh use
+        self.bloom = try self.allocator.create(BloomFilter);
+        errdefer self.allocator.destroy(self.bloom);
+        self.bloom.* = try BloomFilter.init(self.allocator, 1000000, 10);
+        self.size = 0;
+    }
 };
 
 /// SSTable index entry with optimization for binary search
@@ -281,6 +311,35 @@ const CompatFile = struct {
         };
     }
 };
+/// Simple RLE compression for repetitive blockchain data.
+fn compressRLE(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    if (data.len < 4) return allocator.dupe(u8, data);
+    var buf = std.ArrayList(u8).empty;
+    var i: usize = 0;
+    while (i < data.len) {
+        const byte = data[i];
+        var count: u8 = 1;
+        while (i + count < data.len and count < 255 and data[i + count] == byte) : (count += 1) {}
+        try buf.append(allocator, byte);
+        try buf.append(allocator, count);
+        i += count;
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+fn decompressRLE(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    if (data.len < 2) return allocator.dupe(u8, data);
+    var buf = std.ArrayList(u8).empty;
+    var i: usize = 0;
+    while (i + 1 < data.len) : (i += 2) {
+        const byte = data[i];
+        const count = data[i + 1];
+        var j: u8 = 0;
+        while (j < count) : (j += 1) try buf.append(allocator, byte);
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
 /// SSTable - Sorted String Table file
 pub const SSTable = struct {
     const Self = @This();
@@ -295,11 +354,13 @@ pub const SSTable = struct {
     max_key: []const u8,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8, level: usize) !Self {
-        const file = CompatFile{ .file = std.Io.Dir.cwd().createFile(@import("io_instance").io, path, .{}) catch try std.Io.Dir.cwd().openFile(@import("io_instance").io, path, .{ .mode = .read_write }) };
+        const io = @import("io_instance").io;
+        const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write }) catch
+            try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false });
 
-        return .{
+        var self = Self{
             .allocator = allocator,
-            .file = file,
+            .file = CompatFile{ .file = file },
             .path = try allocator.dupe(u8, path),
             .index = std.ArrayList(SSTableIndexEntry).empty,
             .bloom = try allocator.create(BloomFilter),
@@ -307,6 +368,45 @@ pub const SSTable = struct {
             .min_key = &.{},
             .max_key = &.{},
         };
+        errdefer self.deinit();
+
+        // Rebuild index from file for crash recovery.
+        // For new (empty) files this is a no-op.
+        self.bloom.* = try BloomFilter.init(allocator, 1_000_000, 10);
+        self.rebuildIndex(allocator) catch |err| {
+            std.log.warn("SSTable.open: index rebuild failed for {s} ({s}) — file may be corrupt", .{ path, @errorName(err) });
+        };
+
+        return self;
+    }
+
+    /// Rebuild the in-memory index by scanning existing SSTable records.
+    /// Called during open() for crash recovery — without this, existing
+    /// SSTables would be unreadable because the index is only in-memory.
+    fn rebuildIndex(self: *Self, rebuild_allocator: std.mem.Allocator) !void {
+        const entries = try self.readAllEntries(rebuild_allocator);
+        defer {
+            for (entries) |entry| {
+                rebuild_allocator.free(entry.key);
+                rebuild_allocator.free(entry.value);
+            }
+            rebuild_allocator.free(entries);
+        }
+
+        var data_offset: u64 = 0;
+        for (entries) |entry| {
+            const key_len: u32 = @intCast(entry.key.len);
+            const val_len: u32 = @intCast(entry.value.len);
+            const record_size: u32 = 12 + key_len + val_len + 1 + 8;
+
+            try self.index.append(rebuild_allocator, .{
+                .key = try rebuild_allocator.dupe(u8, entry.key),
+                .offset = data_offset,
+                .size = record_size,
+            });
+            self.bloom.add(entry.key);
+            data_offset += record_size;
+        }
     }
 
     pub fn write(self: *Self, entries: []const KeyValue) !void {
@@ -415,7 +515,9 @@ pub const SSTable = struct {
     }
 
     pub fn read(self: *Self, key: []const u8) !?[]const u8 {
-        // Create optimized index wrapper for binary search
+        // Bloom pre-filter: fast negative without touching index
+        if (!self.bloom.contains(key)) return null;
+
         const index = SSTableIndex{
             .entries = self.index.items,
             .sorted = true,
@@ -453,36 +555,40 @@ pub const SSTable = struct {
                 allocator.free(entry.key);
                 allocator.free(entry.value);
             }
-            entries.deinit();
+            entries.deinit(allocator);
         }
 
         try self.file.seekTo(0);
 
         while (true) {
-            // Read record header
+            // Read record header — must be exactly 12 bytes
             var header_buf: [12]u8 = undefined;
             const bytes_read = try self.file.readAll(&header_buf);
             if (bytes_read == 0) break;
+            if (bytes_read < 12) break; // truncated record at end of file
 
             const key_len = std.mem.readInt(u32, header_buf[0..4], .big);
             const val_len = std.mem.readInt(u32, header_buf[4..8], .big);
+            // Sanity: reject impossibly large allocations (max 64MB per key/value)
+            if (key_len > 64 * 1024 * 1024 or val_len > 64 * 1024 * 1024) break;
             const deleted = header_buf[8] == 1;
 
             // Read key
             const key_buf = try allocator.alloc(u8, key_len);
             errdefer allocator.free(key_buf);
-            try self.file.readAll(key_buf);
+            _ = try self.file.readAll(key_buf);
 
             // Read value
             const value_buf = try allocator.alloc(u8, val_len);
-            try self.file.readAll(value_buf);
+            errdefer allocator.free(value_buf);
+            _ = try self.file.readAll(value_buf);
 
             // Read seq (8 bytes)
             var seq_buf: [8]u8 = undefined;
-            try self.file.readAll(&seq_buf);
+            _ = try self.file.readAll(&seq_buf);
             const seq = std.mem.readInt(u64, &seq_buf, .big);
 
-            try entries.append(.{
+            try entries.append(allocator, .{
                 .key = key_buf,
                 .value = value_buf,
                 .seq = seq,
@@ -490,7 +596,7 @@ pub const SSTable = struct {
             });
         }
 
-        return entries.toOwnedSlice();
+        return entries.toOwnedSlice(allocator);
     }
 
     pub fn deinit(self: *Self) void {
@@ -557,7 +663,13 @@ pub const CompactionManager = struct {
         if (sstables.len == 0) return;
 
         var all_entries = std.ArrayList(KeyValue).empty;
-        defer all_entries.deinit();
+        defer {
+            for (all_entries.items) |entry| {
+                allocator.free(entry.key);
+                allocator.free(entry.value);
+            }
+            all_entries.deinit(allocator);
+        }
 
         for (sstables) |sst| {
             const entries = sst.readAllEntries(allocator) catch continue;
@@ -568,7 +680,16 @@ pub const CompactionManager = struct {
                 }
                 allocator.free(entries);
             }
-            for (entries) |entry| try all_entries.append(entry);
+            // Deep-copy each entry into all_entries to avoid dangling pointers
+            for (entries) |entry| {
+                const owned_entry = KeyValue{
+                    .key = try allocator.dupe(u8, entry.key),
+                    .value = try allocator.dupe(u8, entry.value),
+                    .seq = entry.seq,
+                    .deleted = entry.deleted,
+                };
+                try all_entries.append(allocator, owned_entry);
+            }
         }
 
         if (all_entries.items.len == 0) return;
@@ -579,28 +700,31 @@ pub const CompactionManager = struct {
             }
         }.lessThan);
 
+        // Deduplicate by key: keep highest sequence number per key
         var deduped = std.ArrayList(KeyValue).empty;
         defer {
             for (deduped.items) |entry| {
                 allocator.free(entry.key);
                 allocator.free(entry.value);
             }
-            deduped.deinit();
+            deduped.deinit(allocator);
         }
 
-        var seen = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{});
-        defer seen.deinit();
-
-        for (all_entries.items) |entry| {
-            const key_copy = try allocator.dupe(u8, entry.key);
-            if (seen.contains(key_copy)) {
-                allocator.free(key_copy);
-                allocator.free(entry.key);
-                allocator.free(entry.value);
-                continue;
+        // Deduplicate: process in reverse to keep highest-seq entries
+        var i: usize = all_entries.items.len;
+        while (i > 0) {
+            i -= 1;
+            const entry = all_entries.items[i];
+            // Check if we already have an entry for this key in deduped
+            var found = false;
+            for (deduped.items) |*existing| {
+                if (std.mem.eql(u8, existing.key, entry.key)) {
+                    found = true;
+                    break;
+                }
             }
-            try seen.put(key_copy, {});
-            try deduped.append(entry);
+            if (found) continue;
+            try deduped.append(allocator, entry);
         }
 
         if (deduped.items.len == 0) return;
@@ -614,7 +738,10 @@ pub const CompactionManager = struct {
 
             var new_sst = try allocator.create(SSTable);
             new_sst.* = try SSTable.open(allocator, path, new_level);
-            defer new_sst.deinit();
+            errdefer {
+                new_sst.deinit();
+                allocator.destroy(new_sst);
+            }
 
             try new_sst.write(deduped.items);
             try self.levels.items[new_level].append(allocator, new_sst);
@@ -622,6 +749,8 @@ pub const CompactionManager = struct {
         }
 
         for (sstables) |old_sst| {
+            // Delete the SSTable file from disk after compaction merges it
+            std.Io.Dir.cwd().deleteFile(@import("io_instance").io, old_sst.path) catch {};
             old_sst.deinit();
             allocator.destroy(old_sst);
         }
@@ -858,6 +987,10 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
 
         const sst = try self.allocator.create(SSTable);
         sst.* = try SSTable.open(self.allocator, path, level);
+        errdefer {
+            sst.deinit();
+            self.allocator.destroy(sst);
+        }
         try sst.write(entries);
 
         try self.sstables.append(self.allocator, sst);
@@ -865,6 +998,9 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
         // Register with compaction manager so it can be selected for compaction.
         // Levels are pre-allocated in CompactionManager.init, so index is safe.
         try self.compaction.levels.items[level].append(self.allocator, sst);
+
+        // Clear memtable after successful flush to prevent unbounded growth
+        try self.memtable.clear();
     }
 
     pub fn batchInit(allocator: std.mem.Allocator) WriteBatch {
@@ -890,13 +1026,32 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
         return self.memtable.entries.items.len + self.sstables.items.len;
     }
 
-    /// Trigger compaction if needed
+    /// Trigger compaction if needed (sync path — may block).
     pub fn maybeCompact(self: *Self) !void {
+        if (self.config.async_compaction) return; // background worker handles it
         if (!self.compaction.needsCompaction()) return;
-
         for (self.compaction.levels.items, 0..) |level_ssts, level| {
             if (level_ssts.items.len > 3) {
                 try self.compaction.compact(level, self.allocator, self.config.sst_dir, &self.sequence);
+            }
+        }
+    }
+
+    /// Start a background compaction worker thread. Call during node startup.
+    /// The worker periodically checks and runs compaction, avoiding blocking
+    /// the main write path.
+    pub fn startCompactionWorker(self: *Self) !std.Thread {
+        return try std.Thread.spawn(.{}, runCompactionLoop, .{self});
+    }
+
+    fn runCompactionLoop(tree: *LSMTree) void {
+        while (true) {
+            std.time.sleep(tree.config.compaction_interval_secs * std.time.ns_per_s);
+            if (!tree.compaction.needsCompaction()) continue;
+            for (tree.compaction.levels.items, 0..) |level_ssts, level| {
+                if (level_ssts.items.len > 3) {
+                    tree.compaction.compact(level, tree.allocator, tree.config.sst_dir, &tree.sequence) catch continue;
+                }
             }
         }
     }

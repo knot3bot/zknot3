@@ -47,25 +47,26 @@ pub fn build(b: *std.Build) void {
     });
     WireImports.attach(test_module, b, blst_mod);
 
-    // Unit tests
-    const unit_tests = b.addTest(.{
-        .root_module = test_module,
+    // Unit-only tests — fast, no filesystem/network dependencies
+    const unit_module = b.createModule(.{
+        .root_source_file = b.path("tests_unit.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
     });
+    WireImports.attach(unit_module, b, blst_mod);
+    const unit_tests = b.addTest(.{ .root_module = unit_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
-
-    const unit_test_step = b.step("test-unit", "Run unit tests");
+    const unit_test_step = b.step("test-unit", "Run unit tests (fast, no I/O)");
     unit_test_step.dependOn(&run_unit_tests.step);
 
-    // Integration tests
-    const integration_tests = b.addTest(.{
-        .root_module = test_module,
-    });
+    // Integration tests — full suite including I/O-dependent tests
+    const integration_tests = b.addTest(.{ .root_module = test_module });
     const run_integration_tests = b.addRunArtifact(integration_tests);
-
-    const integration_test_step = b.step("test-integration", "Run integration tests");
+    const integration_test_step = b.step("test-integration", "Run full test suite");
     integration_test_step.dependOn(&run_integration_tests.step);
 
-    // All tests
+    // Combined test suite
     const all_tests = b.addTest(.{
         .root_module = test_module,
     });
@@ -113,6 +114,19 @@ pub fn build(b: *std.Build) void {
     // ========================================================================
     // Executables
     // ========================================================================
+
+    // Benchmark step — unit tests in ReleaseFast for throughput measurement
+    const bench_module = b.createModule(.{
+        .root_source_file = b.path("tests_unit.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+    });
+    WireImports.attach(bench_module, b, blst_mod);
+    const bench_exe = b.addTest(.{ .root_module = bench_module });
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("benchmark", "Run benchmarks (ReleaseFast)");
+    bench_step.dependOn(&run_bench.step);
 
     // Profiler tool
     const profiler_module = b.createModule(.{

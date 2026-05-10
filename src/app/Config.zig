@@ -14,10 +14,10 @@ pub const ProtocolVersion = struct {
 
     const Self = @This();
 
-    pub fn format(_self: Self) []const u8 {
-        _ = _self;
-        return "0.1.0"; // Simplified
+    pub fn toString(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
     }
+
 };
 
 /// Network configuration
@@ -71,8 +71,17 @@ pub const NetworkConfig = struct {
     max_request_body_size: usize = 1024 * 1024, // 1MB
     /// Maximum concurrent HTTP connections
     max_concurrent_http_connections: usize = 256,
+    /// TLS certificate file path (PEM). When set with tls_key_path, enables HTTPS.
+    tls_cert_path: ?[]const u8 = null,
+    /// TLS private key file path (PEM). When set with tls_cert_path, enables HTTPS.
+    tls_key_path: ?[]const u8 = null,
     known_validators: []const KnownValidator = &.{},
 };
+
+/// Returns true if TLS is configured (both cert and key paths are set).
+pub fn tlsEnabled(config: NetworkConfig) bool {
+    return config.tls_cert_path != null and config.tls_key_path != null;
+}
 
 /// Consensus configuration
 pub const ConsensusConfig = struct {
@@ -102,6 +111,10 @@ pub const ConsensusConfig = struct {
     max_committed_blocks: usize = 10000,
     /// Maximum pending blocks to retain in memory before pruning
     max_pending_blocks: usize = 5000,
+    /// Round timeout in seconds — if no quorum reached, advance to next round
+    round_timeout_secs: i64 = 30,
+    /// Enable BLS signature aggregation (replaces per-vote Ed25519 with single 96-byte BLS sig)
+    enable_bls_aggregation: bool = false,
 
     // ---------------------------------------------------------------------
     // P2P message scheduling budgets (public-chain hardening)
@@ -148,6 +161,8 @@ pub const StorageConfig = struct {
     enable_compaction: bool = true,
     /// Compaction interval in seconds
     compaction_interval_secs: u64 = 3600,
+    /// Skip corrupted WAL records during recovery (default: true for resilience)
+    recovery_skip_corrupted: bool = true,
 };
 
 /// VM/execution configuration
@@ -172,6 +187,8 @@ pub const AuthorityConfig = struct {
     port: u16 = 8083,
     /// Validator's signing key (32 bytes)
     signing_key: ?[32]u8 = null,
+    /// Gas Station allowlist — sponsored addresses (AI agents, automation)
+    gas_station_allowlist: []const [32]u8 = &.{},
     /// Validator's network key (32 bytes)
     network_key: ?[32]u8 = null,
     /// Validator's stake
@@ -191,6 +208,9 @@ pub const AuthorityConfig = struct {
 };
 
 /// Full node configuration
+/// NodeConfig is the canonical node configuration struct.
+/// Use ConfigWithBuffer for file-based loading with proper lifetime management.
+/// TODO: Merge with Config below to eliminate the duplicate type hierarchy.
 pub const NodeConfig = struct {
     const Self = @This();
 
@@ -300,27 +320,30 @@ pub fn loadFromJSON(allocator: std.mem.Allocator, json_slice: []const u8) !Self 
     }
 };
 
-/// ConfigWithBuffer holds a parsed Config along with its backing buffer.
+/// ConfigWithBuffer holds a parsed Config along with its backing buffer and JSON arena.
 /// This ensures string slices in Config remain valid for the lifetime of ConfigWithBuffer.
 pub const ConfigWithBuffer = struct {
     config: Config,
-    buffer: []u8,  // Must live at least as long as config
+    buffer: []u8, // File contents — must live as long as config string slices
+    json_parsed: std.json.Parsed(Config),
 
     pub fn deinit(self: *ConfigWithBuffer, allocator: std.mem.Allocator) void {
+        self.json_parsed.deinit();
         allocator.free(self.buffer);
     }
 };
 
 /// Load node config from JSON file, returning with its backing buffer.
-/// The buffer is kept alive to ensure string slices in config remain valid.
+/// The buffer and JSON arena are kept alive to ensure string slices in config remain valid.
 pub fn loadConfigWithBuffer(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !ConfigWithBuffer {
     const contents = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(1024 * 1024));
     errdefer allocator.free(contents);
-    const parsed = try json.parseFromSlice(Config, allocator, contents, .{ .ignore_unknown_fields = true });
-    // parsed.value contains slices into contents, so we must keep contents alive
+    var parsed = try json.parseFromSlice(Config, allocator, contents, .{ .ignore_unknown_fields = true });
+    errdefer parsed.deinit();
     return ConfigWithBuffer{
         .config = parsed.value,
         .buffer = contents,
+        .json_parsed = parsed,
     };
 }
 
@@ -425,6 +448,7 @@ pub const Config = struct {
     vm: VMConfig = .{},
     authority: AuthorityConfig = .{},
     allow_unauthenticated_p2p: bool = false,
+    parallel_execution: usize = 1,
 
     /// Create default configuration
     pub fn default() Self {
@@ -445,12 +469,28 @@ pub const Config = struct {
         return Self{};
     }
 
-    /// Load configuration from JSON file
+    /// Load configuration from JSON file.
+    /// String fields are deep-copied so the caller owns the returned config.
     pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
         const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
-        // NOTE: `Self.loadFromJSON` returns a config that borrows from `contents`.
-        // Keep `contents` alive for the lifetime of the returned config.
-        return try Self.loadFromJSON(allocator, contents);
+        defer allocator.free(contents);
+        var parsed = try json.parseFromSlice(Self, allocator, contents, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+        return try parsed.value.deepCopy(allocator);
+    }
+
+    /// Deep-copy all string slices so the Config owns its memory.
+    fn deepCopy(self: Self, allocator: std.mem.Allocator) !Self {
+        var copy = self;
+        inline for (@typeInfo(Self).@"struct".fields) |field| {
+            if (field.type == []const u8) {
+                const src = @field(copy, field.name);
+                if (src.len > 0) {
+                    @field(copy, field.name) = try allocator.dupe(u8, src);
+                }
+            }
+        }
+        return copy;
     }
 
     /// Parse configuration from JSON string

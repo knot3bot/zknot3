@@ -44,11 +44,17 @@ pub const EventQuery = struct {
     end_time: ?i64 = null,
 };
 
-/// Paginated result
+/// Paginated result with owned data
 pub const PaginatedResult = struct {
     data: []const u8,
     next_cursor: ?[]u8,
     has_more: bool,
+
+    pub fn deinit(self: *PaginatedResult, allocator: std.mem.Allocator) void {
+        if (self.data.len > 0) allocator.free(self.data);
+        if (self.next_cursor) |cursor| allocator.free(cursor);
+        self.* = undefined;
+    }
 };
 
 /// Index configuration
@@ -113,6 +119,7 @@ pub const Indexer = struct {
         
         var type_it = self.events_by_type.iterator();
         while (type_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.deinit(self.allocator);
         }
         self.events_by_type.deinit(self.allocator);
@@ -141,7 +148,7 @@ pub const Indexer = struct {
     /// Index an event
     pub fn indexEvent(self: *Self, event: IndexedEvent) !void {
         if (!self.config.enable_event_index) return;
-        
+
         // Make a copy with owned memory
         const owned_event = IndexedEvent{
             .transaction_digest = event.transaction_digest,
@@ -150,17 +157,26 @@ pub const Indexer = struct {
             .timestamp = event.timestamp,
             .event_index = event.event_index,
         };
-        
+        errdefer {
+            self.allocator.free(owned_event.event_type);
+            self.allocator.free(owned_event.contents);
+        }
+
         // Index by transaction
         const tx_list = try self.event_index.getOrPutValue(self.allocator, event.transaction_digest,
             std.ArrayList(IndexedEvent).empty);
         try tx_list.value_ptr.append(self.allocator, owned_event);
-        
-        // Index by type
-        const type_list = try self.events_by_type.getOrPutValue(self.allocator, event.event_type,
+
+        // Index by type — duplicate key so it outlives the caller's buffer
+        const owned_type_key = try self.allocator.dupe(u8, owned_event.event_type);
+        errdefer self.allocator.free(owned_type_key);
+        const type_entry = try self.events_by_type.getOrPutValue(self.allocator, owned_type_key,
             std.ArrayList(IndexedEvent).empty);
-        try type_list.value_ptr.append(self.allocator, owned_event);
-        
+        if (type_entry.found_existing) {
+            self.allocator.free(owned_type_key);
+        }
+        try type_entry.value_ptr.append(self.allocator, owned_event);
+
         self.event_count += 1;
     }
     
@@ -169,17 +185,18 @@ pub const Indexer = struct {
         return self.object_index.get(id);
     }
     
-    /// Query objects with filter
-    pub fn queryObjects(self: Self, query: ObjectQuery, cursor: ?core.ObjectID, limit: usize) !PaginatedResult {
-        var results = std.ArrayList(core.ObjectID).empty;
+    /// Query objects with filter.
+    /// Returns owned PaginatedResult — caller must call result.deinit(allocator).
+    pub fn queryObjects(self: Self, allocator: std.mem.Allocator, query: ObjectQuery, cursor: ?core.ObjectID, limit: usize) !PaginatedResult {
+        var results = std.ArrayList(core.ObjectID).init(allocator);
         defer results.deinit();
-        
+
         var it = self.object_index.iterator();
         var passed_cursor = cursor == null;
-        
+
         while (it.next()) |entry| {
             const obj = entry.value_ptr.*;
-            
+
             // Apply cursor filter
             if (!passed_cursor) {
                 if (obj.id.eql(cursor.?)) {
@@ -187,41 +204,49 @@ pub const Indexer = struct {
                 }
                 continue;
             }
-            
+
             // Apply owner filter
             if (query.owner) |owner| {
                 if (obj.owner == null or !std.mem.eql(u8, &obj.owner.?, &owner)) {
                     continue;
                 }
             }
-            
+
             // Apply type filter
             if (query.object_type) |obj_type| {
                 if (!std.mem.eql(u8, obj.type, obj_type)) {
                     continue;
                 }
             }
-            
+
             // Apply version filter
             if (query.version) |ver| {
                 if (obj.version.seq != ver) {
                     continue;
                 }
             }
-            
-            try results.append(self.allocator, obj.id);
-            
+
+            try results.append(obj.id);
+
             if (results.items.len >= limit) break;
         }
-        
+
         const has_more = it.next() != null;
         const next_cursor = if (has_more and results.items.len > 0)
-            try self.allocator.dupe(u8, results.items[results.items.len - 1].asBytes())
+            try allocator.dupe(u8, results.items[results.items.len - 1].asBytes())
         else
             null;
-        
+        errdefer if (next_cursor) |c| allocator.free(c);
+
+        // Serialize results into an owned byte buffer
+        const data_bytes = try allocator.alloc(u8, results.items.len * @sizeOf(core.ObjectID));
+        errdefer allocator.free(data_bytes);
+        for (results.items, 0..) |id, i| {
+            @memcpy(data_bytes[i * @sizeOf(core.ObjectID) .. (i + 1) * @sizeOf(core.ObjectID)], id.asBytes());
+        }
+
         return .{
-            .data = &results,
+            .data = data_bytes,
             .next_cursor = next_cursor,
             .has_more = has_more,
         };
@@ -235,15 +260,16 @@ pub const Indexer = struct {
         return null;
     }
 
-    /// Query events with filter
-    pub fn queryEvents(self: Self, query: EventQuery, cursor: ?u64, limit: usize) !PaginatedResult {
-        var results = std.ArrayList(IndexedEvent).empty;
+    /// Query events with filter.
+    /// Returns owned PaginatedResult — caller must call result.deinit(allocator).
+    pub fn queryEvents(self: Self, allocator: std.mem.Allocator, query: EventQuery, cursor: ?u64, limit: usize) !PaginatedResult {
+        var results = std.ArrayList(IndexedEvent).init(allocator);
         defer results.deinit();
-        
+
         var it = self.event_index.iterator();
         var event_idx: u64 = 0;
         var passed_cursor = cursor == null;
-        
+
         while (it.next()) |entry| {
             for (entry.value_ptr.items) |evt| {
                 // Apply cursor filter
@@ -254,21 +280,21 @@ pub const Indexer = struct {
                     event_idx += 1;
                     continue;
                 }
-                
+
                 // Apply transaction filter
                 if (query.transaction_digest) |tx_digest| {
                     if (!std.mem.eql(u8, &evt.transaction_digest, &tx_digest)) {
                         continue;
                     }
                 }
-                
+
                 // Apply type filter
                 if (query.event_type) |evt_type| {
                     if (!std.mem.eql(u8, evt.event_type, evt_type)) {
                         continue;
                     }
                 }
-                
+
                 // Apply time filter
                 if (query.start_time) |start| {
                     if (evt.timestamp < start) continue;
@@ -276,19 +302,39 @@ pub const Indexer = struct {
                 if (query.end_time) |end| {
                     if (evt.timestamp > end) continue;
                 }
-                
-                try results.append(self.allocator, evt);
+
+                try results.append(evt);
                 event_idx += 1;
-                
+
                 if (results.items.len >= limit) break;
             }
             if (results.items.len >= limit) break;
         }
-        
+
         const has_more = it.next() != null;
-        
+
+        // Serialize results into an owned byte buffer
+        // Format: [4-byte event_count][events...] where each event is:
+        //   [32-byte tx_digest][4-byte type_len][type_bytes][4-byte contents_len][contents_bytes][8-byte timestamp][8-byte event_index]
+        var buf = std.ArrayList(u8).init(allocator);
+        defer buf.deinit();
+        const writer = buf.writer();
+        try writer.writeInt(u32, @intCast(results.items.len), .little);
+        for (results.items) |evt| {
+            try writer.writeAll(&evt.transaction_digest);
+            try writer.writeInt(u32, @intCast(evt.event_type.len), .little);
+            try writer.writeAll(evt.event_type);
+            try writer.writeInt(u32, @intCast(evt.contents.len), .little);
+            try writer.writeAll(evt.contents);
+            try writer.writeInt(i64, evt.timestamp, .little);
+            try writer.writeInt(u64, evt.event_index, .little);
+        }
+
+        const owned_data = try buf.toOwnedSlice();
+        errdefer allocator.free(owned_data);
+
         return .{
-            .data = &results,
+            .data = owned_data,
             .next_cursor = null,
             .has_more = has_more,
         };

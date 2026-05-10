@@ -61,16 +61,21 @@ pub const EpochConsensusBridge = struct {
         self.consensus = consensus;
     }
 
-    /// 注册验证者的 stake
+    /// 注册验证者的 stake（self-stake）
     pub fn registerValidatorStake(self: *Self, validator_id: [32]u8, stake: u128) !void {
         try self.stake_pool.addStake(validator_id, stake, true);
     }
 
-    /// 在 epoch 边界更新共识
+    /// 注册验证者的委托 stake
+    pub fn registerDelegatedStake(self: *Self, validator_id: [32]u8, stake: u128) !void {
+        try self.stake_pool.addStake(validator_id, stake, false);
+    }
+
+    /// Record an epoch boundary event using the PREVIOUS (just-finalized) epoch's data.
     pub fn onEpochBoundary(self: *Self) !void {
         const epoch = self.epoch_manager.getCurrentEpoch();
 
-        // 记录 epoch 边界事件
+        // Record the boundary event using the epoch that just ended
         const event = EpochBoundaryEvent{
             .epoch_number = epoch.number,
             .timestamp = epoch.end_time,
@@ -79,7 +84,7 @@ pub const EpochConsensusBridge = struct {
         };
         try self.pending_events.append(self.allocator, event);
 
-        // 如果有共识协议，更新它
+        // Notify consensus of the new epoch configuration
         if (self.consensus) |consensus| {
             const epoch_info = self.getConsensusEpochInfo();
             consensus.onEpochChange(epoch_info.total_stake, epoch_info.validator_count);
@@ -92,7 +97,7 @@ pub const EpochConsensusBridge = struct {
     }
 
     /// 获取当前 epoch 信息用于共识
-    pub fn getConsensusEpochInfo(self: Self) ConsensusEpochInfo {
+    pub fn getConsensusEpochInfo(self: *const Self) ConsensusEpochInfo {
         const epoch = self.epoch_manager.getCurrentEpoch();
         return ConsensusEpochInfo{
             .epoch_number = epoch.number,
@@ -103,14 +108,15 @@ pub const EpochConsensusBridge = struct {
     }
 
     /// 获取验证者的 epoch 投票权重
-    pub fn getValidatorVotingPower(self: Self, validator_id: [32]u8) u128 {
+    pub fn getValidatorVotingPower(self: *const Self, validator_id: [32]u8) u128 {
         return self.stake_pool.getVotingPower(validator_id);
     }
 
-    /// 处理 epoch 变更 - 当 epoch 结束时调用
+    /// 处理 epoch 变更 — 先记录旧 epoch 边界，再 advance 到新 epoch
     pub fn handleEpochChange(self: *Self, new_total_stake: u128, new_validator_count: usize) !void {
-        try self.epoch_manager.advanceEpoch(new_total_stake, new_validator_count);
+        // Record boundary of the current epoch BEFORE advancing
         try self.onEpochBoundary();
+        try self.epoch_manager.advanceEpoch(new_total_stake, new_validator_count);
     }
 };
 

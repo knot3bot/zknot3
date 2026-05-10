@@ -28,7 +28,14 @@ comptime {
     _ = @import("test/property/mysticeti_concurrency_test.zig");
     _ = @import("test/fuzz/fuzz_framework.zig");
     _ = @import("test/fuzz/ObjectIDFuzzTests.zig");
+    _ = @import("test/unit/performance_bench_test.zig");
     _ = @import("src/form/network/P2PServer.zig");
+    _ = @import("src/property/move_vm/stdlib.zig");
+    _ = @import("src/property/move_vm/License.zig");
+    _ = @import("src/property/crypto/ZkLogin.zig");
+    // E2E tests require real filesystem (not testing.io). Run with:
+    //   zig build test -- Integration tests use /tmp/ directories.
+    // _ = @import("src/test/e2e_test.zig");
 }
 
 

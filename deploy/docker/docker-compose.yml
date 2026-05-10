@@ -4,7 +4,18 @@ services:
     container_name: zknot3-validator-1
     hostname: validator-1
     restart: unless-stopped
-    privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    cap_add: [NET_ADMIN]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command: ["-c", "/etc/zknot3/config.json"]
     env_file:
       - ./.env
@@ -15,6 +26,14 @@ services:
     volumes:
       - zknot3-data-1:/var/lib/zknot3
       - ./configs/validator-1.json.tmpl:/etc/zknot3/config.template.json:ro
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+        reservations:
+          memory: 2G
+          cpus: "1"
     networks:
       zknot3-net:
         ipv4_address: 172.20.0.2
@@ -35,7 +54,18 @@ services:
     container_name: zknot3-validator-2
     hostname: validator-2
     restart: unless-stopped
-    privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    cap_add: [NET_ADMIN]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command: ["-c", "/etc/zknot3/config.json"]
     env_file:
       - ./.env
@@ -66,7 +96,18 @@ services:
     container_name: zknot3-validator-3
     hostname: validator-3
     restart: unless-stopped
-    privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    cap_add: [NET_ADMIN]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command: ["-c", "/etc/zknot3/config.json"]
     env_file:
       - ./.env
@@ -97,7 +138,18 @@ services:
     container_name: zknot3-validator-4
     hostname: validator-4
     restart: unless-stopped
-    privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    cap_add: [NET_ADMIN]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command: ["-c", "/etc/zknot3/config.json"]
     env_file:
       - ./.env
@@ -127,7 +179,18 @@ services:
     image: zknot3:latest
     container_name: zknot3-fullnode
     restart: unless-stopped
-    privileged: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    cap_add: [NET_ADMIN]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     command: ["-c", "/etc/zknot3/config.json"]
     env_file:
       - ./.env

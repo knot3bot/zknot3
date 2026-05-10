@@ -87,6 +87,13 @@ pub const Instruction = struct {
         // Function call
         call = 0xA0,
         call_indirect = 0xA1,
+
+        // Struct operations
+        pack = 0xB0,
+        unpack = 0xB1,
+        borrow_field = 0xB2,
+        borrow_field_mut = 0xB3,
+
         // Unknown/Invalid
         invalid = 0xFF,
     };
@@ -155,6 +162,7 @@ pub const BytecodeVerifier = struct {
                 } else return error.InvalidBytecode,
                 .branch, .branch_if => 2,
                 .vec_pack => 4,
+                .pack, .unpack, .borrow_field, .borrow_field_mut => 1,
                 .call => blk: {
                     // call format: [module_len: u8][module: bytes][func_len: u8][func: bytes][arg_count: u8]
                     if (offset >= bytecode.len) return error.InvalidBytecode;
@@ -195,11 +203,105 @@ pub const BytecodeVerifier = struct {
             }
         }
 
+        // Stack height verification
+        try self.verifyStackHeight(instructions.items);
+
         return .{
             .name = "module",
             .instructions = try instructions.toOwnedSlice(self.allocator),
             .local_count = 0,
         };
+    }
+
+    /// Returns the net stack delta for a single instruction encoded as (pop << 16) | push.
+    fn stackDelta(opcode: Instruction.OpCode) u32 {
+        const tag = @intFromEnum(opcode);
+        // Arithmetic / bitwise: pop 2, push 1
+        if (tag >= 0x40 and tag <= 0x54) return (2 << 16) | 1;
+        // Comparison: pop 2, push 1
+        if (tag >= 0x60 and tag <= 0x65) return (2 << 16) | 1;
+        // Logical and/or: pop 2, push 1
+        if (tag == 0x70 or tag == 0x71) return (2 << 16) | 1;
+        // not: pop 1, push 1
+        if (tag == 0x72) return (1 << 16) | 1;
+        // pop, branch_if: pop 1, push 0
+        if (tag == 0x11 or tag == 0x04) return (1 << 16) | 0;
+        // dup: pop 0, push 1
+        if (tag == 0x12) return (0 << 16) | 1;
+        // ld_*, ld_true, ld_false, ld_addr: pop 0, push 1
+        if ((tag >= 0x30 and tag <= 0x38) or tag == 0x14 or tag == 0x15) return (0 << 16) | 1;
+        // Everything else: pop 0, push 0
+        return 0;
+    }
+
+    /// Verify stack height consistency across all control flow paths.
+    fn verifyStackHeight(self: *Self, instructions: []const Instruction) !void {
+        if (instructions.len == 0) return;
+        _ = &self.allocator; // keep self alive
+
+        const max_stack: i32 = 1024;
+        var depths = try self.allocator.alloc(?i32, instructions.len);
+        defer self.allocator.free(depths);
+        @memset(depths, null);
+
+        var worklist = std.ArrayList(usize).empty;
+        defer worklist.deinit(self.allocator);
+
+        try worklist.append(self.allocator,0);
+        depths[0] = 0;
+
+        while (worklist.items.len > 0) {
+            const pc = worklist.orderedRemove(0);
+            const current_depth = depths[pc] orelse continue;
+            var depth = current_depth;
+            var ip = pc;
+
+            while (ip < instructions.len) {
+                // Check for already-visited join point
+                if (depths[ip]) |existing| {
+                    if (existing != depth) return error.InvalidStackHeight;
+                    break;
+                }
+                depths[ip] = depth;
+
+                const inst = instructions[ip];
+                const delta = stackDelta(inst.opcode);
+                const pop: i32 = @intCast(delta >> 16);
+                const push: i32 = @intCast(delta & 0xFFFF);
+                depth -= pop;
+                if (depth < 0) return error.StackUnderflow;
+                depth += push;
+                if (depth > max_stack) return error.StackOverflow;
+
+                switch (inst.opcode) {
+                    .branch => {
+                        if (inst.payload.len >= 2) {
+                            const target = std.mem.readInt(u16, inst.payload[0..2], .big);
+                            if (depths[target] == null) {
+                                try worklist.append(self.allocator,target);
+                            }
+                        }
+                        break;
+                    },
+                    .branch_if => {
+                        // Fall-through path
+                        if (ip + 1 < instructions.len and depths[ip + 1] == null) {
+                            try worklist.append(self.allocator,ip + 1);
+                        }
+                        // Branch target path
+                        if (inst.payload.len >= 2) {
+                            const target = std.mem.readInt(u16, inst.payload[0..2], .big);
+                            if (depths[target] == null) {
+                                try worklist.append(self.allocator,target);
+                            }
+                        }
+                        break;
+                    },
+                    .ret => break,
+                    else => ip += 1,
+                }
+            }
+        }
     }
 
     /// Check if instruction is legal at this point

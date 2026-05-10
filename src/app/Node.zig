@@ -177,13 +177,12 @@ pub const Node = struct {
         self_ptr.txn_pool = txn_pool;
         self_ptr.executor = exec;
         self_ptr.runtime_metrics = try RuntimeMetrics.RuntimeMetricsCollector.init(allocator, 100);
-        self_ptr.mainnet_hooks = try MainnetExtensionHooks.Manager.init(allocator);
-        errdefer self_ptr.mainnet_hooks.deinit();
-        self_ptr.m4_wal = null;
         errdefer {
             self_ptr.runtime_metrics.?.deinit();
-            self_ptr.runtime_metrics.?.allocator.destroy(self_ptr.runtime_metrics.?);
+            allocator.destroy(self_ptr.runtime_metrics.?);
         }
+        self_ptr.mainnet_hooks = try MainnetExtensionHooks.Manager.init(allocator);
+        self_ptr.m4_wal = null;
 
         errdefer self_ptr.deinit();
 
@@ -294,6 +293,12 @@ pub const Node = struct {
                 Log.warn("[WARN] Failed to save checkpoint sequence to {s}: {s}", .{ p, @errorName(err) });
             };
         }
+        // Truncate WAL after checkpoint — data is safely in SSTables
+        if (self.m4_wal) |w| {
+            w.truncate() catch |err| {
+                Log.warn("[WARN] Failed to truncate WAL after checkpoint: {s}", .{@errorName(err)});
+            };
+        }
         self.checkpoint_store.deinit();
         self.txn_pool.deinit();
         self.executor.deinit();
@@ -325,15 +330,28 @@ pub const Node = struct {
 
     /// Validate node configuration before starting
     pub fn validateConfig(self: *Self) !void {
-        if (self.config.network.rpc_port == 0) {
-            return error.InvalidConfig;
+        const cfg = self.config;
+        if (cfg.network.rpc_port == 0) return error.InvalidConfig;
+        if (cfg.storage.data_dir.len == 0) return error.InvalidConfig;
+        // Validator-specific checks
+        if (cfg.consensus.validator_enabled) {
+            if (cfg.consensus.vote_quorum == 0) return error.InvalidConfig;
+            if (cfg.consensus.min_validators < 4) return error.InvalidConfig;
+            if (cfg.consensus.max_validators < cfg.consensus.min_validators) return error.InvalidConfig;
+            if (cfg.authority.signing_key == null) return error.InvalidConfig;
         }
-        if (self.config.consensus.validator_enabled and self.config.consensus.vote_quorum == 0) {
-            return error.InvalidConfig;
-        }
-        if (self.config.storage.data_dir.len == 0) {
-            return error.InvalidConfig;
-        }
+        // Network: non-loopback bind requires admin token
+        if (!std.mem.eql(u8, cfg.network.bind_address, "127.0.0.1") and
+            cfg.network.admin_token.len == 0) return error.InvalidConfig;
+        // Gas price sanity
+        if (cfg.vm.min_gas_price == 0) return error.InvalidConfig;
+        if (cfg.vm.max_gas_budget < cfg.vm.min_gas_price) return error.InvalidConfig;
+        // Storage thresholds
+        if (cfg.storage.cache_size == 0) return error.InvalidConfig;
+        // Max connections must be > 0 if P2P enabled
+        if (cfg.network.p2p_enabled and cfg.network.max_connections == 0) return error.InvalidConfig;
+        // Consensus budget sanity
+        if (cfg.consensus.epoch_duration_secs == 0) return error.InvalidConfig;
     }
 
     pub fn stop(self: *Self) void {
@@ -341,6 +359,9 @@ pub const Node = struct {
         if (self.p2p_server) |server| {
             server.stop();
         }
+        // TODO: integrate with event loop to drain pending blocks and in-flight operations
+        // before transitioning to .stopped. Callers should invoke deinit() after stop()
+        // to flush the WAL, memtable, and checkpoint.
         self.state = .stopped;
     }
 
@@ -388,7 +409,7 @@ pub const Node = struct {
         const result = try w.replayWithOptions(Cb.onReplay, self, .{
             .max_record_type = 20,
             .validate_types = true,
-            .skip_corrupted = false,
+            .skip_corrupted = self.config.storage.recovery_skip_corrupted,
         });
         if (result.errors > 0) return error.ReadFailed;
     }
@@ -537,6 +558,11 @@ pub const Node = struct {
 
     pub fn tryCommitBlocks(self: *Self) !?Mysticeti.CommitCertificate {
         if (self.state != .running) return error.NotRunning;
+
+        // Check round timeout — advances round if stalled
+        if (self.consensus_integration) |ci| {
+            ci.mysticeti.checkRoundTimeout(self.config.consensus.round_timeout_secs);
+        }
 
         const QuorumExecCtx = struct {
             node: *Self,
@@ -745,7 +771,7 @@ pub const Node = struct {
     pub fn generateTraceId(self: *Self) [32]u8 {
         const seq = self.trace_counter.fetchAdd(1, .monotonic);
         var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
         var out: [32]u8 = undefined;
         var ctx = std.crypto.hash.Blake3.init(.{});
         ctx.update(std.mem.asBytes(&seq));
@@ -789,6 +815,17 @@ pub const Node = struct {
         NodeStatsCoordinator.onTransactionsExecuted(&self.stats, 1, result.gas_used);
         self.indexExecutionResult(result.digest, result);
         return result;
+    }
+
+    /// Dry-run / simulate a transaction without committing state changes.
+    /// Returns execution effects (gas used, events, output objects) enabling
+    /// AI agents to preview outcomes before submission. Essential for PTB composition.
+    pub fn dryRunTransaction(self: *Self, tx: pipeline.Transaction) !ExecutionResult {
+        // Execute in a sandbox: execute normally but skip state commit + indexing.
+        // The underlying executor does not persist results — only the caller (commitBlock)
+        // writes to the object store. So dry-run is a natural fit: just execute + return.
+        var ctx = self.txExecContext();
+        return TxExecutionCoordinator.executeOne(&ctx, tx);
     }
 
     pub fn executeTransactionBatch(self: *Self, txs: []const pipeline.Transaction) ![]ExecutionResult {

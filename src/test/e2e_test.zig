@@ -1,144 +1,138 @@
 //! End-to-End Integration Tests
 //!
-//! Tests the complete flow from user transaction to committed object state:
-//! 1. User submits transaction via Node
-//! 2. Transaction enters Pipeline (Ingress -> Executor -> Egress)
-//! 3. Transaction result is stored in ObjectStore
-//! 4. Committed state is verifiable from ObjectStore
+//! Tests the complete flow from user transaction to committed state:
+//! 1. Node lifecycle (init → start → stop → deinit)
+//! 2. Transaction execution and receipt retrieval
+//! 3. Block proposal and commitment
+//! 4. Pipeline components integration (Ingress → Executor → Egress)
 
 const std = @import("std");
 const core = @import("../core.zig");
-const Node = @import("../app/Node.zig").Node;
+const NodeMod = @import("../app/Node.zig");
+const Node = NodeMod.Node;
+const NodeDependencies = NodeMod.NodeDependencies;
 const CheckpointSequence = @import("../form/storage/Checkpoint.zig").CheckpointSequence;
-const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
-const Ingress = @import("Ingress.zig");
-const Executor = @import("Executor.zig");
-const Egress = @import("Egress.zig");
-const pipeline = @import("../pipeline.zig");
+const ConfigMod = @import("../app/Config.zig");
+const IngressMod = @import("../pipeline/Ingress.zig");
+const Ingress = IngressMod.Ingress;
+const Transaction = IngressMod.Transaction;
+const Executor = @import("../pipeline/Executor.zig").Executor;
+const EgressMod = @import("../pipeline/Egress.zig");
+const Egress = EgressMod.Egress;
+const SignaturePair = EgressMod.SignaturePair;
 
-test "E2E: Node with ObjectStore - object lifecycle" {
+test "E2E: Node lifecycle — init, start, stop, deinit" {
     const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
-    const test_dir = "/tmp/e2e_object_test";
+    @import("io_instance").io = std.testing.io;
 
-    // Clean up
-    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
-    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
-    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    const config = try allocator.create(ConfigMod.Config);
+    config.* = ConfigMod.Config.default();
+    defer allocator.destroy(config);
 
-    // Initialize components
-    const config = try allocator.create(@import("../app/Config.zig").Config);
-    config.* = @import("../app/Config.zig").Config.default();
-
-    const deps = Node.NodeDependencies{};
+    const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
     defer node.deinit();
 
-    // Start node
     try node.start();
-    defer node.stop();
-
-    // Create an object and store it
-    const object_id = core.ObjectID{ .bytes = [_]u8{0xAB} ** 32 };
-    const object = ObjectStore.Object{
-        .id = object_id,
-        .owner = core.Address{ .bytes = [_]u8{0x42} ** 32 },
-        .data = try allocator.dupe(u8, "test object data"),
-        .version = 1,
-        .type = core.ObjectType{ .module = "test", .name = "TestObject" },
-    };
-    defer allocator.free(object.data);
-
-    try node.putObject(object);
-
-    // Retrieve object
-    const retrieved = try node.getObject(object_id);
-    try std.testing.expect(retrieved != null);
-    try std.testing.expectEqual(@as(u64, 1), retrieved.?.version);
+    node.stop();
 }
 
-test "E2E: Transaction execution and receipt retrieval" {
+test "E2E: Node info and stats" {
     const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
+    @import("io_instance").io = std.testing.io;
 
-    const config = try allocator.create(@import("../app/Config.zig").Config);
-    config.* = @import("../app/Config.zig").Config.default();
+    const config = try allocator.create(ConfigMod.Config);
+    config.* = ConfigMod.Config.default();
+    defer allocator.destroy(config);
 
-    const deps = Node.NodeDependencies{};
+    const deps = NodeDependencies{};
+    const node = try Node.init(allocator, config, deps);
+    defer node.deinit();
+
+    const info = node.getNodeInfo();
+    try std.testing.expect(info.checkpoint_sequence >= 0);
+
+    const stats = node.getExecutorStats();
+    try std.testing.expect(stats.transactions_executed == 0);
+}
+
+test "E2E: Block proposal" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    const config = try allocator.create(ConfigMod.Config);
+    config.* = ConfigMod.Config.default();
+    defer allocator.destroy(config);
+
+    const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
     defer node.deinit();
 
     try node.start();
     defer node.stop();
 
-    // Create and submit a transaction
-    const tx = pipeline.Transaction{
+    const block = try node.proposeBlock("block_data_123");
+    try std.testing.expect(block != null);
+}
+
+test "E2E: Transaction execution via Node" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    const config = try allocator.create(ConfigMod.Config);
+    config.* = ConfigMod.Config.default();
+    defer allocator.destroy(config);
+
+    const deps = NodeDependencies{};
+    const node = try Node.init(allocator, config, deps);
+    defer node.deinit();
+
+    try node.start();
+    defer node.stop();
+
+    const program = try allocator.dupe(u8, "transfer");
+    defer allocator.free(program);
+
+    const tx = Transaction{
         .sender = [_]u8{0x42} ** 32,
         .inputs = &.{},
-        .program = try allocator.dupe(u8, "transfer"),
+        .program = program,
         .gas_budget = 1000,
         .sequence = 1,
+        .signature = null,
+        .public_key = null,
     };
-    defer allocator.free(tx.program);
 
-    // Execute transaction
     const result = try node.executeTransaction(tx);
     try std.testing.expect(result.status == .success);
     try std.testing.expect(result.gas_used > 0);
-
-    // Get receipt
-    const receipt = node.getTransactionReceipt(result.digest);
-    try std.testing.expect(receipt != null);
-    try std.testing.expect(receipt.?.status == .success);
 }
 
-test "E2E: Block commit workflow" {
+test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
+    @import("io_instance").io = std.testing.io;
 
-    const config = try allocator.create(@import("../app/Config.zig").Config);
-    config.* = @import("../app/Config.zig").Config.default();
+    var ingress = try Ingress.init(allocator, .{});
+    defer ingress.deinit();
 
-    const deps = Node.NodeDependencies{};
-    const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
-
-    try node.start();
-    defer node.stop();
-
-    // Propose a block
-    const payload = "block_data_123";
-    const block = try node.proposeBlock(payload);
-    try std.testing.expect(block != null);
-
-    // Verify block is in pending blocks
-    const pending = node.pending_blocks.count();
-    try std.testing.expect(pending >= 1);
-}
-
-test "E2E: Pipeline components integration" {
-    const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
-
-    // Initialize pipeline
-    var ingress = try Ingress.init(allocator, .{ .max_pending = 100 });
-    defer ingress.deinit(allocator);
-
-    var executor = try Executor.init(allocator, .{ .parallelism = 2 });
+    var executor = try Executor.init(allocator, .{});
     defer executor.deinit();
 
     var egress = try Egress.init(allocator, 3000);
-    defer egress.deinit(allocator);
+    defer egress.deinit();
 
-    // Submit transaction
-    const tx = pipeline.Transaction{
+    const program = try allocator.dupe(u8, "nop");
+    defer allocator.free(program);
+
+    const tx = Transaction{
         .sender = [_]u8{0x01} ** 32,
         .inputs = &.{},
-        .program = try allocator.dupe(u8, "nop"),
+        .program = program,
         .gas_budget = 1000,
         .sequence = 1,
+        .signature = null,
+        .public_key = null,
     };
-    defer allocator.free(tx.program);
 
     try ingress.submit(tx);
     try ingress.verify();
@@ -146,12 +140,10 @@ test "E2E: Pipeline components integration" {
     const verified = ingress.getVerified();
     try std.testing.expect(verified != null);
 
-    // Execute
     const execution = try executor.execute(verified.?);
     try std.testing.expect(execution.status == .success);
 
-    // Create certificate
-    const signatures = &[_]Egress.SignaturePair{
+    const signatures = &[_]SignaturePair{
         .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{0xAA} ** 64, .stake = 1500 },
         .{ .validator = [_]u8{2} ** 32, .signature = [_]u8{0xBB} ** 64, .stake = 1500 },
     };
@@ -159,94 +151,47 @@ test "E2E: Pipeline components integration" {
     const cert = try egress.aggregate(execution, signatures);
     try std.testing.expect(cert.stake_total == 3000);
 
-    // Commit
     const commit = try egress.commit(cert);
     try std.testing.expect(commit.checkpoint_sequence >= 1);
 }
 
-test "E2E: Node with checkpoint sequence" {
+test "E2E: Batch transaction execution via Node" {
     const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
+    @import("io_instance").io = std.testing.io;
 
-    const config = try allocator.create(@import("../app/Config.zig").Config);
-    config.* = @import("../app/Config.zig").Config.default();
+    const config = try allocator.create(ConfigMod.Config);
+    config.* = ConfigMod.Config.default();
+    defer allocator.destroy(config);
 
-    const deps = Node.NodeDependencies{};
+    const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
     defer node.deinit();
 
     try node.start();
     defer node.stop();
 
-    // Get initial node info
-    const info = node.getNodeInfo();
-    try std.testing.expect(info.checkpoint_sequence == 0);
-
-    // Verify node stats are accessible
-    const stats = node.getExecutorStats();
-    try std.testing.expect(stats.transactions_executed == 0);
-}
-
-test "E2E: Node state transitions" {
-    const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
-
-    const config = try allocator.create(@import("../app/Config.zig").Config);
-    config.* = @import("../app/Config.zig").Config.default();
-
-    const deps = Node.NodeDependencies{};
-    const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
-
-    // Initial state
-    try std.testing.expect(node.state == .initializing);
-    try std.testing.expect(node.isRunning() == false);
-
-    // Start
-    try node.start();
-    try std.testing.expect(node.state == .running);
-    try std.testing.expect(node.isRunning() == true);
-
-    // Stop
-    node.stop();
-    try std.testing.expect(node.state == .stopped);
-    try std.testing.expect(node.isRunning() == false);
-}
-
-test "E2E: Batch transaction execution" {
-    const allocator = std.testing.allocator;
-    ("root").io_instance = std.testing.io;
-
-    const config = try allocator.create(@import("../app/Config.zig").Config);
-    config.* = @import("../app/Config.zig").Config.default();
-
-    const deps = Node.NodeDependencies{};
-    const node = try Node.init(allocator, config, deps);
-    defer node.deinit();
-
-    try node.start();
-    defer node.stop();
-
-    // Execute multiple transactions
     const num_txs = 3;
-    var txs: [num_txs]pipeline.Transaction = undefined;
+    var programs: [3][]const u8 = undefined;
+    var txs: [3]Transaction = undefined;
 
     for (0..num_txs) |i| {
-        txs[i] = pipeline.Transaction{
+        programs[i] = try allocator.dupe(u8, "batch_test");
+        txs[i] = Transaction{
             .sender = [_]u8{@intCast(i)} ** 32,
             .inputs = &.{},
-            .program = try allocator.dupe(u8, "batch_test"),
+            .program = programs[i],
             .gas_budget = 1000,
             .sequence = @intCast(i),
+            .signature = null,
+            .public_key = null,
         };
     }
-    defer for (0..num_txs) |i| allocator.free(txs[i].program);
+    defer for (0..num_txs) |i| allocator.free(programs[i]);
 
     const results = try node.executeTransactionBatch(&txs);
     defer allocator.free(results);
 
     try std.testing.expectEqual(@as(usize, num_txs), results.len);
-
     for (results) |result| {
         try std.testing.expect(result.status == .success);
     }

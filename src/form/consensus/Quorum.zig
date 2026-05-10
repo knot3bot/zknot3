@@ -62,7 +62,8 @@ pub const Quorum = struct {
         for (self.members.items, 0..) |v, i| {
             if (std.mem.eql(u8, &v.id, &id)) {
                 if (v.is_active) {
-                    self.active_stake -= v.stake;
+                    self.active_stake = std.math.sub(u128, self.active_stake, v.stake) catch 0;
+                    self.total_stake = std.math.sub(u128, self.total_stake, v.stake) catch 0;
                 }
                 self.members.items[i].is_active = false;
                 break;
@@ -103,6 +104,10 @@ pub const Quorum = struct {
     }
 
     /// Get total stake
+    pub fn validatorCount(self: Self) usize {
+        return self.members.items.len;
+    }
+
     pub fn totalStake(self: Self) u128 {
         return self.total_stake;
     }
@@ -219,6 +224,21 @@ test "Quorum voting" {
         .{ .id = [_]u8{2} ** 32, .stake = 3000 },
     };
     try std.testing.expect(quorum.hasQuorum(votes2));
+}
+
+test "Quorum removeValidator updates total_stake" {
+    const allocator = std.testing.allocator;
+    var quorum = try Quorum.init(allocator);
+    defer quorum.deinit();
+
+    const vid = [_]u8{1} ** 32;
+    try quorum.updateValidatorStake(vid, 1000);
+    try std.testing.expectEqual(@as(u128, 1000), quorum.totalStake());
+
+    // Remove validator must decrement both active_stake and total_stake
+    quorum.removeValidator(vid);
+    try std.testing.expectEqual(@as(u128, 0), quorum.activeStake());
+    try std.testing.expectEqual(@as(u128, 0), quorum.totalStake());
 }
 
 // Comptime assertion: quorum forms quotient group

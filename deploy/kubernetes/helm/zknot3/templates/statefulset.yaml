@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-validator
+  labels:
+    app: zknot3
+spec:
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ .Release.Name }}-headless
+  selector:
+    matchLabels:
+      app: zknot3
+  template:
+    metadata:
+      labels:
+        app: zknot3
+    spec:
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+      containers:
+        - name: zknot3
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: rpc
+              containerPort: {{ .Values.service.rpcPort }}
+            - name: p2p
+              containerPort: {{ .Values.service.p2pPort }}
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory }}
+              cpu: {{ .Values.resources.requests.cpu }}
+            limits:
+              memory: {{ .Values.resources.limits.memory }}
+              cpu: {{ .Values.resources.limits.cpu }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/zknot3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.service.rpcPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.service.rpcPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "{{ .Values.persistence.storageClass }}"
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

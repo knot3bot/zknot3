@@ -37,13 +37,13 @@ pub const GasMeter = struct {
         };
     }
 
-    /// Consume gas (monotone - only decreases)
+    /// Consume gas (monotone - only decreases), overflow-safe
     pub fn consume(self: *Self, amount: u64) !void {
         if (amount > self.remaining) {
             return error.OutOfGas;
         }
         self.remaining -= amount;
-        self.consumed += amount;
+        self.consumed = std.math.add(u64, self.consumed, amount) catch std.math.maxInt(u64);
     }
 
     /// Check if has enough gas for operation
@@ -102,18 +102,17 @@ pub const GasFunctor = struct {
         self.base_costs.deinit(self.allocator);
     }
 
-    /// Calculate cost for an instruction (monotone functor)
+    /// Calculate cost for an instruction (monotone functor), overflow-safe
     pub fn cost(self: Self, opcode: u8, complexity: u32) u64 {
         const base = self.base_costs.get(opcode) orelse 1;
-        // Cost scales with complexity
-        return base * @as(u64, @intCast(complexity));
+        return std.math.mul(u64, base, @as(u64, @intCast(complexity))) catch std.math.maxInt(u64);
     }
 
-    /// Estimate cost for bytecode (gas preview)
+    /// Estimate cost for bytecode (gas preview), overflow-safe
     pub fn estimateCost(self: Self, instructions: []const CostInstruction) u64 {
         var total: u64 = 0;
         for (instructions) |instr| {
-            total += self.cost(instr.opcode, instr.complexity);
+            total = std.math.add(u64, total, self.cost(instr.opcode, instr.complexity)) catch return std.math.maxInt(u64);
         }
         return total;
     }

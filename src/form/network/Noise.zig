@@ -1,12 +1,18 @@
-//! Noise Protocol Framework for encrypted connections
+//! Noise Protocol Framework for encrypted connections.
 //!
-//! Reference: rust-libp2p noise implementation
+//! Implements the Noise XX handshake pattern (3-message, mutual auth).
+//! Key derivation via HMAC-SHA256, symmetric encryption via ChaCha20-Poly1305.
 //!
-//! The Noise Protocol Framework provides:
-//! - Authenticated key exchange
-//! - Forward secrecy
-//! - Identity hiding (optional)
-//! - 0-RTT / 1-RTT handshake patterns
+//! Supported:
+//! - Authenticated key exchange (X25519 DH)
+//! - Forward secrecy (ephemeral keys per session)
+//! - CipherState split with independent directional keys
+//! - Nonce tracking with documented wrap-around safety limit (2^64 messages)
+//!
+//! Not implemented:
+//! - 0-RTT / PSK patterns (fallback, IK, KK)
+//! - Identity hiding (static keys are transmitted as public keys)
+//! - Protocol name negotiation (hardcoded to Noise_XX)
 
 const std = @import("std");
 const core = @import("../../core.zig");
@@ -103,7 +109,9 @@ pub const CipherState = struct {
 
     /// Symmetric encryption key
     k: [32]u8,
-    /// Nonce counter
+    /// Nonce counter. Uses wrapping addition — after 2^64 encryptions the nonce
+    /// wraps to 0 which BREAKS ChaCha20-Poly1305 security. Production deployments
+    /// MUST re-key (via a new Noise handshake) well before this limit (~1.8e19 messages).
     n: u64,
 
     pub fn init(k: [32]u8) Self {
@@ -178,13 +186,11 @@ pub const SymmetricState = struct {
     ck: [HASHLEN]u8,
 
     pub fn init(name: []const u8, protocol_name: []const u8) !Self {
-        var hash_input: [64]u8 = undefined;
-        @memcpy(hash_input[0..name.len], name);
-        @memcpy(hash_input[name.len..][0..protocol_name.len], protocol_name);
-
-        // Initialize hash with protocol name
+        // Hash protocol name components incrementally — avoids stack buffer overflow
+        // on long protocol names that would exceed the fixed 64-byte buffer.
         var ctx = std.crypto.hash.Blake3.init(.{});
-        ctx.update(&hash_input);
+        ctx.update(name);
+        ctx.update(protocol_name);
         var hash: [HASHLEN]u8 = undefined;
         ctx.final(&hash);
 
@@ -232,23 +238,41 @@ pub const SymmetricState = struct {
         self.dec = CipherState.init(self.dec.k);
     }
 
-    /// Encrypt and mix hash
+    /// Encrypt and mix hash — per Noise spec, mixes full ciphertext including auth tag
     pub fn encryptAndHash(self: *Self, plaintext: []const u8, dest: []u8) !void {
         try self.enc.encrypt(plaintext, dest);
-        self.mixHash(dest[0..plaintext.len]);
+        // dest contains: ciphertext[0..plaintext.len] + auth_tag[plaintext.len..plaintext.len+16]
+        self.mixHash(dest[0 .. plaintext.len + 16]);
     }
 
-    /// Decrypt and mix hash
+    /// Decrypt and mix hash — per Noise spec, mixes the ciphertext (not plaintext)
     pub fn decryptAndHash(self: *Self, ciphertext: []const u8, dest: []u8) !void {
-        const plaintext_len = ciphertext.len - 16;
         try self.dec.decrypt(ciphertext, dest);
-        self.mixHash(dest[0..plaintext_len]);
+        // Mix the full ciphertext including auth tag, per Noise spec section 5
+        self.mixHash(ciphertext);
     }
 
-    /// Split cipher states for symmetric communication
+    /// Split cipher states for symmetric communication.
+    /// Per Noise spec section 5: derives two independent CipherState keys
+    /// from the chaining key via HKDF, ensuring forward secrecy in both directions.
     pub fn split(self: *Self, enc: *CipherState, dec: *CipherState) void {
-        enc.* = self.enc;
-        dec.* = self.dec;
+        // HKDF-expand: derive two 32-byte keys from the chaining key
+        var enc_key: [32]u8 = undefined;
+        var dec_key: [32]u8 = undefined;
+
+        // Derive enc key: HMAC-SHA256(ck, [0x01])
+        var ctx = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.ck);
+        ctx.update(&[_]u8{1});
+        ctx.final(&enc_key);
+
+        // Derive dec key: HMAC-SHA256(ck, enc_key || [0x02])
+        ctx = std.crypto.auth.hmac.sha2.HmacSha256.init(&self.ck);
+        ctx.update(&enc_key);
+        ctx.update(&[_]u8{2});
+        ctx.final(&dec_key);
+
+        enc.* = CipherState.init(enc_key);
+        dec.* = CipherState.init(dec_key);
     }
 };
 
@@ -256,8 +280,10 @@ pub const SymmetricState = struct {
 pub const HandshakeState = struct {
     const Self = @This();
     const Role = enum { initiator, responder };
+    const Step = enum(u8) { step1, step2, step3, done };
 
     role: Role,
+    handshake_step: Step,
     s: ?*const NoiseKeypair,
     e: ?NoiseSecretKey,
     rs: ?NoisePublicKey,
@@ -276,6 +302,7 @@ pub const HandshakeState = struct {
         const sym = try SymmetricState.init(name, protocol_name);
         return .{
             .role = role,
+            .handshake_step = .step1,
             .s = keypair,
             .e = null,
             .rs = null,
@@ -288,11 +315,14 @@ pub const HandshakeState = struct {
         // Generate ephemeral key pair
         self.e = NoiseSecretKey.generate();
 
-        // Message payload: e (ephemeral public key)
-        var msg = std.ArrayList(u8).init(std.heap.general_allocator);
-        try msg.appendSlice(&self.e.?.toPublic().bytes);
+        // Noise spec: output e, then MixHash(e.public_key)
+        const e_bytes = self.e.?.toPublic().bytes;
+        self.symmetric.mixHash(&e_bytes);
 
-        return msg.toOwnedSlice();
+        // Return e in plaintext
+        var result: [32]u8 = undefined;
+        @memcpy(&result, &e_bytes);
+        return try std.heap.general_allocator.dupe(u8, &result);
     }
 
     pub fn responderStep1(self: *Self, msg: []const u8) !void {
@@ -308,11 +338,12 @@ pub const HandshakeState = struct {
     }
 
     pub fn responderStep2(self: *Self) ![]u8 {
-        // Message payload: e, ee, s, es
-        var msg = std.ArrayList(u8).init(std.heap.general_allocator);
+        // Noise XX responder step 2: send e (plaintext) || ee || s (encrypted) || es
+        // Per Noise spec: e must be plaintext so initiator can compute DH(e, re).
+        // Only the static key s is encrypted.
 
-        // e (our ephemeral public key)
-        try msg.appendSlice(&self.e.?.toPublic().bytes);
+        // e (our ephemeral public key) — always plaintext
+        const e_bytes = self.e.?.toPublic().bytes;
 
         // DH(e, re) - compute shared secret
         if (self.e) |ephemeral| {
@@ -322,77 +353,93 @@ pub const HandshakeState = struct {
             }
         }
 
-        // s (our static key if we have one)
-        if (self.s) |static_key| {
-            try msg.appendSlice(&static_key.public.bytes);
+        // MixHash of the plaintext ephemeral key before encryption
+        self.symmetric.mixHash(&e_bytes);
 
-            // DH(s, re) - static key exchange
+        // s (our static key) — encrypted
+        if (self.s) |static_key| {
+            // DH(s, re)
             const dh_se = dh(&static_key.secret, self.re.?);
             self.symmetric.mixKey(&dh_se);
+
+            // Encrypt the static key
+            const s_bytes = static_key.public.bytes;
+            var encrypted_s: [32 + 16]u8 = undefined;
+            try self.symmetric.encryptAndHash(&s_bytes, &encrypted_s);
+
+            // Output: e (32 bytes) || encrypted(s) (48 bytes)
+            var result = try std.heap.general_allocator.alloc(u8, 32 + 48);
+            @memcpy(result[0..32], &e_bytes);
+            @memcpy(result[32..80], &encrypted_s);
+            return result;
         }
 
-        // MixHash(payload)
-        self.symmetric.mixHash(msg.items);
-
-        // Encrypt static key payload
-        if (self.s) |_| {
-            const encrypted = try std.heap.general_allocator.alloc(u8, msg.items.len + 16);
-            errdefer std.heap.general_allocator.free(encrypted);
-
-            try self.symmetric.encryptAndHash(msg.items, encrypted);
-
-            std.heap.general_allocator.free(msg.items);
-            return encrypted;
-        }
-
-        return msg.toOwnedSlice();
+        // No static key: just send e in plaintext
+        var result = try std.heap.general_allocator.alloc(u8, 32);
+        @memcpy(result[0..32], &e_bytes);
+        return result;
     }
 
     pub fn initiatorStep2(self: *Self, msg: []const u8) !void {
-        // Decrypt and process responder's message
-        self.symmetric.mixHash(msg);
+        // Noise XX initiator msg2 processing: e (plain) || ee || s (encrypted) || es
+        // 1. Extract responder's ephemeral key e
+        if (msg.len < 32) return error.MessageTooShort;
+        self.re = .{ .bytes = msg[0..32].* };
+        self.symmetric.mixHash(msg[0..32]); // MixHash(e)
 
-        if (self.re == null and msg.len >= POINT_SIZE) {
-            self.re = .{ .bytes = msg[0..POINT_SIZE].* };
+        // 2. DH(e, re) → MixKey
+        const dh_ee = dh(&self.e.?, &self.re.?);
+        self.symmetric.mixKey(&dh_ee);
 
-            if (self.e) |ephemeral| {
-                const dh_ee = dh(&ephemeral, &self.re.?);
-                self.symmetric.mixKey(&dh_ee);
-            }
+        // 3. Decrypt responder's static key s (remaining 48 bytes = 32 + 16 tag)
+        if (msg.len < 80) return error.MessageTooShort;
+        var decrypted_s: [32]u8 = undefined;
+        self.symmetric.decryptAndHash(msg[32..80], &decrypted_s);
+        self.rs = .{ .bytes = decrypted_s };
+
+        // 4. DH(s, re) = es → MixKey
+        if (self.s) |static_key| {
+            const dh_se = dh(&static_key.secret, self.rs.?);
+            self.symmetric.mixKey(&dh_se);
         }
     }
 
     pub fn initiatorStep3(self: *Self) ![]u8 {
-        var msg = std.ArrayList(u8).init(std.heap.general_allocator);
-
-        // s (our static key)
+        // Noise XX initiator msg3: s (encrypted) || se
+        // 1. EncryptAndHash our static public key
         if (self.s) |static_key| {
-            try msg.appendSlice(&static_key.public.bytes);
+            const s_bytes = static_key.public.bytes;
+            var encrypted_s: [32 + 16]u8 = undefined;
+            try self.symmetric.encryptAndHash(&s_bytes, &encrypted_s);
 
+            // 2. DH(s, re) = se → MixKey
             const dh_se = dh(&static_key.secret, self.re orelse return error.MissingRemoteKey);
             self.symmetric.mixKey(&dh_se);
+
+            return try std.heap.general_allocator.dupe(u8, &encrypted_s);
         }
 
-        // MixHash(payload)
-        self.symmetric.mixHash(msg.items);
-
-        // Encrypt and return
-        if (self.s) |_| {
-            const encrypted = try std.heap.general_allocator.alloc(u8, msg.items.len + 16);
-            errdefer std.heap.general_allocator.free(encrypted);
-
-            try self.symmetric.encryptAndHash(msg.items, encrypted);
-            std.heap.general_allocator.free(msg.items);
-            return encrypted;
-        }
-
-        return msg.toOwnedSlice();
+        // No static key: send empty message
+        return &.{};
     }
 
     pub fn responderStep3(self: *Self, msg: []const u8) !void {
-        // Process initiator's final message
-        self.symmetric.mixHash(msg);
-        // At this point, if we have their static key, we can authenticate
+        // Noise XX responder msg3: decrypt initiator's static key s || se
+        // 1. DecryptAndHash initiator's static public key
+        if (msg.len < 48) return error.MessageTooShort;
+        var decrypted_s: [32]u8 = undefined;
+        self.symmetric.decryptAndHash(msg[0..48], &decrypted_s);
+        self.rs = .{ .bytes = decrypted_s };
+
+        // 2. DH(e, rs) = se → MixKey
+        if (self.e) |ephemeral| {
+            const dh_se = dh(&ephemeral, &self.rs.?);
+            self.symmetric.mixKey(&dh_se);
+        }
+    }
+
+    pub fn deinit(self: *Self) void {
+        _ = self;
     }
 
     /// Get the resulting cipher states for symmetric communication
@@ -424,49 +471,75 @@ pub const NoiseSession = struct {
 
     pub fn deinit(self: *Self) void {
         if (self.handshake) |h| {
-            h.*.deinit();
+            h.deinit();
+            self.allocator.destroy(h);
         }
         self.allocator.destroy(self);
     }
 
     /// Initiate a new handshake as the initiator
     pub fn initiate(self: *Self, keypair: ?*const NoiseKeypair, protocol_name: []const u8) !void {
-        self.handshake = try std.heap.general_allocator.create(HandshakeState);
+        self.handshake = try self.allocator.create(HandshakeState);
         self.handshake.?.* = try HandshakeState.init(.initiator, keypair, protocol_name);
     }
 
     /// Respond to a handshake as the responder
     pub fn respond(self: *Self, keypair: ?*const NoiseKeypair, protocol_name: []const u8) !void {
-        self.handshake = try std.heap.general_allocator.create(HandshakeState);
+        self.handshake = try self.allocator.create(HandshakeState);
         self.handshake.?.* = try HandshakeState.init(.responder, keypair, protocol_name);
     }
 
     /// Get the next handshake message to send
     pub fn getHandshakeMessage(self: *Self) ![]u8 {
         if (self.handshake) |h| {
-            if (h.role == .initiator) {
-                return try h.initiatorStep1();
+            if (h.role == .initiator and h.handshake_step == .step1) {
+                const msg = try h.initiatorStep1();
+                h.handshake_step = .step2;
+                return msg;
             }
         }
         return error.HandshakeNotStarted;
     }
 
-    /// Process a received handshake message
+    /// Process a received handshake message. Returns the next message to send
+    /// (or empty slice if handshake is complete).
     pub fn processHandshakeMessage(self: *Self, msg: []const u8) ![]u8 {
         if (self.handshake) |h| {
-            if (h.role == .responder) {
-                try h.responderStep1(msg);
-                return try h.responderStep2();
-            } else {
-                try h.initiatorStep2(msg);
-                return try h.initiatorStep3();
+            switch (h.role) {
+                .responder => switch (h.handshake_step) {
+                    .step1 => {
+                        try h.responderStep1(msg);
+                        h.handshake_step = .step2;
+                        return try h.responderStep2();
+                    },
+                    .step2 => {
+                        try h.responderStep3(msg);
+                        h.handshake_step = .done;
+                        self.is_handshake_complete = true;
+                        return &.{};
+                    },
+                    else => return error.HandshakeNotStarted,
+                },
+                .initiator => switch (h.handshake_step) {
+                    .step1 => {
+                        // initiatorStep1 is called via getHandshakeMessage, not here
+                        return error.HandshakeNotStarted;
+                    },
+                    .step2 => {
+                        try h.initiatorStep2(msg);
+                        h.handshake_step = .step3;
+                        return try h.initiatorStep3();
+                    },
+                    else => return error.HandshakeNotStarted,
+                },
             }
         }
         return error.HandshakeNotStarted;
     }
 
-    /// Finalize the handshake
+    /// Finalize the handshake — derives cipher states if not already done.
     pub fn finalize(self: *Self) !void {
+        if (self.is_handshake_complete) return;
         if (self.handshake) |h| {
             h.getCipherStates(&self.enc, &self.dec);
             self.is_handshake_complete = true;
@@ -557,4 +630,49 @@ test "NoiseSession initiate/respond" {
 
     try std.testing.expect(initiator.is_handshake_complete);
     try std.testing.expect(responder.is_handshake_complete);
+}
+
+test "NoiseSession full handshake with encrypt/decrypt round-trip" {
+    const allocator = std.testing.allocator;
+
+    const initiator = try NoiseSession.init(allocator);
+    defer initiator.deinit();
+    const responder = try NoiseSession.init(allocator);
+    defer responder.deinit();
+
+    const keypair = try NoiseKeypair.generate();
+    defer keypair.deinit();
+
+    try initiator.initiate(keypair, "test-protocol");
+    try responder.respond(keypair, "test-protocol");
+
+    const msg1 = try initiator.getHandshakeMessage();
+    defer allocator.free(msg1);
+    const msg2 = try responder.processHandshakeMessage(msg1);
+    defer allocator.free(msg2);
+    const msg3 = try initiator.processHandshakeMessage(msg2);
+    defer allocator.free(msg3);
+    // Responder processes initiator's final message
+    _ = try responder.processHandshakeMessage(msg3);
+
+    try initiator.finalize();
+    try responder.finalize();
+
+    // Verify encrypt/decrypt round-trip (initiator → responder)
+    const plaintext = "hello zknot3 noise";
+    var ciphertext: [32 + 16]u8 = undefined; // plaintext + auth tag
+    try initiator.encrypt(plaintext, &ciphertext);
+
+    var decrypted: [32 + 16]u8 = undefined;
+    try responder.decrypt(&ciphertext, decrypted[0..plaintext.len]);
+    try std.testing.expect(std.mem.eql(u8, plaintext, decrypted[0..plaintext.len]));
+
+    // Verify reverse direction (responder → initiator)
+    const reply = "zknot3 ack";
+    var reply_ct: [16 + 16]u8 = undefined;
+    try responder.encrypt(reply, &reply_ct);
+
+    var reply_decrypted: [16 + 16]u8 = undefined;
+    try initiator.decrypt(&reply_ct, reply_decrypted[0..reply.len]);
+    try std.testing.expect(std.mem.eql(u8, reply, reply_decrypted[0..reply.len]));
 }

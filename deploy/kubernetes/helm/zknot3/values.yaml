@@ -1,0 +1,49 @@
+replicaCount: 1
+
+image:
+  repository: zknot3
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  rpcPort: 9003
+  p2pPort: 8083
+  metricsPort: 9133
+
+persistence:
+  enabled: true
+  size: 100Gi
+  storageClass: ""
+
+resources:
+  requests:
+    memory: "2Gi"
+    cpu: "1"
+  limits:
+    memory: "8Gi"
+    cpu: "4"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+
+config:
+  network:
+    bindAddress: "0.0.0.0"
+    adminToken: ""
+    p2pEnabled: true
+  consensus:
+    validatorEnabled: true
+    epochDurationSecs: 3600
+    roundTimeoutSecs: 30
+  storage:
+    dataDir: /var/lib/zknot3
+  vm:
+    maxGasBudget: 10000000
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+networkPolicy:
+  enabled: true

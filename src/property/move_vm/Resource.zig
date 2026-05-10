@@ -63,6 +63,7 @@ pub const Resource = struct {
         allocator: std.mem.Allocator,
     ) !*Self {
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
         self.* = .{
             .id = id,
             .tag = tag,
@@ -71,17 +72,18 @@ pub const Resource = struct {
             .owner = owner,
             ._state = .active,
         };
+        errdefer allocator.free(self.data[0..self.data_len]);
         @memcpy(self.data[0..data.len], data);
         return self;
     }
 
     /// Deinitialize internal resources (does NOT destroy the object itself)
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-        allocator.free(self.data[0..self.data_len]);
+        if (self.data_len > 0) allocator.free(self.data[0..self.data_len]);
     }
 
-    /// Move resource to another location (linear semantics)
-    /// Source resource is invalidated after move
+    /// Move resource to another location (linear semantics).
+    /// Source resource is invalidated after move — must not be used.
     pub fn move(self: *Self, destination: *Self) void {
         destination.* = .{
             .id = self.id,
@@ -91,7 +93,9 @@ pub const Resource = struct {
             .owner = self.owner,
             ._state = .active,
         };
+        // Invalidate source to prevent dangling pointer / double-free
         self.data_len = 0;
+        self.data = undefined;
         self._state = .moved;
     }
 
@@ -165,13 +169,14 @@ pub const ResourceTracker = struct {
     }
 
     pub fn track(self: *Self, resource: *Resource) !void {
+        if (self.active_resources.contains(resource.id)) return error.ResourceAlreadyTracked;
         try self.active_resources.put(self.allocator, resource.id, resource);
         self.total_created += 1;
     }
 
     pub fn recordMove(self: *Self, resource_id: core.ObjectID) !void {
         if (self.active_resources.contains(resource_id)) {
-            _ = self.active_resources.swapRemove(resource_id);
+            _ = self.active_resources.orderedRemove(resource_id);
         }
         try self.moved_resources.put(self.allocator, resource_id, {});
         self.total_transferred += 1;
@@ -179,17 +184,17 @@ pub const ResourceTracker = struct {
 
     pub fn recordConsume(self: *Self, resource_id: core.ObjectID) !void {
         if (self.active_resources.contains(resource_id)) {
-            _ = self.active_resources.swapRemove(resource_id);
+            _ = self.active_resources.orderedRemove(resource_id);
         }
         try self.consumed_resources.put(self.allocator, resource_id, {});
     }
 
     pub fn getCreated(self: Self) ![]const core.ObjectID {
-        var result = std.ArrayList(core.ObjectID).init(self.allocator);
+        var result = std.ArrayList(core.ObjectID).empty;
         errdefer result.deinit(self.allocator);
         var it = self.active_resources.iterator();
         while (it.next()) |entry| {
-            try result.append(entry.key_ptr.*);
+            try result.append(self.allocator, entry.key_ptr.*);
         }
         return result.toOwnedSlice(self.allocator);
     }

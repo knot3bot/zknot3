@@ -10,7 +10,7 @@ fn mkVote(voter: [32]u8, round: u64, digest: [32]u8, sig_byte: u8) Mysticeti.Vot
         .stake = 100,
         .round = .{ .value = round },
         .block_digest = digest,
-        .signature = [_]u8{sig_byte} ** 64,
+        .signature = [_]u8{sig_byte} ** 32 ++ [_]u8{0} ** 64,
     };
 }
 

@@ -38,8 +38,11 @@ pub const Peer = struct {
     last_message: i64,
     latency_ms: u32,
 
-    pub fn isActive(_: @This()) bool {
-        return true;
+    /// A peer is considered active if we have received a message from it within the last 60 seconds.
+    pub fn isActive(self: @This()) bool {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        return (ts.sec - self.last_message) < 60;
     }
 };
 
@@ -50,6 +53,8 @@ pub const PeerManager = struct {
     transport: *Transport.Transport,
     local_peer_id: [32]u8,
     max_peers: usize,
+    /// Connection pool: reuse active connections per peer
+    connection_pool: std.AutoArrayHashMapUnmanaged([32]u8, std.Io.net.Stream) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, transport: *Transport.Transport, local_peer_id: [32]u8) !*@This() {
         const routing_table = try Kademlia.RoutingTable.init(allocator, local_peer_id);
@@ -114,21 +119,21 @@ pub const PeerManager = struct {
         return try self.routing_table.getClosestPeers(target_id, count);
     }
 
-    /// Refresh routing table by pinging peers and removing unresponsive ones
+    /// Refresh routing table by removing stale peers (no message in 120s).
     pub fn refreshRoutingTable(self: *@This()) void {
-        // Get all peers from routing table and check liveness
         const all_peers = self.routing_table.getAllPeers();
         defer self.allocator.free(all_peers);
 
-        // Mark all peers as potentially stale - actual implementation would ping them
-        // For now, we just iterate through them
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        const now = ts.sec;
+        const stale_timeout: i64 = 120; // 2 minutes of silence = stale
+
         for (all_peers) |peer_id| {
             if (self.peers.get(peer_id)) |peer| {
-                // In a real implementation, we would:
-                // 1. Send a ping message
-                // 2. If no pong received within timeout, mark as unresponsive
-                // 3. Remove unresponsive peers from routing table
-                _ = peer;
+                if (!peer.isActive() or (now - peer.last_message) > stale_timeout) {
+                    self.routing_table.removePeer(peer_id);
+                }
             }
         }
     }
@@ -272,14 +277,20 @@ pub const GossipProtocol = struct {
     allocator: std.mem.Allocator,
     pending_blocks: std.AutoArrayHashMapUnmanaged([32]u8, []u8),
     pending_votes: std.AutoArrayHashMapUnmanaged([32]u8, []u8),
+    /// FIFO insertion-order queues for LRU eviction (oldest key first).
+    block_order: std.ArrayList([32]u8),
+    vote_order: std.ArrayList([32]u8),
     max_pending: usize,
+    compress: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !*@This() {
         const self = try allocator.create(@This());
         self.* = .{
             .allocator = allocator,
-            .pending_blocks = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
-            .pending_votes = std.AutoArrayHashMapUnmanaged().init(allocator, &.{}, &.{}),
+            .pending_blocks = std.AutoArrayHashMapUnmanaged([32]u8, []u8).empty,
+            .pending_votes = std.AutoArrayHashMapUnmanaged([32]u8, []u8).empty,
+            .block_order = std.ArrayList([32]u8).empty,
+            .vote_order = std.ArrayList([32]u8).empty,
             .max_pending = 1000,
         };
         return self;
@@ -291,39 +302,49 @@ pub const GossipProtocol = struct {
             self.allocator.free(entry.value_ptr.*);
         }
         self.pending_blocks.deinit();
+        self.block_order.deinit();
 
         var vote_it = self.pending_votes.iterator();
         while (vote_it.next()) |entry| {
             self.allocator.free(entry.value_ptr.*);
         }
         self.pending_votes.deinit();
+        self.vote_order.deinit();
 
         self.allocator.destroy(self);
     }
 
-    /// Add a block to the pending gossip buffer
+    /// Add a block to the pending gossip buffer with LRU eviction.
     pub fn addPendingBlock(self: *@This(), digest: [32]u8, data: []u8) !void {
         if (self.pending_blocks.count() >= self.max_pending) {
-            // Evict oldest
-            if (self.pending_blocks.iterator().next()) |entry| {
-                self.allocator.free(entry.value_ptr.*);
-                _ = self.pending_blocks.remove(entry.key_ptr.*);
+            // Evict oldest via FIFO order queue
+            if (self.block_order.items.len > 0) {
+                const oldest = self.block_order.orderedRemove(0);
+                if (self.pending_blocks.getPtr(oldest)) |v| {
+                    self.allocator.free(v.*);
+                    _ = self.pending_blocks.remove(oldest);
+                }
             }
         }
         const data_copy = try self.allocator.dupe(u8, data);
         try self.pending_blocks.put(digest, data_copy);
+        try self.block_order.append(digest);
     }
 
-    /// Add a vote to the pending gossip buffer
+    /// Add a vote to the pending gossip buffer with LRU eviction.
     pub fn addPendingVote(self: *@This(), key: [32]u8, data: []u8) !void {
         if (self.pending_votes.count() >= self.max_pending) {
-            if (self.pending_votes.iterator().next()) |entry| {
-                self.allocator.free(entry.value_ptr.*);
-                _ = self.pending_votes.remove(entry.key_ptr.*);
+            if (self.vote_order.items.len > 0) {
+                const oldest = self.vote_order.orderedRemove(0);
+                if (self.pending_votes.getPtr(oldest)) |v| {
+                    self.allocator.free(v.*);
+                    _ = self.pending_votes.remove(oldest);
+                }
             }
         }
         const data_copy = try self.allocator.dupe(u8, data);
         try self.pending_votes.put(key, data_copy);
+        try self.vote_order.append(key);
     }
 
     /// Get pending blocks for a given digest

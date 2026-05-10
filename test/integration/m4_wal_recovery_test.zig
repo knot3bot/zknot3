@@ -213,6 +213,7 @@ test "M4 WAL recovery: truncated M4 WAL tail makes restart replay fail closed" {
     const h2 = try newTestNode(allocator, data_dir);
     defer h2.node.deinit();
     defer allocator.destroy(h2.cfg);
+    h2.cfg.storage.recovery_skip_corrupted = false; // expect fail-closed on corrupt WAL
     const n2 = h2.node;
     try std.testing.expectError(error.ReadFailed, n2.start());
 }

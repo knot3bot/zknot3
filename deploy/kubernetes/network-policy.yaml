@@ -1,0 +1,33 @@
+# NetworkPolicy — restrict validator traffic to required ports only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zknot3-validator-netpol
+  namespace: zknot3
+spec:
+  podSelector:
+    matchLabels:
+      app: zknot3
+  policyTypes:
+    - Ingress
+  ingress:
+    # RPC / REST API
+    - ports:
+        - port: 9003
+          protocol: TCP
+    # P2P (inter-validator + fullnode)
+    - ports:
+        - port: 8083
+          protocol: TCP
+    # Metrics (Prometheus scrape)
+    - ports:
+        - port: 9133
+          protocol: TCP
+    # Gossip protocol (internal)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: zknot3
+      ports:
+        - port: 8083
+          protocol: TCP
