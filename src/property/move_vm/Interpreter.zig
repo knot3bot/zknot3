@@ -120,21 +120,21 @@ pub const Frame = struct {
 pub const CallStack = struct {
     const Self = @This();
 
+    allocator: std.mem.Allocator,
     frames: std.ArrayList(Frame),
     max_depth: usize,
 
-    pub fn init(max_depth: usize) Self {
+    pub fn init(allocator: std.mem.Allocator, max_depth: usize) Self {
         return .{
+            .allocator = allocator,
             .frames = std.ArrayList(Frame).empty,
             .max_depth = max_depth,
         };
     }
 
     pub fn push(self: *Self, frame: Frame) !void {
-        if (self.frames.items.len >= self.max_depth) {
-            return error.CallStackOverflow;
-        }
-        try self.frames.append(std.heap.page_allocator, frame);
+        if (self.frames.items.len >= self.max_depth) return error.CallStackOverflow;
+        try self.frames.append(self.allocator, frame);
     }
 
     pub fn pop(self: *Self) ?Frame {
@@ -142,7 +142,7 @@ pub const CallStack = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.frames.deinit(std.heap.page_allocator);
+        self.frames.deinit(self.allocator);
     }
 };
 
@@ -176,7 +176,7 @@ pub const Interpreter = struct {
             .stack = std.ArrayList(Value).empty,
             .gas = gas,
             .resource_tracker = tracker,
-            .call_stack = CallStack.init(1024),
+            .call_stack = CallStack.init(allocator, 1024),
             .locals = std.ArrayList(Value).empty,
             .pc = 0,
             .instructions = &.{},
@@ -310,6 +310,18 @@ pub const Interpreter = struct {
 
     /// Pop one integer-typed value from stack. Returns error.TypeMismatch and
     /// restores the stack if the value is not an integer.
+    fn popTwoBools(self: *Self) !struct { a: Value, b: Value } {
+        if (self.stack.items.len < 2) return error.StackUnderflow;
+        const b = self.stack.pop().?;
+        const a = self.stack.pop().?;
+        if (a.tag != .boolean or b.tag != .boolean) {
+            try self.stack.append(self.allocator, a);
+            try self.stack.append(self.allocator, b);
+            return error.TypeMismatch;
+        }
+        return .{ .a = a, .b = b };
+    }
+
     fn popOneInt(self: *Self) !Value {
         if (self.stack.items.len < 1) return error.StackUnderflow;
         const v = self.stack.pop().?;
@@ -437,38 +449,21 @@ pub const Interpreter = struct {
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .mul => {
-                if (self.stack.items.len >= 2) {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    if (a.tag == .integer and b.tag == .integer) {
-                        const result, const overflow = @mulWithOverflow(a.data.int, b.data.int);
-                        if (overflow != 0) return error.ArithmeticOverflow;
-                        try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
-                    }
-                }
+                const ints = try self.popTwoInts();
+                const result, const overflow = @mulWithOverflow(ints.a.data.int, ints.b.data.int);
+                if (overflow != 0) return error.ArithmeticOverflow;
+                try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .div => {
-                if (self.stack.items.len >= 2) {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    if (a.tag == .integer and b.tag == .integer) {
-                        if (b.data.int == 0) return error.DivisionByZero;
-                        if (a.data.int == std.math.minInt(i64) and b.data.int == -1) {
-                            return error.ArithmeticOverflow;
-                        }
-                        try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @divTrunc(a.data.int, b.data.int) } });
-                    }
-                }
+                const ints = try self.popTwoInts();
+                if (ints.b.data.int == 0) return error.DivisionByZero;
+                if (ints.a.data.int == std.math.minInt(i64) and ints.b.data.int == -1) return error.ArithmeticOverflow;
+                try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @divTrunc(ints.a.data.int, ints.b.data.int) } });
             },
             .mod => {
-                if (self.stack.items.len >= 2) {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    if (a.tag == .integer and b.tag == .integer) {
-                        if (b.data.int == 0) return error.DivisionByZero;
-                        try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @rem(a.data.int, b.data.int) } });
-                    }
-                }
+                const ints = try self.popTwoInts();
+                if (ints.b.data.int == 0) return error.DivisionByZero;
+                try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @rem(ints.a.data.int, ints.b.data.int) } });
             },
             .neg => {
                 const a = try self.popOneInt();
@@ -529,22 +524,12 @@ pub const Interpreter = struct {
                 try self.stack.append(self.allocator, Value{ .tag = .boolean, .data = .{ .bool = ints.a.data.int >= ints.b.data.int } });
             },
             .@"and" => {
-                if (self.stack.items.len >= 2) {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    if (a.tag == .boolean and b.tag == .boolean) {
-                        try self.stack.append(self.allocator, Value{ .tag = .boolean, .data = .{ .bool = a.data.bool and b.data.bool } });
-                    }
-                }
+                const bools = try self.popTwoBools();
+                try self.stack.append(self.allocator, Value{ .tag = .boolean, .data = .{ .bool = bools.a.data.bool and bools.b.data.bool } });
             },
             .@"or" => {
-                if (self.stack.items.len >= 2) {
-                    const b = self.stack.pop().?;
-                    const a = self.stack.pop().?;
-                    if (a.tag == .boolean and b.tag == .boolean) {
-                        try self.stack.append(self.allocator, Value{ .tag = .boolean, .data = .{ .bool = a.data.bool or b.data.bool } });
-                    }
-                }
+                const bools = try self.popTwoBools();
+                try self.stack.append(self.allocator, Value{ .tag = .boolean, .data = .{ .bool = bools.a.data.bool or bools.b.data.bool } });
             },
             .not => {
                 if (self.stack.items.len < 1) return error.StackUnderflow;

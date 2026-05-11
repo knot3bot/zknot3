@@ -284,6 +284,7 @@ pub const HandshakeState = struct {
 
     role: Role,
     handshake_step: Step,
+    allocator: std.mem.Allocator,
     s: ?*const NoiseKeypair,
     e: ?NoiseSecretKey,
     rs: ?NoisePublicKey,
@@ -297,12 +298,13 @@ pub const HandshakeState = struct {
         return std.crypto.dh.X25519.scalarMult(remote_public.bytes, local_secret.bytes);
     }
 
-    pub fn init(role: Role, keypair: ?*const NoiseKeypair, protocol_name: []const u8) !Self {
+    pub fn init(allocator: std.mem.Allocator, role: Role, keypair: ?*const NoiseKeypair, protocol_name: []const u8) !Self {
         const name = if (role == .initiator) "Noise_XX" else "Noise_XX";
         const sym = try SymmetricState.init(name, protocol_name);
         return .{
             .role = role,
             .handshake_step = .step1,
+            .allocator = allocator,
             .s = keypair,
             .e = null,
             .rs = null,
@@ -322,7 +324,7 @@ pub const HandshakeState = struct {
         // Return e in plaintext
         var result: [32]u8 = undefined;
         @memcpy(&result, &e_bytes);
-        return try std.heap.general_allocator.dupe(u8, &result);
+        return try self.allocator.dupe(u8, &result);
     }
 
     pub fn responderStep1(self: *Self, msg: []const u8) !void {
@@ -368,14 +370,14 @@ pub const HandshakeState = struct {
             try self.symmetric.encryptAndHash(&s_bytes, &encrypted_s);
 
             // Output: e (32 bytes) || encrypted(s) (48 bytes)
-            var result = try std.heap.general_allocator.alloc(u8, 32 + 48);
+            var result = try self.allocator.alloc(u8, 32 + 48);
             @memcpy(result[0..32], &e_bytes);
             @memcpy(result[32..80], &encrypted_s);
             return result;
         }
 
         // No static key: just send e in plaintext
-        var result = try std.heap.general_allocator.alloc(u8, 32);
+        var result = try self.allocator.alloc(u8, 32);
         @memcpy(result[0..32], &e_bytes);
         return result;
     }
@@ -439,7 +441,7 @@ pub const HandshakeState = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        _ = self;
+        if (self.e) |*e| std.crypto.secureZero(u8, &e.bytes);
     }
 
     /// Get the resulting cipher states for symmetric communication
@@ -480,13 +482,13 @@ pub const NoiseSession = struct {
     /// Initiate a new handshake as the initiator
     pub fn initiate(self: *Self, keypair: ?*const NoiseKeypair, protocol_name: []const u8) !void {
         self.handshake = try self.allocator.create(HandshakeState);
-        self.handshake.?.* = try HandshakeState.init(.initiator, keypair, protocol_name);
+        self.handshake.?.* = try HandshakeState.init(self.allocator, .initiator, keypair, protocol_name);
     }
 
     /// Respond to a handshake as the responder
     pub fn respond(self: *Self, keypair: ?*const NoiseKeypair, protocol_name: []const u8) !void {
         self.handshake = try self.allocator.create(HandshakeState);
-        self.handshake.?.* = try HandshakeState.init(.responder, keypair, protocol_name);
+        self.handshake.?.* = try HandshakeState.init(self.allocator, .responder, keypair, protocol_name);
     }
 
     /// Get the next handshake message to send

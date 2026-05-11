@@ -107,6 +107,8 @@ pub const Executor = struct {
     allocator: std.mem.Allocator,
     config: ExecutorConfig,
     resource_tracker: *ResourceTracker,
+    /// Per-instance thread affinity counter
+    _thread_counter: u32 = 0,
     /// Optional native function registry for VM calls.
     /// Ownership: once set, the Executor takes ownership and will deinit+destroy in deinit().
     registry: ?*Registry = null,
@@ -382,7 +384,7 @@ pub const Executor = struct {
         // Pin thread to CPU core on Linux (reduces context switching)
         if (comptime std.Target.current.os.tag == .linux) {
             if (exec.config.parallelism > 1) {
-                const tid = @atomicRmw(u32, &thread_counter, .Add, 1, .monotonic);
+                const tid = @atomicRmw(u32, &exec._thread_counter, .Add, 1, .monotonic);
                 var cpu_set: std.os.linux.CPU.set = std.os.linux.CPU.set{};
                 cpu_set.set(tid % exec.config.parallelism);
                 _ = std.os.linux.sched_setaffinity(0, @sizeOf(std.os.linux.CPU.set), &cpu_set);

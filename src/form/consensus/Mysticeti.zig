@@ -644,56 +644,6 @@ pub const Mysticeti = struct {
         return highest;
     }
 
-    /// Serialize a block using optimized protocol
-    pub fn serializeBlock(block: Block, allocator: std.mem.Allocator) ![]u8 {
-        return MysticetiSerialization.serializeBlock(block, allocator);
-    }
-
-    /// Deserialize a block using optimized protocol
-    pub fn deserializeBlock(data: []const u8, allocator: std.mem.Allocator) !Block {
-        return MysticetiSerialization.deserializeBlock(data, allocator);
-    }
-
-    /// Serialize blocks in batch for efficient transmission
-    pub fn serializeBlocksBatch(blocks: []const Block, allocator: std.mem.Allocator) ![]u8 {
-        return MysticetiSerialization.serializeBlocksBatch(blocks, allocator);
-    }
-
-    /// Deserialize blocks from batch transmission
-    pub fn deserializeBlocksBatch(data: []const u8, allocator: std.mem.Allocator) ![]Block {
-        return MysticetiSerialization.deserializeBlocksBatch(data, allocator);
-    }
-
-    /// Serialize a vote using optimized protocol
-    pub fn serializeVote(vote: Vote, allocator: std.mem.Allocator) ![]u8 {
-        return MysticetiSerialization.serializeVote(vote, allocator);
-    }
-
-    /// Deserialize a vote using optimized protocol
-    pub fn deserializeVote(data: []const u8, allocator: std.mem.Allocator) !Vote {
-        return MysticetiSerialization.deserializeVote(data, allocator);
-    }
-
-    /// Serialize votes in batch for efficient transmission
-    pub fn serializeVotesBatch(votes: []const Vote, allocator: std.mem.Allocator) ![]u8 {
-        return MysticetiSerialization.serializeVotesBatch(votes, allocator);
-    }
-
-    /// Deserialize votes from batch transmission
-    pub fn deserializeVotesBatch(data: []const u8, allocator: std.mem.Allocator) ![]Vote {
-        return MysticetiSerialization.deserializeVotesBatch(data, allocator);
-    }
-
-    /// Serialize a commit certificate
-    pub fn serializeCommitCertificate(cert: CommitCertificate, allocator: std.mem.Allocator) ![]u8 {
-        return MysticetiSerialization.serializeCommitCertificate(cert, allocator);
-    }
-
-    /// Deserialize a commit certificate
-    pub fn deserializeCommitCertificate(data: []const u8, allocator: std.mem.Allocator) !CommitCertificate {
-        return MysticetiSerialization.deserializeCommitCertificate(data, allocator);
-    }
-
     /// Batch process votes for efficiency
     pub fn processVotesBatch(self: *Self, votes: []const Vote) !void {
         // Safety first: apply votes serially to avoid concurrent map writes.

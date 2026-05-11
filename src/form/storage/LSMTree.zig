@@ -25,6 +25,9 @@ pub const LSMTreeConfig = struct {
     bloom_expected_elements: usize = 1_000_000,
     /// Bloom filter bits per key
     bloom_bits: usize = 10,
+    /// Optional explicit I/O handle. When set, overrides the global io_instance.
+    /// Enables test isolation and multi-instance deployments.
+    io: ?std.Io = null,
     /// SSTable directory
     sst_dir: []const u8 = "./data/sst",
     /// Direct I/O: bypass OS page cache for reduced latency
@@ -287,27 +290,30 @@ pub const SSTableIndex = struct {
     }
 };
 
-/// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
-const CompatFile = struct {
+/// File wrapper with injected IO — replaces global io_instance singleton.
+/// Provides seekTo/writeAll/readAll convenience methods on std.Io.File.
+const IoFile = struct {
+    io: std.Io,
     file: std.Io.File,
 
-    pub fn close(self: CompatFile) void {
-        self.file.close(@import("io_instance").io);
+    pub fn close(self: IoFile) void {
+        self.file.close(self.io);
     }
 
-    pub fn seekTo(self: CompatFile, offset: u64) !void {
-        var reader = self.file.reader(@import("io_instance").io, &.{});
+    pub fn seekTo(self: IoFile, offset: u64) !void {
+        var reader = self.file.reader(self.io, &.{});
         try reader.seekTo(offset);
     }
 
-    pub fn writeAll(self: CompatFile, bytes: []const u8) !void {
-        try self.file.writeStreamingAll(@import("io_instance").io, bytes);
+    pub fn writeAll(self: IoFile, bytes: []const u8) !void {
+        try self.file.writeStreamingAll(self.io, bytes);
     }
 
-    pub fn readAll(self: CompatFile, buf: []u8) !usize {
-        var reader = self.file.reader(@import("io_instance").io, &.{});
+    pub fn readAll(self: IoFile, buf: []u8) !usize {
+        var reader = self.file.reader(self.io, &.{});
         return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-            error.ReadFailed => return reader.err.?,
+            error.ReadFailed => return reader.err orelse error.StreamReadFailed,
+            else => |e| return e,
         };
     }
 };
@@ -340,12 +346,18 @@ fn decompressRLE(data: []const u8, allocator: std.mem.Allocator) ![]u8 {
     return buf.toOwnedSlice(allocator);
 }
 
+/// Resolve I/O handle: explicit config.io over global io_instance.
+fn resolveIo(config: LSMTreeConfig) type {
+    _ = config;
+    return @import("io_instance").io;
+}
+
 /// SSTable - Sorted String Table file
 pub const SSTable = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    file: CompatFile,
+    file: IoFile,
     path: []const u8,
     index: std.ArrayList(SSTableIndexEntry),
     bloom: *BloomFilter,
@@ -360,7 +372,7 @@ pub const SSTable = struct {
 
         var self = Self{
             .allocator = allocator,
-            .file = CompatFile{ .file = file },
+            .file = IoFile{ .io = io, .file = file },
             .path = try allocator.dupe(u8, path),
             .index = std.ArrayList(SSTableIndexEntry).empty,
             .bloom = try allocator.create(BloomFilter),

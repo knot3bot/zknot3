@@ -63,36 +63,38 @@ pub const RecoveryResult = struct {
 };
 
 /// Compatibility wrapper for std.Io.File providing old std.fs.File-like API
-const CompatFile = struct {
+/// File wrapper with injected IO + positional read tracking.
+const IoFile = struct {
+    io: std.Io,
     file: std.Io.File,
     read_pos: u64 = 0,
 
-    pub fn close(self: CompatFile) void {
-        self.file.close(@import("io_instance").io);
+    pub fn close(self: IoFile) void {
+        self.file.close(self.io);
     }
 
-    pub fn stat(self: CompatFile) !std.Io.File.Stat {
-        return self.file.stat(@import("io_instance").io);
+    pub fn stat(self: IoFile) !std.Io.File.Stat {
+        return self.file.stat(self.io);
     }
 
-    pub fn seekTo(self: *CompatFile, offset: u64) !void {
+    pub fn seekTo(self: *IoFile, offset: u64) !void {
         self.read_pos = offset;
     }
 
-    pub fn writeAll(self: CompatFile, bytes: []const u8) !void {
-        try self.file.writeStreamingAll(@import("io_instance").io, bytes);
+    pub fn writeAll(self: IoFile, bytes: []const u8) !void {
+        try self.file.writeStreamingAll(self.io, bytes);
     }
 
-    pub fn sync(self: CompatFile) !void {
-        try self.file.sync(@import("io_instance").io);
+    pub fn sync(self: IoFile) !void {
+        try self.file.sync(self.io);
     }
 
-    pub fn setEndPos(self: CompatFile, length: u64) !void {
-        try self.file.setLength(@import("io_instance").io, length);
+    pub fn setEndPos(self: IoFile, length: u64) !void {
+        try self.file.setLength(self.io, length);
     }
 
-    pub fn readAll(self: *CompatFile, buf: []u8) !usize {
-        const n = try self.file.readPositionalAll(@import("io_instance").io, buf, self.read_pos);
+    pub fn readAll(self: *IoFile, buf: []u8) !usize {
+        const n = try self.file.readPositionalAll(self.io, buf, self.read_pos);
         self.read_pos += n;
         return n;
     }
@@ -142,7 +144,7 @@ pub const WAL = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
-    file: CompatFile,
+    file: IoFile,
     file_path: []const u8,
     current_offset: u64,
     async_write: ?AsyncWriteBuffer = null,
@@ -153,19 +155,19 @@ pub const WAL = struct {
     group_commit_threshold: u64 = 0, // 0 = disabled, N = sync every N writes
 
     /// Initialize WAL with async options
-    pub fn initWithOptions(allocator: std.mem.Allocator, db_path: []const u8, use_async: ?bool) !Self {
+    pub fn initWithOptions(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8, use_async: ?bool) !Self {
         const wal_path = try std.fmt.allocPrint(allocator, "{s}.wal", .{db_path});
         errdefer allocator.free(wal_path);
 
         // Open or create WAL file
-        const inner_file = std.Io.Dir.cwd().createFile(@import("io_instance").io, wal_path, .{
+        const inner_file = std.Io.Dir.cwd().createFile(io, wal_path, .{
             .read = true,
             .truncate = false,
         }) catch |err| {
             allocator.free(wal_path);
             return err;
         };
-        const file = CompatFile{ .file = inner_file };
+        const file = IoFile{ .io = io, .file = inner_file };
         errdefer file.close();
 
         // Get current file size for append offset
@@ -191,7 +193,7 @@ pub const WAL = struct {
 
     /// Initialize WAL (sync mode)
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8) !Self {
-        return try initWithOptions(allocator, db_path, null);
+        return try initWithOptions(allocator, @import("io_instance").io, db_path, null);
     }
     pub fn deinit(self: *Self) void {
         // Flush any pending async writes — best-effort during shutdown.
@@ -200,7 +202,7 @@ pub const WAL = struct {
             if (async_w.write_offset > 0) {
                 const write_offset = async_w.write_offset;
                 const data = async_w.getAndReset();
-                self.file.file.writePositionalAll(@import("io_instance").io, data, self.current_offset - write_offset) catch |err| {
+                self.file.file.writePositionalAll(self.file.io, data, self.current_offset - write_offset) catch |err| {
                     std.log.err("WAL deinit: flush failed ({s}) — buffered data may be lost", .{@errorName(err)});
                 };
                 self.syncBarrier() catch |err| {
@@ -232,7 +234,7 @@ pub const WAL = struct {
             if (async_w.write_offset > 0) {
                 const wo = async_w.write_offset;
                 const data = async_w.getAndReset();
-                try self.file.file.writePositionalAll(@import("io_instance").io, data, self.current_offset - wo);
+                try self.file.file.writePositionalAll(self.file.io, data, self.current_offset - wo);
                 try self.syncBarrier();
             }
         }
@@ -251,7 +253,7 @@ pub const WAL = struct {
             if (n != data.len) return error.ShortWrite;
             return;
         }
-        try self.file.file.writePositionalAll(@import("io_instance").io, data, offset);
+        try self.file.file.writePositionalAll(self.file.io, data, offset);
         try self.file.sync();
     }
 
@@ -275,7 +277,7 @@ pub const WAL = struct {
         var cur = offset;
         for (iovecs) |iov| {
             const bytes = @as([*]const u8, @ptrCast(iov.base))[0..iov.len];
-            try self.file.file.writePositionalAll(@import("io_instance").io, bytes, cur);
+            try self.file.file.writePositionalAll(self.file.io, bytes, cur);
             cur += iov.len;
         }
         try self.file.sync();

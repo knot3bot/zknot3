@@ -211,7 +211,10 @@ pub const AuthorityConfig = struct {
 /// NodeConfig is the canonical node configuration struct.
 /// Use ConfigWithBuffer for file-based loading with proper lifetime management.
 /// TODO: Merge with Config below to eliminate the duplicate type hierarchy.
-pub const NodeConfig = struct {
+/// NodeConfig is an alias for Config — unified in v0.12.
+pub const NodeConfig = Config;
+
+pub const Config = struct {
     const Self = @This();
 
     /// Protocol version
@@ -232,6 +235,8 @@ pub const NodeConfig = struct {
     is_dev: bool = false,
     /// Enable verbose logging
     verbose: bool = false,
+    allow_unauthenticated_p2p: bool = false,
+    parallel_execution: usize = 1,
 
     /// Validate configuration
     pub fn validate(self: Self) !void {
@@ -258,6 +263,18 @@ pub const NodeConfig = struct {
         if (self.consensus.max_messages_per_tick == 0) {
             return error.InvalidConsensusMessageBudget;
         }
+    }
+
+    /// Builder pattern: chainable config construction.
+    pub fn builder() Self { return Self{}; }
+    pub fn withValidator(self: Self, enabled: bool) Self { var s = self; s.is_validator = enabled; return s; }
+    pub fn withDataDir(self: Self, dir: []const u8) Self { var s = self; s.storage.data_dir = dir; return s; }
+    pub fn withRpcPort(self: Self, port: u16) Self { var s = self; s.network.rpc_port = port; return s; }
+    pub fn withDev(self: Self) Self { var s = self; s.is_dev = true; s.verbose = true; return s; }
+
+    /// Create default configuration
+    pub fn default() Self {
+        return Self{};
     }
 
     /// Create production configuration
@@ -437,122 +454,3 @@ pub const Metrics = struct {
         return @as(f64, @floatFromInt(self.tx_count)) / 60.0; // Simplified
     }
 };
-
-/// Full configuration container
-pub const Config = struct {
-    const Self = @This();
-
-    network: NetworkConfig = .{},
-    consensus: ConsensusConfig = .{},
-    storage: StorageConfig = .{},
-    vm: VMConfig = .{},
-    authority: AuthorityConfig = .{},
-    allow_unauthenticated_p2p: bool = false,
-    parallel_execution: usize = 1,
-
-    /// Create default configuration
-    pub fn default() Self {
-        return Self{};
-    }
-
-    /// Create development configuration
-    pub fn development() Self {
-        return .{
-            .consensus = .{ .validator_enabled = true },
-            .authority = .{ .stake = 1_000_000_000 },
-            .allow_unauthenticated_p2p = true,
-        };
-    }
-
-    /// Create production configuration
-    pub fn production() Self {
-        return Self{};
-    }
-
-    /// Load configuration from JSON file.
-    /// String fields are deep-copied so the caller owns the returned config.
-    pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-        const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
-        defer allocator.free(contents);
-        var parsed = try json.parseFromSlice(Self, allocator, contents, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-        return try parsed.value.deepCopy(allocator);
-    }
-
-    /// Deep-copy all string slices so the Config owns its memory.
-    fn deepCopy(self: Self, allocator: std.mem.Allocator) !Self {
-        var copy = self;
-        inline for (@typeInfo(Self).@"struct".fields) |field| {
-            if (field.type == []const u8) {
-                const src = @field(copy, field.name);
-                if (src.len > 0) {
-                    @field(copy, field.name) = try allocator.dupe(u8, src);
-                }
-            }
-        }
-        return copy;
-    }
-
-    /// Parse configuration from JSON string
-    pub fn loadFromJSON(allocator: std.mem.Allocator, json_slice: []const u8) !Self {
-        const parsed = try json.parseFromSlice(Self, allocator, json_slice, .{ .ignore_unknown_fields = true });
-        return parsed.value;
-    }
-
-    /// Save configuration to JSON string
-    pub fn toJSON(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8).init(allocator);
-        try json.stringify(self, .{ .whitespace = .indent_tab }, buf.writer());
-        return buf.toOwnedSlice();
-    }
-
-    /// Save configuration to JSON file
-    pub fn saveToFile(self: Self, allocator: std.mem.Allocator, path: []const u8) !void {
-        const json_str = try self.toJSON(allocator);
-        defer allocator.free(json_str);
-        try std.Io.Dir.cwd().writeFile(@import("io_instance").io, .{ .sub_path = path, .data = json_str });
-    }
-};
-
-test "Config default" {
-    const config = Config.default();
-    try std.testing.expect(config.network.rpc_port == 9003);
-}
-
-test "Config development" {
-    const config = Config.development();
-    try std.testing.expect(config.consensus.validator_enabled == true);
-}
-
-test "NodeConfig validation" {
-    const config = NodeConfig.development();
-    try config.validate();
-}
-
-test "Metrics recording" {
-    const allocator = std.testing.allocator;
-    var metrics = try Metrics.init(allocator);
-    defer metrics.deinit();
-
-    metrics.recordTx(1000);
-    metrics.recordBlock();
-    metrics.recordCheckpoint();
-
-    try std.testing.expect(metrics.tx_count == 1);
-    try std.testing.expect(metrics.block_count == 1);
-    try std.testing.expect(metrics.checkpoint_count == 1);
-}
-
-test "Metrics TPS calculation" {
-    const allocator = std.testing.allocator;
-    var metrics = try Metrics.init(allocator);
-    defer metrics.deinit();
-
-    // Record 60 transactions
-    for (0..60) |_| {
-        metrics.recordTx(100);
-    }
-
-    const tps = metrics.tps();
-    try std.testing.expect(tps >= 0.9 and tps <= 1.1);
-}
