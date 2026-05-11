@@ -33,6 +33,9 @@ comptime {
     _ = @import("src/property/move_vm/stdlib.zig");
     _ = @import("src/property/move_vm/License.zig");
     _ = @import("src/property/crypto/ZkLogin.zig");
+    _ = @import("src/property/move_vm/agent_registry.zig");
+    _ = @import("src/property/move_vm/marketplace.zig");
+    _ = @import("src/property/move_vm/agent_messaging.zig");
     // E2E tests require real filesystem (not testing.io). Run with:
     //   zig build test -- Integration tests use /tmp/ directories.
     // _ = @import("src/test/e2e_test.zig");
