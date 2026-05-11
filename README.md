@@ -405,7 +405,10 @@ zig build -Doptimize=ReleaseSafe
 
 | Document | Contents |
 |----------|----------|
-| [System Invariants](docs/invariants.md) | 15 non-negotiable safety properties + error taxonomy |
+| [Formal Specification](docs/protocol/formal-spec.md) | Mathematical protocol definition: primitives, consensus, state transition |
+| [Safety & Liveness Proofs](docs/protocol/safety-proofs.md) | 6 theorems + proofs (no fork, determinism, recovery, Byzantine bound) |
+| [System Invariants](docs/invariants.md) | 20 invariants with formal predicates + enforcement table |
+| [Threat Model](docs/threat-model.md) | 9 attack vectors, security boundaries, mitigations, residual risk |
 | [Consensus Spec](docs/protocol/consensus.md) | DAG-BFT: proposal, voting, commit rules, equivocation |
 | [State Machine](docs/protocol/state-machine.md) | Transaction lifecycle, Fast Path, state root |
 | [Network Protocol](docs/protocol/network.md) | Message types, peer lifecycle, gossip, rate limiting |
