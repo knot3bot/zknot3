@@ -11,6 +11,7 @@ const core = @import("../../core.zig");
 const LSMTree = @import("LSMTree.zig");
 const IOUring = @import("IOUring.zig");
 const WAL_module = @import("WAL.zig");
+const Log = @import("../../app/Log.zig");
 /// Object stored in the object store
 pub const Object = struct {
     id: core.ObjectID,
@@ -152,7 +153,9 @@ pub const ObjectStore = struct {
 
     /// Deinitialize object store
     pub fn deinit(self: *Self) void {
-        self.flushWriteBuffer() catch {};
+        self.flushWriteBuffer() catch |err| {
+            Log.err("[ObjectStore] flushWriteBuffer failed during deinit: {s}", .{@errorName(err)});
+        };
         for (self.write_buffer.items) |entry| {
             self.allocator.free(entry.key);
             self.allocator.free(entry.value);

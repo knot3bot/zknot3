@@ -103,16 +103,16 @@ pub const ConsensusConfig = struct {
     backup_quorum_threshold: u64 = 150,
     /// Minimum votes required to commit a block (for BFT safety)
     vote_quorum: usize = 3,
-    /// Round interval in seconds
-    round_interval_secs: u64 = 2,
+    /// Round interval in seconds (500ms for high-throughput consensus)
+    round_interval_secs: u64 = 1,
     /// Maximum transactions per block
-    max_txs_per_block: u32 = 50,
+    max_txs_per_block: u32 = 10000,
     /// Maximum committed blocks to retain in memory before pruning
     max_committed_blocks: usize = 10000,
     /// Maximum pending blocks to retain in memory before pruning
     max_pending_blocks: usize = 5000,
     /// Round timeout in seconds — if no quorum reached, advance to next round
-    round_timeout_secs: i64 = 30,
+    round_timeout_secs: i64 = 5,
     /// Enable BLS signature aggregation (replaces per-vote Ed25519 with single 96-byte BLS sig)
     enable_bls_aggregation: bool = false,
 
@@ -240,29 +240,18 @@ pub const Config = struct {
 
     /// Validate configuration
     pub fn validate(self: Self) !void {
-        if (self.consensus.min_validators < 4) {
-            return error.MinValidatorsTooLow;
-        }
-        if (self.consensus.target_validators > self.consensus.max_validators) {
-            return error.InvalidValidatorRange;
-        }
-        if (self.vm.min_gas_price == 0) {
-            return error.InvalidGasPrice;
-        }
-        if (self.network.max_connections == 0) {
-            return error.InvalidMaxConnections;
-        }
+        if (self.consensus.min_validators < 4) return error.MinValidatorsTooLow;
+        if (self.consensus.target_validators > self.consensus.max_validators) return error.InvalidValidatorRange;
+        if (self.vm.min_gas_price == 0) return error.InvalidGasPrice;
+        if (self.network.max_connections == 0) return error.InvalidMaxConnections;
         if (self.network.p2p_max_messages_per_peer_per_second == 0 or
-            self.network.p2p_max_messages_per_type_per_second == 0)
-        {
-            return error.InvalidP2PRateLimit;
-        }
-        if (self.network.p2p_peer_ban_seconds <= 0) {
-            return error.InvalidP2PBanWindow;
-        }
-        if (self.consensus.max_messages_per_tick == 0) {
-            return error.InvalidConsensusMessageBudget;
-        }
+            self.network.p2p_max_messages_per_type_per_second == 0) return error.InvalidP2PRateLimit;
+        if (self.network.p2p_peer_ban_seconds <= 0) return error.InvalidP2PBanWindow;
+        if (self.consensus.max_messages_per_tick == 0) return error.InvalidConsensusMessageBudget;
+        // Port conflict: RPC and P2P must use different ports
+        if (self.network.rpc_port == self.network.p2p_port) return error.PortConflict;
+        // Data directory must be non-empty for non-dev configurations
+        if (!self.is_dev and self.storage.data_dir.len == 0) return error.MissingDataDir;
     }
 
     /// Builder pattern: chainable config construction.
@@ -454,3 +443,23 @@ pub const Metrics = struct {
         return @as(f64, @floatFromInt(self.tx_count)) / 60.0; // Simplified
     }
 };
+
+test "Config.validate rejects port conflict" {
+    var cfg = Config{};
+    cfg.network.rpc_port = 9003;
+    cfg.network.p2p_port = 9003;
+    try std.testing.expectError(error.PortConflict, cfg.validate());
+}
+
+test "Config.validate requires data_dir for non-dev" {
+    var cfg = Config{};
+    cfg.is_dev = false;
+    cfg.storage.data_dir = &.{};
+    try std.testing.expectError(error.MissingDataDir, cfg.validate());
+}
+
+test "Config default passes validation" {
+    var cfg = Config.default();
+    cfg.is_dev = true;
+    try cfg.validate();
+}

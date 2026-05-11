@@ -62,6 +62,7 @@ pub const Block = struct {
     parents: []const Round,
     votes: std.AutoArrayHashMapUnmanaged([32]u8, Vote),
     digest: [32]u8,
+    stake_cache: u128 = 0,
 
     const Self = @This();
 
@@ -220,7 +221,9 @@ pub const Vote = struct {
         offset += 8;
         const block_digest = data[offset..][0..32].*;
         offset += 32;
-        const signature = data[offset..][0..64].*;
+        const signature_ed = data[offset..][0..64].*;
+        var signature: [96]u8 = [_]u8{0} ** 96;
+        @memcpy(signature[0..64], &signature_ed);
         return Self{
             .voter = voter,
             .stake = stake,
@@ -238,13 +241,13 @@ pub const Vote = struct {
         // Try Ed25519 first (uses first 64 bytes of signature field)
         const Ed25519 = @import("../../property/Signature.zig").Ed25519;
         var ed_sig: [64]u8 = undefined;
-        @memcpy(&ed_sig, &self.signature);
+        @memcpy(&ed_sig, self.signature[0..64]);
         if (Ed25519.verify(self.voter, &message, ed_sig)) return true;
         // Fall back to BLS aggregation check
         const BlsModule = @import("../../core/crypto/Bls.zig");
-        var bls_sig: [96]u8 = undefined;
-        @memcpy(&bls_sig, &self.signature);
-        return BlsModule.verifyAggregated(self.block_digest, &bls_sig, &.{self.voter});
+        var pk_bytes: [48]u8 = undefined;
+        @memcpy(&pk_bytes, self.signature[0..48]);
+        return BlsModule.verifyAggregated(&self.block_digest, pk_bytes, self.signature);
     }
 
 };
@@ -457,9 +460,9 @@ pub const Mysticeti = struct {
             }
         }
 
-        const refs = try self.getReferences();
-        defer self.allocator.free(refs);
-        const block = try Block.create(author, self.current_round, payload, refs, self.allocator);
+        const refs = self.getReferences();
+        const ref_count = self.getReferenceCount();
+        const block = try Block.create(author, self.current_round, payload, refs[0..ref_count], self.allocator);
         try self.addBlock(block);
         try self.preBuildNextRound(author, payload);
         return block;
@@ -467,9 +470,9 @@ pub const Mysticeti = struct {
 
     fn preBuildNextRound(self: *Self, author: [32]u8, payload: []const u8) !void {
         const next_round = Round{ .value = self.current_round.value + 1 };
-        const refs = try self.getReferences();
-        defer self.allocator.free(refs);
-        self.pre_built_block = try Block.create(author, next_round, payload, refs, self.allocator);
+        const refs = self.getReferences();
+        const ref_count = self.getReferenceCount();
+        self.pre_built_block = try Block.create(author, next_round, payload, refs[0..ref_count], self.allocator);
     }
 
     pub fn createVote(self: *Self, voter: [32]u8, private_key: [32]u8, stake: u128, block: *Block) !Vote {
@@ -506,6 +509,7 @@ pub const Mysticeti = struct {
                 return; // reject duplicate/conflicting vote
             }
             try blk.votes.put(self.allocator, vote.voter, vote);
+            blk.stake_cache += vote.stake;
         }
     }
 
@@ -514,6 +518,7 @@ pub const Mysticeti = struct {
         if (self.block_index.get(vote.block_digest)) |blk| {
             if (blk.votes.get(vote.voter)) |_| return;
             try blk.votes.put(self.allocator, vote.voter, vote);
+            blk.stake_cache += vote.stake;
         }
     }
 
@@ -543,7 +548,7 @@ pub const Mysticeti = struct {
             var it = blocks.iterator();
             while (it.next()) |entry| {
                 const block = entry.value_ptr;
-                const stake = self.computeStake(&block.votes);
+                const stake = self.computeStake(block);
                 const threshold = (self.total_stake * 2) / 3 + 1;
 
                 if (stake >= threshold) {
@@ -582,7 +587,7 @@ pub const Mysticeti = struct {
             if (self.dag.get(next_round)) |blocks| {
                 var it = blocks.iterator();
                 while (it.next()) |entry| {
-                    const stake = self.computeStake(&entry.value_ptr.votes);
+                    const stake = self.computeStake(entry.value_ptr);
                     if (stake >= threshold) break :blk true;
                 }
             }
@@ -595,7 +600,7 @@ pub const Mysticeti = struct {
             if (self.dag.get(next_next_round)) |blocks| {
                 var it = blocks.iterator();
                 while (it.next()) |entry| {
-                    const stake = self.computeStake(&entry.value_ptr.votes);
+                    const stake = self.computeStake(entry.value_ptr);
                     if (stake >= threshold) break :blk true;
                 }
             }
@@ -618,13 +623,8 @@ pub const Mysticeti = struct {
         return null;
     }
 
-    fn computeStake(votes: *const std.AutoArrayHashMapUnmanaged([32]u8, Vote)) u128 {
-        var total: u128 = 0;
-        var it = votes.iterator();
-        while (it.next()) |entry| {
-            total += entry.value_ptr.stake;
-        }
-        return total;
+    fn computeStake(block: *const Block) u128 {
+        return block.stake_cache;
     }
 
     pub fn advanceRound(self: *Self) void {
@@ -654,7 +654,7 @@ pub const Mysticeti = struct {
 
     /// Check if a block has reached quorum for commit
     pub fn hasQuorum(self: *Self, block: *Block) bool {
-        const stake = self.computeStake(&block.votes);
+        const stake = self.computeStake(block);
         const threshold = (self.total_stake * 2) / 3 + 1;
         return stake >= threshold;
     }
@@ -696,21 +696,56 @@ pub const Mysticeti = struct {
         return certificates.toOwnedSlice();
     }
 
-    /// Receive and process a batch of votes for efficiency
+    /// Receive and process a batch of votes.
+    /// For large batches (>= 64 votes), verifies signatures in parallel
+    /// then inserts verified votes sequentially.
     pub fn receiveVotesBatch(self: *Self, votes: []const Vote) !void {
-        // Fast path: when BLS aggregation is enabled, skip per-vote Ed25519 verify
-        // and trust the aggregate verification at certificate commit time.
-        if (self.use_bls_aggregation) {
-            for (votes) |vote| {
+        if (votes.len < 64) {
+            for (votes) |vote| try self.receiveVote(vote);
+            return;
+        }
+
+        const num_threads = @min(@as(usize, 4), (votes.len + 31) / 32);
+        const chunk_size = (votes.len + num_threads - 1) / num_threads;
+
+        const valid_flags = try self.allocator.alloc(bool, votes.len);
+        defer self.allocator.free(valid_flags);
+
+        var threads = try self.allocator.alloc(std.Thread, num_threads);
+        defer self.allocator.free(threads);
+
+        var ti: usize = 0;
+        while (ti < num_threads) : (ti += 1) {
+            const start = ti * chunk_size;
+            const end = @min(start + chunk_size, votes.len);
+            threads[ti] = try std.Thread.spawn(.{}, verifyVoteChunk, .{
+                votes, valid_flags, start, end,
+            });
+        }
+        for (threads[0..ti]) |t| t.join();
+
+        // Insert verified votes sequentially (requires exclusive access to DAG)
+        for (valid_flags, 0..) |valid, i| {
+            if (valid) {
+                const vote = votes[i];
                 if (self.block_index.get(vote.block_digest)) |blk| {
                     if (blk.votes.get(vote.voter)) |_| continue;
                     try blk.votes.put(self.allocator, vote.voter, vote);
+                    blk.stake_cache += vote.stake;
                 }
             }
-            return;
         }
-        // Standard path: verify each vote individually
-        for (votes) |vote| try self.receiveVote(vote);
+    }
+
+    fn verifyVoteChunk(
+        votes: []const Vote,
+        flags: []bool,
+        start: usize,
+        end: usize,
+    ) void {
+        for (start..end) |i| {
+            flags[i] = votes[i].verifySignature();
+        }
     }
 
     /// Check if the current round has timed out and advance if needed.
@@ -719,7 +754,7 @@ pub const Mysticeti = struct {
     /// Call periodically from the main event loop.
     pub fn checkRoundTimeout(self: *Self, timeout_secs: i64) void {
         var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
         const now = ts.sec;
 
         // Track round start time via round metadata
@@ -728,7 +763,7 @@ pub const Mysticeti = struct {
             var has_quorum = false;
             var block_it = blocks.iterator();
             while (block_it.next()) |entry| {
-                const stake = self.computeStake(&entry.value_ptr.votes);
+                const stake = self.computeStake(entry.value_ptr);
                 if (stake >= self.quorum.quorumStakeThreshold()) {
                     has_quorum = true;
                     break;
@@ -817,17 +852,27 @@ pub const Mysticeti = struct {
         return self.dag.count();
     }
 
-    pub fn getReferences(self: Self) ![]const Round {
-        var refs = try std.ArrayList(Round).initCapacity(self.allocator, 2);
+    pub fn getReferences(self: Self) [2]Round {
+        var refs: [2]Round = undefined;
+        var count: usize = 0;
 
         if (self.current_round.value >= 2) {
-            try refs.append(.{ .value = self.current_round.value - 2 });
+            refs[count] = .{ .value = self.current_round.value - 2 };
+            count += 1;
         }
         if (self.current_round.value >= 1) {
-            try refs.append(.{ .value = self.current_round.value - 1 });
+            refs[count] = .{ .value = self.current_round.value - 1 };
+            count += 1;
         }
 
-        return try refs.toOwnedSlice(self.allocator);
+        return refs;
+    }
+
+    pub fn getReferenceCount(self: Self) usize {
+        var count: usize = 0;
+        if (self.current_round.value >= 2) count += 1;
+        if (self.current_round.value >= 1) count += 1;
+        return count;
     }
 };
 

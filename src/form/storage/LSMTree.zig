@@ -124,6 +124,7 @@ pub const MemTable = struct {
     size: usize,
     max_size: usize,
     bloom: *BloomFilter,
+    sorted: bool = true,
 
     pub fn init(allocator: std.mem.Allocator, max_size: usize) !Self {
         const bloom = try allocator.create(BloomFilter);
@@ -155,35 +156,35 @@ pub const MemTable = struct {
             return error.MemTableFull;
         }
 
-        const new_entry = KeyValue{
-            .key = try self.allocator.dupe(u8, key),
-            .value = try self.allocator.dupe(u8, value),
+        const duped_key = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(duped_key);
+        const duped_value = try self.allocator.dupe(u8, value);
+        try self.entries.append(self.allocator, .{
+            .key = duped_key,
+            .value = duped_value,
             .seq = seq,
             .deleted = false,
-        };
+        });
         self.bloom.add(key);
         self.size += entry_size;
+        self.sorted = false;
+    }
 
-        // Find the correct position for insertion using binary search
-        var low: usize = 0;
-        var high: usize = self.entries.items.len;
-
-        while (low < high) {
-            const mid = (low + high) / 2;
-            const entry = self.entries.items[mid];
-            if (new_entry.lessThan(entry)) {
-                high = mid;
-            } else {
-                low = mid + 1;
+    fn ensureSorted(self: *Self) void {
+        if (self.sorted) return;
+        std.mem.sort(KeyValue, self.entries.items, {}, struct {
+            fn lessThan(_: void, a: KeyValue, b: KeyValue) bool {
+                return a.lessThan(b);
             }
-        }
-
-        try self.entries.insert(self.allocator, low, new_entry);
+        }.lessThan);
+        self.sorted = true;
     }
 
     pub fn get(self: *Self, key: []const u8) ?[]const u8 {
         // Bloom filter check first
         if (!self.bloom.contains(key)) return null;
+
+        self.ensureSorted();
 
         // Binary search for efficiency
         var low: usize = 0;
@@ -240,6 +241,7 @@ pub const MemTable = struct {
         errdefer self.allocator.destroy(self.bloom);
         self.bloom.* = try BloomFilter.init(self.allocator, 1000000, 10);
         self.size = 0;
+        self.sorted = true;
     }
 };
 
@@ -495,35 +497,34 @@ pub const SSTable = struct {
     }
 
     fn writeIndex(self: *Self) !void {
-        // Index format: [count][key_len u32][key bytes][offset u64][size u32]...
+        // Index format: [count u32][key_len u32][key bytes][offset u64][size u32]...
         const count: u32 = @intCast(self.index.items.len);
 
-        // Write count first
-        var count_buf: [4]u8 = undefined;
-        std.mem.writeInt(u32, &count_buf, count, .big);
-        try self.file.writeAll(&count_buf);
+        // Pre-compute total buffer size: count(4) + per_entry(4 + key.len + 8 + 4)
+        var total: usize = 4;
+        for (self.index.items) |entry| {
+            total += 4 + entry.key.len + 8 + 4;
+        }
+        var buf = try self.allocator.alloc(u8, total);
+        defer self.allocator.free(buf);
+        var pos: usize = 0;
+
+        std.mem.writeInt(u32, buf[pos..][0..4], count, .big);
+        pos += 4;
 
         for (self.index.items) |entry| {
             const key_len: u32 = @intCast(entry.key.len);
-
-            // Write key_len (4 bytes)
-            var key_len_buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &key_len_buf, key_len, .big);
-            try self.file.writeAll(&key_len_buf);
-
-            // Write key bytes
-            try self.file.writeAll(entry.key);
-
-            // Write offset (8 bytes)
-            var offset_buf: [8]u8 = undefined;
-            std.mem.writeInt(u64, &offset_buf, entry.offset, .big);
-            try self.file.writeAll(&offset_buf);
-
-            // Write size (4 bytes)
-            var size_buf: [4]u8 = undefined;
-            std.mem.writeInt(u32, &size_buf, entry.size, .big);
-            try self.file.writeAll(&size_buf);
+            std.mem.writeInt(u32, buf[pos..][0..4], key_len, .big);
+            pos += 4;
+            @memcpy(buf[pos..][0..entry.key.len], entry.key);
+            pos += entry.key.len;
+            std.mem.writeInt(u64, buf[pos..][0..8], entry.offset, .big);
+            pos += 8;
+            std.mem.writeInt(u32, buf[pos..][0..4], entry.size, .big);
+            pos += 4;
         }
+
+        try self.file.writeAll(buf);
     }
 
     pub fn read(self: *Self, key: []const u8) !?[]const u8 {
@@ -838,6 +839,7 @@ pub const LSMTree = struct {
     sstables: std.ArrayList(*SSTable),
     sequence: u64,
     compaction: *CompactionManager,
+    compaction_shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     arena: std.heap.ArenaAllocator,
     wal: ?WAL,
     wal_path: []const u8,
@@ -987,6 +989,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
     }
 
     fn flushMemtable(self: *Self) !void {
+        self.memtable.ensureSorted();
         const entries = self.memtable.getEntries();
         if (entries.len == 0) return;
 
@@ -1057,7 +1060,7 @@ fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
     }
 
     fn runCompactionLoop(tree: *LSMTree) void {
-        while (true) {
+        while (!tree.compaction_shutdown.load(.monotonic)) {
             std.time.sleep(tree.config.compaction_interval_secs * std.time.ns_per_s);
             if (!tree.compaction.needsCompaction()) continue;
             for (tree.compaction.levels.items, 0..) |level_ssts, level| {

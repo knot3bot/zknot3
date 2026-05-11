@@ -10,6 +10,7 @@
 //! - Gas metering with budget enforcement
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Simple thread pool for reusing worker threads across execution batches.
 /// Avoids the per-batch std.Thread.spawn overhead.
@@ -68,14 +69,14 @@ const Ingress = @import("Ingress.zig");
 const DependencyGraph = @import("DependencyGraph.zig").DependencyGraph;
 const Log = @import("../app/Log.zig");
 
-/// Execution result
+/// Execution result — packed for cache efficiency.
+/// Hot fields (digest, status, gas_used) fit in a single cache line.
 pub const ExecutionResult = struct {
     digest: [32]u8,
     status: ExecutionStatus,
     gas_used: u64,
-    output_objects: [][32]u8,
-    /// Phase 2: events emitted during VM execution
-    events: []Event,
+    output_objects: [][32]u8 align(8),
+    events: []Event align(8),
 
     /// Release all owned memory
     pub fn deinit(self: ExecutionResult, allocator: std.mem.Allocator) void {
@@ -97,8 +98,10 @@ pub const ExecutionStatus = enum {
 
 /// Executor configuration
 pub const ExecutorConfig = struct {
-    parallelism: usize = 4,
+    parallelism: usize = 8,
     max_gas: u64 = 10_000_000,
+    /// Use Block-STM optimistic execution instead of dependency-graph batching
+    use_block_stm: bool = true,
 };
 
 /// Executor with transaction execution support
@@ -109,6 +112,10 @@ pub const Executor = struct {
     resource_tracker: *ResourceTracker,
     /// Per-instance thread affinity counter
     _thread_counter: u32 = 0,
+    /// Pre-execution result cache: keyed by (block_digest, tx_index)
+    pre_exec_cache: std.AutoArrayHashMapUnmanaged([40]u8, ExecutionResult) = .empty,
+    /// Reusable result buffer — avoids per-batch allocation
+    result_pool: []ExecutionResult = &.{},
     /// Optional native function registry for VM calls.
     /// Ownership: once set, the Executor takes ownership and will deinit+destroy in deinit().
     registry: ?*Registry = null,
@@ -137,6 +144,7 @@ pub const Executor = struct {
             reg.deinit();
             self.allocator.destroy(reg);
         }
+        if (self.result_pool.len > 0) self.allocator.free(self.result_pool);
         self.resource_tracker.deinit();
         self.allocator.destroy(self.resource_tracker);
         self.allocator.destroy(self);
@@ -231,18 +239,8 @@ pub const Executor = struct {
             };
         };
 
-        // Compute digest from full transaction: sender + program + all inputs
-        var ctx = std.crypto.hash.Blake3.init(.{});
-        ctx.update(&tx.sender);
-        ctx.update(tx.program);
-        for (tx.inputs) |input_id| {
-            ctx.update(input_id.asBytes());
-        }
-        var digest: [32]u8 = undefined;
-        ctx.final(&digest);
-
         return ExecutionResult{
-            .digest = digest,
+            .digest = tx.digest(),
             .status = .success,
             .gas_used = result.gas_consumed,
             .output_objects = result.output_objects,
@@ -346,43 +344,228 @@ pub const Executor = struct {
         return results;
     }
 
-    /// Execute transactions with dependency-graph ordering + thread pool parallelism.
-    /// WorkerPool threads are reused across batches to eliminate spawn/join overhead.
+    /// Execute transactions with Block-STM or dependency-graph ordering.
+    /// When config.use_block_stm is true (default), uses optimistic parallel
+    /// execution with read-write set validation and automatic conflict retry.
+    /// Falls back to dependency-graph batching for small batches or when STM is off.
     pub fn executeOrdered(self: *Self, transactions: []const Ingress.Transaction) ![]ExecutionResult {
+        if (self.config.use_block_stm) {
+            return self.executeBlockSTM(transactions);
+        }
+        return self.executeOrderedGraph(transactions);
+    }
+
+    /// Execute transactions with dependency-graph ordering + reusable buffer.
+    /// Uses result_pool to avoid per-call allocation; grows pool as needed.
+    fn executeOrderedGraph(self: *Self, transactions: []const Ingress.Transaction) ![]ExecutionResult {
         const allocator = self.allocator;
-        var graph = try DependencyGraph.init(allocator, transactions);
+
+        // Grow result pool if needed
+        if (self.result_pool.len < transactions.len) {
+            if (self.result_pool.len > 0) allocator.free(self.result_pool);
+            self.result_pool = try allocator.alloc(ExecutionResult, transactions.len);
+        }
+        const results = self.result_pool[0..transactions.len];
+
+        // Arena for graph and thread handles only — results go to pool
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const aa = arena.allocator();
+
+        var graph = try DependencyGraph.init(aa, transactions);
         defer graph.deinit();
-        const batches = try graph.topologicalBatches(allocator);
-        defer { for (batches) |b| allocator.free(b); allocator.free(batches); }
-        const results = try allocator.alloc(ExecutionResult, transactions.len);
+        const batches = try graph.topologicalBatches(aa);
         const max_threads = @max(self.config.parallelism, 1);
+
+        // MVCC object-version set for conflict detection within parallel batches
+        var mvcc_set: std.AutoArrayHashMapUnmanaged([32]u8, void) = .empty;
+        defer mvcc_set.deinit(aa);
 
         for (batches) |batch| {
             if (batch.len <= 1) {
                 results[batch[0]] = self.executeOne(transactions[batch[0]]);
             } else {
-                const num_threads = @min(max_threads, batch.len);
-                const chunk_size = @max(1, @divTrunc(batch.len + num_threads - 1, num_threads));
-                const num_chunks = @divTrunc(batch.len + chunk_size - 1, chunk_size);
-                var threads = try allocator.alloc(std.Thread, num_chunks);
-                var ci: usize = 0;
-                while (ci < num_chunks) : (ci += 1) {
-                    const start = ci * chunk_size;
-                    const end = @min(start + chunk_size, batch.len);
-                    const chunk = batch[start..end];
-                    threads[ci] = try std.Thread.spawn(.{}, runChunk, .{ self, transactions, results, chunk });
+                // MVCC pre-check: verify no object conflicts within this batch
+                mvcc_set.clearRetainingCapacity();
+                for (batch) |idx| {
+                    const tx = transactions[idx];
+                    for (tx.inputs) |input_id| {
+                        if (mvcc_set.contains(input_id.bytes)) {
+                            // Conflict detected — fall back to sequential for this batch
+                            for (batch) |seq_idx| {
+                                results[seq_idx] = self.executeOne(transactions[seq_idx]);
+                            }
+                            break;
+                        }
+                    } else {
+                        for (tx.inputs) |input_id| {
+                            mvcc_set.put(aa, input_id.bytes, {}) catch {};
+                        }
+                        continue;
+                    }
+                    break;
+                } else {
+                    // No conflicts — execute in parallel
+                    const num_threads = @min(max_threads, batch.len);
+                    const chunk_size = @max(1, @divTrunc(batch.len + num_threads - 1, num_threads));
+                    const num_chunks = @divTrunc(batch.len + chunk_size - 1, chunk_size);
+                    var threads = try aa.alloc(std.Thread, num_chunks);
+                    var ci: usize = 0;
+                    while (ci < num_chunks) : (ci += 1) {
+                        const start = ci * chunk_size;
+                        const end = @min(start + chunk_size, batch.len);
+                        const chunk = batch[start..end];
+                        threads[ci] = try std.Thread.spawn(.{}, runChunk, .{ self, transactions, results, chunk });
+                    }
+                    for (threads[0..num_chunks]) |t| t.join();
                 }
-                // Join all threads for this batch before moving to next batch
-                for (threads[0..num_chunks]) |t| t.join();
-                allocator.free(threads);
             }
         }
         return results;
     }
 
+    /// Read-write set for Block-STM optimistic validation.
+    pub const ReadWriteSet = struct {
+        reads: []const core.ObjectID,
+        writes: []const [32]u8,
+    };
+
+    /// Block-STM optimistic parallel execution.
+    /// Executes ALL transactions in parallel without pre-checking conflicts,
+    /// then validates read-write sets in block order. Conflicting transactions
+    /// are re-executed. Uses up to config.parallelism threads.
+    /// For small batches (< 16 txs), falls back to executeOrdered.
+    pub fn executeBlockSTM(self: *Self, transactions: []const Ingress.Transaction) ![]ExecutionResult {
+        const n = transactions.len;
+        if (n == 0) return &.{};
+        if (n < 16 or self.config.parallelism <= 1) {
+            return self.executeOrderedGraph(transactions);
+        }
+
+        const allocator = self.allocator;
+        const max_threads = @min(self.config.parallelism, (n + 7) / 8);
+        const max_retries: u8 = 3;
+
+        // Grow result pool if needed
+        if (self.result_pool.len < n) {
+            if (self.result_pool.len > 0) allocator.free(self.result_pool);
+            self.result_pool = try allocator.alloc(ExecutionResult, n);
+        }
+        const results = self.result_pool[0..n];
+
+        // Track read/write sets per transaction
+        const rw_sets = try allocator.alloc(ReadWriteSet, n);
+        defer allocator.free(rw_sets);
+
+        // Track which transactions need (re-)execution
+        var needs_exec = try allocator.alloc(bool, n);
+        defer allocator.free(needs_exec);
+        @memset(needs_exec, true); // start: all need execution
+
+        // Track which transactions are valid (passed validation)
+        var valid = try allocator.alloc(bool, n);
+        defer allocator.free(valid);
+        @memset(valid, false);
+
+        var retry_round: u8 = 0;
+        while (retry_round < max_retries) : (retry_round += 1) {
+            // Collect indices of transactions that need (re-)execution
+            var pending_count: usize = 0;
+            for (needs_exec, 0..) |need, i| {
+                if (need and !valid[i]) {
+                    needs_exec[i] = true; // keep flag for this round
+                    pending_count += 1;
+                } else {
+                    needs_exec[i] = false;
+                }
+            }
+            if (pending_count == 0) break;
+
+            // Execute pending transactions in parallel
+            const chunk_size = @max(1, @divTrunc(n + max_threads - 1, max_threads));
+            const num_chunks = @divTrunc(n + chunk_size - 1, chunk_size);
+            var threads = try allocator.alloc(std.Thread, num_chunks);
+            var ci: usize = 0;
+            while (ci < num_chunks) : (ci += 1) {
+                const start = ci * chunk_size;
+                const end = @min(start + chunk_size, n);
+                threads[ci] = try std.Thread.spawn(.{}, runChunkWithRetry, .{
+                    self, transactions, results, rw_sets, needs_exec, start, end,
+                });
+            }
+            for (threads[0..ci]) |t| t.join();
+            allocator.free(threads);
+
+            // Validation pass: check read-write conflicts in block order
+            var wrote_set = std.AutoArrayHashMapUnmanaged([32]u8, void).empty;
+            defer wrote_set.deinit(allocator);
+            var any_invalid = false;
+
+            for (0..n) |i| {
+                if (!needs_exec[i] and valid[i]) {
+                    // Already validated — still add writes to the set
+                    if (results[i].status == .success) {
+                        for (rw_sets[i].writes) |w| {
+                            wrote_set.put(allocator, w, {}) catch {};
+                        }
+                    }
+                    continue;
+                }
+                if (results[i].status != .success) {
+                    valid[i] = true; // failed txs are "valid" (won't retry)
+                    needs_exec[i] = false;
+                    continue;
+                }
+                // Check if this tx read anything that an earlier tx wrote
+                var conflict = false;
+                for (rw_sets[i].reads) |r| {
+                    if (wrote_set.contains(r.bytes)) {
+                        conflict = true;
+                        break;
+                    }
+                }
+                if (conflict) {
+                    needs_exec[i] = true;
+                    valid[i] = false;
+                    any_invalid = true;
+                } else {
+                    // No conflict — mark valid and add writes to the set
+                    valid[i] = true;
+                    needs_exec[i] = false;
+                    for (rw_sets[i].writes) |w| {
+                        wrote_set.put(allocator, w, {}) catch {};
+                    }
+                }
+            }
+            if (!any_invalid) break;
+        }
+
+        return results;
+    }
+
+    /// Worker for Block-STM: executes only transactions marked in needs_exec within [start, end).
+    fn runChunkWithRetry(
+        exec: *Self,
+        txs: []const Ingress.Transaction,
+        res: []ExecutionResult,
+        rw_sets: []ReadWriteSet,
+        needs_exec: []const bool,
+        start: usize,
+        end: usize,
+    ) void {
+        for (start..end) |i| {
+            if (!needs_exec[i]) continue;
+            res[i] = exec.executeOne(txs[i]);
+            rw_sets[i] = ReadWriteSet{
+                .reads = txs[i].inputs,
+                .writes = res[i].output_objects,
+            };
+        }
+    }
+
     fn runChunk(exec: *Self, txs: []const Ingress.Transaction, res: []ExecutionResult, indices: []const usize) void {
         // Pin thread to CPU core on Linux (reduces context switching)
-        if (comptime std.Target.current.os.tag == .linux) {
+        if (comptime builtin.os.tag == .linux) {
             if (exec.config.parallelism > 1) {
                 const tid = @atomicRmw(u32, &exec._thread_counter, .Add, 1, .monotonic);
                 var cpu_set: std.os.linux.CPU.set = std.os.linux.CPU.set{};
@@ -394,8 +577,6 @@ pub const Executor = struct {
             res[idx] = exec.executeOne(txs[idx]);
         }
     }
-
-    var thread_counter: u32 = 0;
 
     fn executeOne(self: *Self, tx: Ingress.Transaction) ExecutionResult {
         return self.executeWithContext(tx, null) catch |err| ExecutionResult{

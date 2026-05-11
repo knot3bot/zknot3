@@ -231,6 +231,8 @@ pub const IngressConfig = struct {
     min_gas_budget: u64 = MIN_GAS_BUDGET,
     /// Whether to require signatures (can be disabled for testing)
     require_signatures: bool = true,
+    /// Number of threads for parallel signature verification
+    parallelism: usize = 8,
 };
 
 /// Ingress processor using ArrayList for queue management
@@ -350,6 +352,64 @@ pub const Ingress = struct {
             valid_count += 1;
         }
         self.pending.clearRetainingCapacity();
+    }
+
+    /// Parallel batch verification using multiple threads for Ed25519 sig checks.
+    /// Divides pending transactions into chunks, verifies each chunk in parallel,
+    /// then collects valid transactions into the verified list.
+    /// For small batches (< 32 txs), falls back to single-threaded verifyBatch.
+    pub fn verifyBatchParallel(self: *Self) !void {
+        const n = self.pending.items.len;
+        if (n == 0) return;
+        if (n < 32 or self.config.parallelism <= 1 or !self.config.require_signatures) {
+            return self.verifyBatch();
+        }
+
+        const num_threads = @min(self.config.parallelism, (n + 15) / 16);
+        const chunk_size = (n + num_threads - 1) / num_threads;
+
+        const valid_flags = try self.allocator.alloc(bool, n);
+        defer self.allocator.free(valid_flags);
+        @memset(valid_flags, false);
+
+        var threads = try self.allocator.alloc(std.Thread, num_threads);
+        defer self.allocator.free(threads);
+
+        var ti: usize = 0;
+        while (ti < num_threads) : (ti += 1) {
+            const start = ti * chunk_size;
+            const end = @min(start + chunk_size, n);
+            threads[ti] = try std.Thread.spawn(.{}, verifyChunk, .{
+                self.pending.items, valid_flags, start, end,
+            });
+        }
+        for (threads[0..ti]) |t| t.join();
+
+        // Collect valid transactions in original order
+        for (valid_flags, 0..) |valid, i| {
+            if (valid) {
+                try self.verified.append(self.allocator, self.pending.items[i]);
+            } else {
+                var tx = self.pending.items[i];
+                tx.deinit(self.allocator);
+            }
+        }
+        self.pending.clearRetainingCapacity();
+    }
+
+    /// Worker function: verify signatures for a chunk of transactions.
+    /// Writes results (true=valid, false=invalid) into the shared flags array.
+    fn verifyChunk(
+        txs: []const Transaction,
+        flags: []bool,
+        start: usize,
+        end: usize,
+    ) void {
+        for (start..end) |i| {
+            const tx = txs[i];
+            if (tx.gas_budget < MIN_GAS_BUDGET) continue;
+            flags[i] = tx.verifySignature();
+        }
     }
 
     /// Get next verified transaction

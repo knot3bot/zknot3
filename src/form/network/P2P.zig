@@ -77,6 +77,7 @@ pub const PeerManager = struct {
     pub fn deinit(self: *@This()) void {
         self.routing_table.deinit();
         self.peers.deinit(self.allocator);
+        self.connection_pool.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 

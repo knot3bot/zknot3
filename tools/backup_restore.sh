@@ -22,12 +22,15 @@ backup() {
 
     mkdir -p "${backup_path}"
 
-    # 1. Grab a consistent checkpoint snapshot (signal node to flush)
-    echo "[1/4] Requesting checkpoint flush..."
-    curl -s -X POST "http://localhost:9003/rpc" \
-        -H 'Content-Type: application/json' \
-        -d '{"jsonrpc":"2.0","method":"knot3_flushCheckpoint","id":1}' \
-        || echo "(node may not be running — proceeding with filesystem backup)"
+    # 1. Verify node is healthy before backup
+    echo "[1/4] Checking node health..."
+    if ! curl -sf "http://localhost:9003/health" > /dev/null 2>&1; then
+        echo "WARNING: Node health check failed — proceeding with filesystem backup."
+        echo "The backup may be inconsistent if the node is actively writing."
+    else
+        echo "Node is healthy. For a fully consistent backup, stop the node first."
+        echo "Continuing with live backup (crash-consistent, not point-in-time)..."
+    fi
 
     # 2. Copy data files
     echo "[2/4] Copying object store..."

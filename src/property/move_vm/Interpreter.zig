@@ -439,36 +439,36 @@ pub const Interpreter = struct {
             .add => {
                 const ints = try self.popTwoInts();
                 const result, const overflow = @addWithOverflow(ints.a.data.int, ints.b.data.int);
-                if (overflow != 0) return error.ArithmeticOverflow;
+                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .sub => {
                 const ints = try self.popTwoInts();
                 const result, const overflow = @subWithOverflow(ints.a.data.int, ints.b.data.int);
-                if (overflow != 0) return error.ArithmeticOverflow;
+                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .mul => {
                 const ints = try self.popTwoInts();
                 const result, const overflow = @mulWithOverflow(ints.a.data.int, ints.b.data.int);
-                if (overflow != 0) return error.ArithmeticOverflow;
+                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .div => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int == 0) return error.DivisionByZero;
-                if (ints.a.data.int == std.math.minInt(i64) and ints.b.data.int == -1) return error.ArithmeticOverflow;
+                if (ints.b.data.int == 0) { @branchHint(.cold); return error.DivisionByZero; }
+                if (ints.a.data.int == std.math.minInt(i64) and ints.b.data.int == -1) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @divTrunc(ints.a.data.int, ints.b.data.int) } });
             },
             .mod => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int == 0) return error.DivisionByZero;
+                if (ints.b.data.int == 0) { @branchHint(.cold); return error.DivisionByZero; }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @rem(ints.a.data.int, ints.b.data.int) } });
             },
             .neg => {
                 const a = try self.popOneInt();
                 const result, const overflow = @subWithOverflow(@as(i64, 0), a.data.int);
-                if (overflow != 0) return error.ArithmeticOverflow;
+                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .bit_and => {
@@ -485,13 +485,13 @@ pub const Interpreter = struct {
             },
             .shl => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int < 0 or ints.b.data.int >= 64) return error.ArithmeticOverflow;
+                if (ints.b.data.int < 0 or ints.b.data.int >= 64) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 const shift = @as(u6, @intCast(ints.b.data.int));
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = ints.a.data.int << shift } });
             },
             .shr => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int < 0 or ints.b.data.int >= 64) return error.ArithmeticOverflow;
+                if (ints.b.data.int < 0 or ints.b.data.int >= 64) { @branchHint(.cold); return error.ArithmeticOverflow; }
                 const shift = @as(u6, @intCast(ints.b.data.int));
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = ints.a.data.int >> shift } });
             },

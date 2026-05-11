@@ -407,7 +407,7 @@ pub const DashboardHandler = struct {
             .execution_result = if (exec) |e| .{
                 .status = @tagName(e.status),
                 .gas_used = e.gas_used,
-                .output_len = e.output.len,
+                .output_len = e.output_objects.len,
             } else null,
             .raw_tx = null,
             .note = "raw tx is not retained in node memory today; receipt/execution_result only",
@@ -526,10 +526,10 @@ pub const DashboardHandler = struct {
                     query.transaction_digest = d;
                 }
             }
-            const result = try idx.queryEvents(query, null, limit);
+            const result = try idx.queryEvents(self.allocator, query, null, limit);
             // result.data is a pointer to an ArrayList of IndexedEvent
             const evts = @as(*std.ArrayList(@import("../../app/Indexer.zig").IndexedEvent), @ptrCast(@alignCast(@constCast(result.data))));
-            defer evts.deinit();
+            defer evts.deinit(self.allocator);
             for (evts.items) |evt| {
                 const tx_d = try bytesToHex(self.allocator, &evt.transaction_digest);
                 try events_out.append(self.allocator, .{
@@ -567,9 +567,9 @@ pub const DashboardHandler = struct {
                     query.owner = d;
                 }
             }
-            const result = try idx.queryObjects(query, null, limit);
+            const result = try idx.queryObjects(self.allocator, query, null, limit);
             const ids = @as(*std.ArrayList(@import("../../core.zig").ObjectID), @ptrCast(@alignCast(@constCast(result.data))));
-            defer ids.deinit();
+            defer ids.deinit(self.allocator);
             for (ids.items) |id| {
                 if (idx.getObject(id)) |obj| {
                     const id_h = try bytesToHex(self.allocator, id.asBytes());

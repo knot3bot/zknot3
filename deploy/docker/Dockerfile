@@ -55,6 +55,10 @@ WORKDIR /var/lib/zknot3
 # Expose ports
 EXPOSE 9003 8083 9133
 
+# Health check via HTTP API
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+    CMD curl -sf http://localhost:9003/health || exit 1
+
 # Run
 ENTRYPOINT ["/usr/local/bin/zknot3-entrypoint"]
 CMD ["--config", "/var/lib/zknot3/config.toml"]

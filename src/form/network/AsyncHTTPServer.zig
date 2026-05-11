@@ -66,6 +66,8 @@ pub const AsyncHTTPServer = struct {
     request_count: usize,
     last_request_second: i64,
     max_requests_per_second: usize,
+    /// Effective connection limit (<= MAX_CONNS, from config)
+    max_conns: usize = MAX_CONNS,
 
     // io_uring fields
     ring: std.os.linux.IoUring,
@@ -100,7 +102,7 @@ pub const AsyncHTTPServer = struct {
         return self;
     }
 
-    pub fn initWithDashboard(allocator: std.mem.Allocator, address: std.Io.net.IpAddress, node: *Node, max_requests_per_second: u32) !Self {
+    pub fn initWithDashboard(allocator: std.mem.Allocator, address: std.Io.net.IpAddress, node: *Node, max_requests_per_second: u32, max_connections: usize) !Self {
         var self = try init(allocator, address);
         var handler = try allocator.create(Dashboard.DashboardHandler);
         handler.* = Dashboard.DashboardHandler.init(allocator);
@@ -108,6 +110,7 @@ pub const AsyncHTTPServer = struct {
         self.dashboard_handler = handler;
         self.node = node;
         self.max_requests_per_second = max_requests_per_second;
+        self.max_conns = @min(max_connections, MAX_CONNS);
         return self;
     }
 
@@ -150,8 +153,9 @@ pub const AsyncHTTPServer = struct {
             return error.ListenFailed;
         }
 
-        // Submit initial accepts for all idle slots
+        // Submit initial accepts for idle slots up to max_conns
         for (&self.conns, 0..) |*conn, i| {
+            if (i >= self.max_conns) break;
             conn.state = .accepting;
             _ = try self.ring.accept(makeUserData(@intCast(i), .accept), self.listen_fd, null, null, 0);
         }
@@ -218,8 +222,9 @@ pub const AsyncHTTPServer = struct {
             };
         }
 
-        // 3. Refill accept ops for idle slots
+        // 3. Refill accept ops for idle slots (up to max_conns)
         for (&self.conns, 0..) |*conn, i| {
+            if (i >= self.max_conns) break;
             if (conn.state == .idle) {
                 conn.state = .accepting;
                 _ = self.ring.accept(makeUserData(@intCast(i), .accept), self.listen_fd, null, null, 0) catch |err| {
@@ -388,6 +393,20 @@ pub const AsyncHTTPServer = struct {
             _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
         }
         self.request_count += 1;
+
+        // Auth check for write endpoints — must match sync HTTPServer behavior
+        if (HTTPServerBase.requireAdminForRequest(self.node, request, path) and
+            !HTTPServerBase.isAuthorizedAdmin(self.node, request))
+        {
+            var response = Response{
+                .status = .unauthorized,
+                .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+                .body = "{\"error\":\"Unauthorized\"}",
+            };
+            _ = try response.withJSONContentType();
+            _ = response.withTraceId(&trace_id) catch {};
+            return try response.toString(self.allocator);
+        }
 
         var response = Response{
             .status = .ok,

@@ -188,8 +188,8 @@ pub const Indexer = struct {
     /// Query objects with filter.
     /// Returns owned PaginatedResult — caller must call result.deinit(allocator).
     pub fn queryObjects(self: Self, allocator: std.mem.Allocator, query: ObjectQuery, cursor: ?core.ObjectID, limit: usize) !PaginatedResult {
-        var results = std.ArrayList(core.ObjectID).init(allocator);
-        defer results.deinit();
+        var results = std.ArrayList(core.ObjectID).empty;
+        defer results.deinit(allocator);
 
         var it = self.object_index.iterator();
         var passed_cursor = cursor == null;
@@ -226,7 +226,7 @@ pub const Indexer = struct {
                 }
             }
 
-            try results.append(obj.id);
+            try results.append(allocator, obj.id);
 
             if (results.items.len >= limit) break;
         }
@@ -263,8 +263,8 @@ pub const Indexer = struct {
     /// Query events with filter.
     /// Returns owned PaginatedResult — caller must call result.deinit(allocator).
     pub fn queryEvents(self: Self, allocator: std.mem.Allocator, query: EventQuery, cursor: ?u64, limit: usize) !PaginatedResult {
-        var results = std.ArrayList(IndexedEvent).init(allocator);
-        defer results.deinit();
+        var results = std.ArrayList(IndexedEvent).empty;
+        defer results.deinit(allocator);
 
         var it = self.event_index.iterator();
         var event_idx: u64 = 0;
@@ -303,7 +303,7 @@ pub const Indexer = struct {
                     if (evt.timestamp > end) continue;
                 }
 
-                try results.append(evt);
+                try results.append(allocator, evt);
                 event_idx += 1;
 
                 if (results.items.len >= limit) break;
@@ -316,21 +316,40 @@ pub const Indexer = struct {
         // Serialize results into an owned byte buffer
         // Format: [4-byte event_count][events...] where each event is:
         //   [32-byte tx_digest][4-byte type_len][type_bytes][4-byte contents_len][contents_bytes][8-byte timestamp][8-byte event_index]
-        var buf = std.ArrayList(u8).init(allocator);
-        defer buf.deinit();
-        const writer = buf.writer();
-        try writer.writeInt(u32, @intCast(results.items.len), .little);
+        var buf = std.ArrayList(u8).empty;
+        defer buf.deinit(allocator);
+        {
+            var tmp: [4]u8 = undefined;
+            std.mem.writeInt(u32, &tmp, @intCast(results.items.len), .little);
+            try buf.appendSlice(allocator, &tmp);
+        }
         for (results.items) |evt| {
-            try writer.writeAll(&evt.transaction_digest);
-            try writer.writeInt(u32, @intCast(evt.event_type.len), .little);
-            try writer.writeAll(evt.event_type);
-            try writer.writeInt(u32, @intCast(evt.contents.len), .little);
-            try writer.writeAll(evt.contents);
-            try writer.writeInt(i64, evt.timestamp, .little);
-            try writer.writeInt(u64, evt.event_index, .little);
+            try buf.appendSlice(allocator, &evt.transaction_digest);
+            {
+                var tmp: [4]u8 = undefined;
+                std.mem.writeInt(u32, &tmp, @intCast(evt.event_type.len), .little);
+                try buf.appendSlice(allocator, &tmp);
+            }
+            try buf.appendSlice(allocator, evt.event_type);
+            {
+                var tmp: [4]u8 = undefined;
+                std.mem.writeInt(u32, &tmp, @intCast(evt.contents.len), .little);
+                try buf.appendSlice(allocator, &tmp);
+            }
+            try buf.appendSlice(allocator, evt.contents);
+            {
+                var tmp: [8]u8 = undefined;
+                std.mem.writeInt(i64, &tmp, evt.timestamp, .little);
+                try buf.appendSlice(allocator, &tmp);
+            }
+            {
+                var tmp: [8]u8 = undefined;
+                std.mem.writeInt(u64, &tmp, evt.event_index, .little);
+                try buf.appendSlice(allocator, &tmp);
+            }
         }
 
-        const owned_data = try buf.toOwnedSlice();
+        const owned_data = try buf.toOwnedSlice(allocator);
         errdefer allocator.free(owned_data);
 
         return .{

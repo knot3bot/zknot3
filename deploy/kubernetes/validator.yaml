@@ -116,10 +116,17 @@ spec:
           periodSeconds: 10
         readinessProbe:
           httpGet:
-            path: /health
+            path: /ready
             port: 9003
           initialDelaySeconds: 5
           periodSeconds: 5
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 9003
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          failureThreshold: 30
       volumes:
       - name: config
         configMap:

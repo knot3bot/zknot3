@@ -306,8 +306,8 @@ pub const QUICConnection = struct {
     pub fn acceptStream(self: *Self) ?*QUICStream {
         var it = self.streams.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.state == .open) {
-                return entry.value_ptr;
+            if (entry.value_ptr.*.state == .open) {
+                return entry.value_ptr.*;
             }
         }
         return null;

@@ -185,7 +185,9 @@ pub const ConsensusIntegration = struct {
         var message: [40]u8 = undefined;
         std.mem.writeInt(u64, message[0..8], block.round.value, .big);
         @memcpy(message[8..40], &block.digest);
-        const sig = try @import("../../property/Signature.zig").Ed25519.sign(self.validator_key, &message);
+        const sig_ed = try @import("../../property/Signature.zig").Ed25519.sign(self.validator_key, &message);
+        var sig: [96]u8 = [_]u8{0} ** 96;
+        @memcpy(sig[0..64], &sig_ed);
 
         const vote = Mysticeti.Vote{
             .voter = self.validator_id,
@@ -395,12 +397,9 @@ pub const ConsensusIntegration = struct {
                         };
                     }
                     if (self.p2p_server.quic_peers.getPtr(peer_id)) |peer| {
-                        break :blk peer.*.recvMessage() catch |err| switch (err) {
-                            error.WouldBlock => break,
-                            else => {
-                                peer_dead = true;
-                                break;
-                            },
+                        break :blk peer.*.recvMessage() catch {
+                            peer_dead = true;
+                            break;
                         };
                     }
                     break;

@@ -1,6 +1,7 @@
 //! BlockExecution - block payload execution orchestration
 //!
-//! Keeps Node lean by extracting payload parsing and transaction execution flow.
+//! Collects all transactions from a block payload and executes them
+//! in a single Block-STM batch for maximum parallel throughput.
 
 const std = @import("std");
 const pipeline = @import("../pipeline.zig");
@@ -16,17 +17,23 @@ pub fn senderChunkCount(payload_len: usize) usize {
     return payload_len / 32;
 }
 
+/// Collect all transactions from the payload and execute them in one
+/// Block-STM batch via executeOrdered. This is the critical consensus
+/// execution path — parallel execution replaces the old per-tx loop.
 pub fn executePayloadTransactions(ctx: *ExecuteContext, payload: []const u8) ![]ExecutionResult {
-    var results = try std.ArrayList(ExecutionResult).initCapacity(ctx.allocator, 16);
-    errdefer results.deinit(ctx.allocator);
-
     const sender_len = 32;
-    var offset: usize = 0;
-    while (offset + sender_len <= payload.len) : (offset += sender_len) {
-        var sender: [32]u8 = undefined;
-        @memcpy(&sender, payload[offset .. offset + sender_len]);
+    const tx_count = payload.len / sender_len;
+    if (tx_count == 0) return &.{};
 
-        const tx = pipeline.Transaction{
+    // Build transaction array
+    const txs = try ctx.allocator.alloc(pipeline.Transaction, tx_count);
+    defer ctx.allocator.free(txs);
+
+    for (txs, 0..) |*tx, i| {
+        const offset = i * sender_len;
+        var sender: [32]u8 = undefined;
+        @memcpy(&sender, payload[offset..][0..sender_len]);
+        tx.* = .{
             .sender = sender,
             .inputs = &.{},
             .program = &.{},
@@ -35,30 +42,25 @@ pub fn executePayloadTransactions(ctx: *ExecuteContext, payload: []const u8) ![]
             .signature = null,
             .public_key = null,
         };
-
-        const result = ctx.executor.execute(tx) catch |err| {
-            try results.append(ctx.allocator, .{
-                .digest = sender,
-                .status = if (err == error.OutOfGas) .out_of_gas else .invalid_bytecode,
-                .gas_used = 0,
-                .output_objects = &.{},
-                .events = &.{},
-            });
-            continue;
-        };
-
-        try results.append(ctx.allocator, result);
-
-        const receipt = pipeline.TransactionReceipt{
-            .digest = result.digest,
-            .status = if (result.status == .success) .executed else .failed,
-            .gas_used = result.gas_used,
-            .sender = sender,
-        };
-        try ctx.txn_history.put(ctx.allocator, result.digest, receipt);
     }
 
-    return try results.toOwnedSlice(ctx.allocator);
+    // Block-STM parallel execution (falls back to dependecy-graph for small batches)
+    const results = try ctx.executor.executeOrdered(txs);
+
+    // Record receipts for successful transactions
+    for (results) |res| {
+        if (res.status == .success) {
+            const receipt = pipeline.TransactionReceipt{
+                .digest = res.digest,
+                .status = .executed,
+                .gas_used = res.gas_used,
+                .sender = res.digest,
+            };
+            try ctx.txn_history.put(ctx.allocator, res.digest, receipt);
+        }
+    }
+
+    return results;
 }
 
 test "senderChunkCount floors on trailing bytes" {
@@ -67,4 +69,3 @@ test "senderChunkCount floors on trailing bytes" {
     try std.testing.expectEqual(@as(usize, 1), senderChunkCount(32));
     try std.testing.expectEqual(@as(usize, 2), senderChunkCount(65));
 }
-

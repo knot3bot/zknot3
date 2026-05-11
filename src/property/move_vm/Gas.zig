@@ -39,7 +39,9 @@ pub const GasMeter = struct {
 
     /// Consume gas (monotone - only decreases), overflow-safe
     pub fn consume(self: *Self, amount: u64) !void {
+        // @branchHint: gas exhaustion is rare (cold path)
         if (amount > self.remaining) {
+            @branchHint(.cold);
             return error.OutOfGas;
         }
         self.remaining -= amount;

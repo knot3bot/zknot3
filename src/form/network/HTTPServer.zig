@@ -188,7 +188,7 @@ pub const Response = struct {
     status: StatusCode,
     headers: std.StringArrayHashMapUnmanaged([]const u8),
     body: ?[]const u8,
-    trace_id: []const u8 = &.{},
+    trace_id: ?[]const u8 = null,
 
     pub fn ok(body: []const u8) @This() {
         return .{

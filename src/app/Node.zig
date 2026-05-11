@@ -212,10 +212,16 @@ pub const Node = struct {
         // Phase 0: bootstrap validator stake from config known_validators into stake_pool
         for (config.network.known_validators) |kv| {
             if (kv.stake > 0) {
-                const pk = std.fmt.parseInt(u256, kv.public_key_hex, 16) catch continue;
+                const pk = std.fmt.parseInt(u256, kv.public_key_hex, 16) catch |err| {
+                    Log.err("[init] invalid validator public_key_hex: {s}", .{@errorName(err)});
+                    continue;
+                };
                 var validator_id: [32]u8 = undefined;
                 std.mem.writeInt(u256, &validator_id, pk, .big);
-                stake_pool.addStake(validator_id, kv.stake, true) catch continue;
+                stake_pool.addStake(validator_id, kv.stake, true) catch |err| {
+                    Log.err("[init] failed to add stake for validator: {s}", .{@errorName(err)});
+                    continue;
+                };
             }
         }
 
@@ -359,9 +365,28 @@ pub const Node = struct {
         if (self.p2p_server) |server| {
             server.stop();
         }
-        // TODO: integrate with event loop to drain pending blocks and in-flight operations
-        // before transitioning to .stopped. Callers should invoke deinit() after stop()
-        // to flush the WAL, memtable, and checkpoint.
+
+        // Drain pending blocks with a bounded deadline (5 seconds).
+        // The consensus event loop in main.zig will continue processing
+        // commits during the drain window via the normal poll loop.
+        const drain_deadline = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+            break :blk ts.sec + 5;
+        };
+        while (self.pending_blocks.count() > 0) {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+            if (ts.sec >= drain_deadline) {
+                Log.warn("[Node.stop] drain timeout — {} blocks uncommitted", .{
+                    self.pending_blocks.count(),
+                });
+                break;
+            }
+            // Yield to the OS scheduler while waiting for blocks to drain
+            std.atomic.spinLoopHint();
+        }
+
         self.state = .stopped;
     }
 
@@ -477,9 +502,12 @@ pub const Node = struct {
         const stats_snap = NodeStatsCoordinator.snapshot(&self.stats);
         const tps = NodeMetricsCoordinator.computeTps(stats_snap.transactions_executed, stats_snap.blocks_committed);
 
+        // Latency estimates from summary data (wall-clock instrumentation pending).
+        // These are derived from execution throughput rather than measured directly.
+        const est_latency_ms: f64 = if (tps > 0) 1000.0 / tps else 0;
         const user = RuntimeMetrics.UserMetrics{
-            .latency_p50 = 20.0,
-            .latency_p99 = 50.0,
+            .latency_p50 = est_latency_ms,
+            .latency_p99 = est_latency_ms * 3.0,
             .tps = tps,
             .target_tps = 10000.0,
             .error_rate = error_rate,
@@ -792,7 +820,9 @@ pub const Node = struct {
                 .contents = evt.payload,
                 .timestamp = now,
                 .event_index = evt.event_index,
-            }) catch continue;
+            }) catch |err| {
+                Log.err("[indexer] failed to index event for tx={x}: {s}", .{ tx_digest, @errorName(err) });
+            };
         }
         // Synthetic execution-status event
         idx.indexEvent(.{
@@ -801,7 +831,9 @@ pub const Node = struct {
             .contents = &.{},
             .timestamp = now,
             .event_index = result.events.len,
-        }) catch return;
+        }) catch |err| {
+            Log.err("[indexer] failed to index synthetic event for tx={x}: {s}", .{ tx_digest, @errorName(err) });
+        };
     }
 
     pub fn executeTransaction(self: *Self, tx: pipeline.Transaction) !ExecutionResult {
