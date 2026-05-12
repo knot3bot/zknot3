@@ -1,1208 +1,273 @@
-<!doctype html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>zknot3 Dashboard</title>
-        <script src="https://unpkg.com/htmx.org@1.9.10/dist/htmx.min.js"></script>
-        <script
-            defer
-            src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"
-        ></script>
-        <style>
-            @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
-
-            :root {
-                --bg-primary: #0b0f19;
-                --bg-secondary: #111827;
-                --bg-tertiary: #1f2937;
-                --bg-hover: #374151;
-                --border: #2d3748;
-                --text-primary: #f9fafb;
-                --text-secondary: #9ca3af;
-                --text-muted: #6b7280;
-                --accent: #3b82f6;
-                --accent-hover: #2563eb;
-                --success: #22c55e;
-                --warning: #f59e0b;
-                --danger: #ef4444;
-                --sidebar-width: 240px;
-                --header-height: 64px;
-            }
-
-            * {
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }
-
-            body {
-                font-family: "Inter", system-ui, sans-serif;
-                background: var(--bg-primary);
-                color: var(--text-primary);
-                min-height: 100vh;
-                line-height: 1.5;
-            }
-
-            /* 厂字 Layout: Top Header + Left Sidebar */
-            .top-header {
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                height: var(--header-height);
-                background: var(--bg-secondary);
-                border-bottom: 1px solid var(--border);
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 0 1.5rem;
-                z-index: 100;
-            }
-
-            .top-header .brand {
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-                font-weight: 700;
-                font-size: 1.25rem;
-                color: var(--text-primary);
-                margin-left: var(--sidebar-width);
-            }
-
-            .top-header .brand-icon {
-                width: 32px;
-                height: 32px;
-                background: linear-gradient(135deg, var(--accent), #8b5cf6);
-                border-radius: 8px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 1rem;
-            }
-
-            .search-bar {
-                flex: 1;
-                max-width: 600px;
-                margin: 0 2rem;
-                position: relative;
-            }
-
-            .search-bar input {
-                width: 100%;
-                padding: 0.6rem 1rem 0.6rem 2.5rem;
-                background: var(--bg-tertiary);
-                border: 1px solid var(--border);
-                border-radius: 8px;
-                color: var(--text-primary);
-                font-size: 0.875rem;
-                outline: none;
-            }
-
-            .search-bar input::placeholder {
-                color: var(--text-muted);
-            }
-
-            .search-bar input:focus {
-                border-color: var(--accent);
-            }
-
-            .search-bar::before {
-                content: "🔍";
-                position: absolute;
-                left: 0.75rem;
-                top: 50%;
-                transform: translateY(-50%);
-                opacity: 0.6;
-                font-size: 0.875rem;
-            }
-
-            .header-right {
-                display: flex;
-                align-items: center;
-                gap: 1rem;
-            }
-
-            .network-badge {
-                display: inline-flex;
-                align-items: center;
-                gap: 0.5rem;
-                padding: 0.35rem 0.75rem;
-                background: rgba(34, 197, 94, 0.1);
-                border: 1px solid rgba(34, 197, 94, 0.2);
-                border-radius: 9999px;
-                font-size: 0.75rem;
-                font-weight: 500;
-                color: var(--success);
-            }
-
-            .network-badge::before {
-                content: "";
-                width: 6px;
-                height: 6px;
-                background: var(--success);
-                border-radius: 50%;
-                animation: pulse 2s infinite;
-            }
-
-            @keyframes pulse {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.5; }
-            }
-
-            /* Sidebar */
-            .sidebar {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: var(--sidebar-width);
-                height: 100vh;
-                background: var(--bg-secondary);
-                border-right: 1px solid var(--border);
-                display: flex;
-                flex-direction: column;
-                z-index: 101;
-            }
-
-            .sidebar-brand {
-                height: var(--header-height);
-                display: flex;
-                align-items: center;
-                padding: 0 1.25rem;
-                border-bottom: 1px solid var(--border);
-                font-weight: 700;
-                font-size: 1.25rem;
-                gap: 0.5rem;
-            }
-
-            .sidebar-brand .logo {
-                width: 28px;
-                height: 28px;
-                background: linear-gradient(135deg, var(--accent), #8b5cf6);
-                border-radius: 6px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 0.875rem;
-            }
-
-            .sidebar-nav {
-                flex: 1;
-                padding: 1rem 0.75rem;
-                display: flex;
-                flex-direction: column;
-                gap: 0.25rem;
-                overflow-y: auto;
-            }
-
-            .nav-item {
-                display: flex;
-                align-items: center;
-                gap: 0.75rem;
-                padding: 0.65rem 0.875rem;
-                border-radius: 8px;
-                color: var(--text-secondary);
-                font-size: 0.875rem;
-                font-weight: 500;
-                cursor: pointer;
-                transition: all 0.15s;
-                text-decoration: none;
-            }
-
-            .nav-item:hover {
-                background: var(--bg-hover);
-                color: var(--text-primary);
-            }
-
-            .nav-item.active {
-                background: rgba(59, 130, 246, 0.15);
-                color: var(--accent);
-            }
-
-            .nav-icon {
-                width: 20px;
-                text-align: center;
-                font-size: 1rem;
-            }
-
-            /* Main Content */
-            .main-content {
-                margin-left: var(--sidebar-width);
-                margin-top: var(--header-height);
-                padding: 1.5rem;
-                min-height: calc(100vh - var(--header-height));
-            }
-
-            .page-header {
-                margin-bottom: 1.5rem;
-            }
-
-            .page-header h1 {
-                font-size: 1.5rem;
-                font-weight: 700;
-                color: var(--text-primary);
-            }
-
-            .page-header p {
-                color: var(--text-secondary);
-                font-size: 0.875rem;
-                margin-top: 0.25rem;
-            }
-
-            /* Cards */
-            .card-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-                gap: 1rem;
-                margin-bottom: 1.5rem;
-            }
-
-            .card {
-                background: var(--bg-secondary);
-                border: 1px solid var(--border);
-                border-radius: 12px;
-                padding: 1.25rem;
-            }
-
-            .card-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                margin-bottom: 0.75rem;
-            }
-
-            .card-title {
-                font-size: 0.75rem;
-                font-weight: 600;
-                color: var(--text-secondary);
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-            }
-
-            .card-value {
-                font-size: 1.75rem;
-                font-weight: 700;
-                color: var(--text-primary);
-            }
-
-            .card-sub {
-                font-size: 0.75rem;
-                color: var(--text-muted);
-                margin-top: 0.25rem;
-            }
-
-            .card-delta {
-                font-size: 0.75rem;
-                font-weight: 600;
-                padding: 0.2rem 0.5rem;
-                border-radius: 9999px;
-                background: rgba(34, 197, 94, 0.1);
-                color: var(--success);
-            }
-
-            /* Panels Grid */
-            .panels-grid {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 1.5rem;
-                margin-bottom: 1.5rem;
-            }
-
-            @media (max-width: 1024px) {
-                .panels-grid {
-                    grid-template-columns: 1fr;
-                }
-            }
-
-            .panel {
-                background: var(--bg-secondary);
-                border: 1px solid var(--border);
-                border-radius: 12px;
-                padding: 1.25rem;
-            }
-
-            .panel-title {
-                font-size: 0.875rem;
-                font-weight: 600;
-                color: var(--text-primary);
-                margin-bottom: 1rem;
-                display: flex;
-                align-items: center;
-                gap: 0.5rem;
-            }
-
-            .stat-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 0.6rem 0;
-                border-bottom: 1px solid var(--border);
-            }
-
-            .stat-row:last-child {
-                border-bottom: none;
-            }
-
-            .stat-label {
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-            }
-
-            .stat-value {
-                font-size: 0.875rem;
-                font-weight: 600;
-                color: var(--text-primary);
-            }
-
-            .stat-value.success { color: var(--success); }
-            .stat-value.warning { color: var(--warning); }
-            .stat-value.danger { color: var(--danger); }
-
-            /* Progress Bars */
-            .metric-bar {
-                margin-bottom: 1rem;
-            }
-
-            .metric-bar-header {
-                display: flex;
-                justify-content: space-between;
-                margin-bottom: 0.5rem;
-                font-size: 0.875rem;
-            }
-
-            .metric-bar-label {
-                color: var(--text-secondary);
-            }
-
-            .metric-bar-value {
-                font-weight: 600;
-            }
-
-            .metric-bar-track {
-                height: 8px;
-                background: var(--bg-tertiary);
-                border-radius: 4px;
-                overflow: hidden;
-            }
-
-            .metric-bar-fill {
-                height: 100%;
-                border-radius: 4px;
-                transition: width 0.5s ease;
-            }
-
-            .fill-wu { background: linear-gradient(90deg, #22c55e, #16a34a); }
-            .fill-xiang { background: linear-gradient(90deg, #3b82f6, #2563eb); }
-            .fill-zi { background: linear-gradient(90deg, #8b5cf6, #7c3aed); }
-
-            /* Tables */
-            .table-container {
-                overflow-x: auto;
-            }
-
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 0.875rem;
-            }
-
-            th {
-                text-align: left;
-                padding: 0.75rem;
-                color: var(--text-secondary);
-                font-weight: 500;
-                border-bottom: 1px solid var(--border);
-                white-space: nowrap;
-            }
-
-            td {
-                padding: 0.75rem;
-                border-bottom: 1px solid var(--border);
-                color: var(--text-primary);
-                white-space: nowrap;
-            }
-
-            tr:last-child td {
-                border-bottom: none;
-            }
-
-            tr:hover td {
-                background: rgba(255, 255, 255, 0.02);
-            }
-
-            .mono {
-                font-family: "SF Mono", Monaco, monospace;
-                color: var(--accent);
-            }
-
-            .badge {
-                display: inline-block;
-                padding: 0.2rem 0.5rem;
-                border-radius: 4px;
-                font-size: 0.75rem;
-                font-weight: 500;
-            }
-
-            .badge-success {
-                background: rgba(34, 197, 94, 0.1);
-                color: var(--success);
-            }
-
-            .badge-muted {
-                background: var(--bg-tertiary);
-                color: var(--text-secondary);
-            }
-
-            /* Empty state */
-            .empty-state {
-                text-align: center;
-                padding: 2rem;
-                color: var(--text-muted);
-                font-size: 0.875rem;
-            }
-
-            .pagination {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 1rem;
-                padding-top: 0.75rem;
-                margin-top: 0.5rem;
-                border-top: 1px solid var(--border);
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-            }
-
-            .pagination .controls {
-                display: inline-flex;
-                gap: 0.5rem;
-                align-items: center;
-            }
-
-            .btn {
-                background: var(--bg-tertiary);
-                border: 1px solid var(--border);
-                color: var(--text-primary);
-                padding: 0.45rem 0.75rem;
-                border-radius: 8px;
-                font-size: 0.875rem;
-                cursor: pointer;
-            }
-
-            .btn:disabled {
-                opacity: 0.5;
-                cursor: not-allowed;
-            }
-
-            select {
-                background: var(--bg-tertiary);
-                border: 1px solid var(--border);
-                color: var(--text-primary);
-                padding: 0.45rem 0.6rem;
-                border-radius: 8px;
-            }
-
-            /* Section visibility */
-            .section {
-                display: none;
-            }
-
-            .section.active {
-                display: block;
-                animation: fadeIn 0.2s ease;
-            }
-
-            @keyframes fadeIn {
-                from { opacity: 0; transform: translateY(4px); }
-                to { opacity: 1; transform: translateY(0); }
-            }
-
-            /* Mobile */
-            @media (max-width: 768px) {
-                :root { --sidebar-width: 0px; }
-                .sidebar { display: none; }
-                .top-header .brand { margin-left: 0; }
-                .search-bar { display: none; }
-                .card-grid { grid-template-columns: 1fr; }
-            }
-        </style>
-    </head>
-    <body x-data="dashboard()" x-init="init()">
-        <!-- Top Header -->
-        <header class="top-header">
-            <div class="brand">
-                <div class="brand-icon">⚡</div>
-                <span>zknot3 Explorer</span>
-            </div>
-            <div class="search-bar">
-                <input type="text" placeholder="Search by block, tx, or address..." />
-            </div>
-            <div class="header-right">
-                <div class="network-badge">
-                    <span x-text="nodeInfo?.state === 'running' ? 'Live' : 'Offline'"></span>
-                </div>
-            </div>
-        </header>
-
-        <!-- Left Sidebar -->
-        <aside class="sidebar">
-            <div class="sidebar-brand">
-                <div class="logo">⚡</div>
-                <span>zknot3</span>
-            </div>
-            <nav class="sidebar-nav">
-                <a class="nav-item" :class="tab === 'dashboard' ? 'active' : ''" @click.prevent="tab = 'dashboard'">
-                    <span class="nav-icon">🏠</span>
-                    <span>Dashboard</span>
-                </a>
-                <a class="nav-item" :class="tab === 'blocks' ? 'active' : ''" @click.prevent="tab = 'blocks'; fetchBlocks()">
-                    <span class="nav-icon">📦</span>
-                    <span>Blocks</span>
-                </a>
-                <a class="nav-item" :class="tab === 'transactions' ? 'active' : ''" @click.prevent="tab = 'transactions'; fetchTransactions()">
-                    <span class="nav-icon">⚡</span>
-                    <span>Transactions</span>
-                </a>
-                <a class="nav-item" :class="tab === 'validators' ? 'active' : ''" @click.prevent="tab = 'validators'; fetchValidators()">
-                    <span class="nav-icon">👥</span>
-                    <span>Validators</span>
-                </a>
-                <a class="nav-item" :class="tab === 'epoch' ? 'active' : ''" @click.prevent="tab = 'epoch'; fetchEpoch()">
-                    <span class="nav-icon">🗳️</span>
-                    <span>Epoch</span>
-                </a>
-                <a class="nav-item" :class="tab === 'metrics' ? 'active' : ''" @click.prevent="tab = 'metrics'">
-                    <span class="nav-icon">📊</span>
-                    <span>Metrics</span>
-                </a>
-            </nav>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Dashboard Tab -->
-            <div class="section" :class="tab === 'dashboard' ? 'active' : ''">
-                <div class="page-header">
-                    <h1>Dashboard</h1>
-                    <p>Real-time overview of the zknot3 network</p>
-                </div>
-
-                <!-- Overview Cards -->
-                <div class="card-grid">
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">Committed Blocks</span>
-                            <span class="card-delta">Live</span>
-                        </div>
-                        <div class="card-value" x-text="formatNumber(nodeInfo?.committed_blocks || 0)">0</div>
-                        <div class="card-sub">Round #<span x-text="consensus?.current_round || 0">0</span></div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">Total Transactions</span>
-                        </div>
-                        <div class="card-value" x-text="formatNumber(txnStats?.total_executed || 0)">0</div>
-                        <div class="card-sub"><span x-text="txnStats?.pending || 0">0</span> pending</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">Validators</span>
-                        </div>
-                        <div class="card-value" x-text="consensus?.active_validators || 0">0</div>
-                        <div class="card-sub" x-text="consensus?.quorum_reached ? 'Quorum reached' : 'Quorum forming'">--</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title">Uptime</span>
-                        </div>
-                        <div class="card-value" x-text="formatUptime(nodeInfo?.uptime_seconds || 0)">--</div>
-                        <div class="card-sub">v<span x-text="nodeInfo?.version || '--'">--</span></div>
-                    </div>
-                </div>
-
-                <div class="panels-grid">
-                    <!-- Consensus Panel -->
-                    <div class="panel">
-                        <div class="panel-title">🔗 Consensus Status</div>
-                        <div class="stat-row">
-                            <span class="stat-label">Current Round</span>
-                            <span class="stat-value" x-text="consensus?.current_round || 0">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Highest Block</span>
-                            <span class="stat-value" x-text="consensus?.highest_committed_block || 0">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Active Validators</span>
-                            <span class="stat-value" x-text="consensus?.active_validators || 0">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Quorum</span>
-                            <span class="stat-value" :class="consensus?.quorum_reached ? 'success' : 'warning'"
-                                x-text="consensus?.quorum_reached ? 'Reached' : 'Forming'">--</span>
-                        </div>
-                    </div>
-
-                    <!-- Transaction Pool -->
-                    <div class="panel">
-                        <div class="panel-title">📦 Transaction Pool</div>
-                        <div class="stat-row">
-                            <span class="stat-label">Pending</span>
-                            <span class="stat-value" x-text="txnStats?.pending || 0">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Executing</span>
-                            <span class="stat-value" x-text="txnStats?.executing || 0">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Total Executed</span>
-                            <span class="stat-value" x-text="txnStats?.total_executed || 0">0</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Objects</span>
-                            <span class="stat-value" x-text="nodeInfo?.object_store_count || 0">0</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tri-Source Metrics -->
-                <div class="panel" style="margin-bottom: 1.5rem;">
-                    <div class="panel-title">📊 三源指标 (Tri-Source Metrics)</div>
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem;">
-                        <div class="metric-bar">
-                            <div class="metric-bar-header">
-                                <span class="metric-bar-label">物丰 Wu Feng</span>
-                                <span class="metric-bar-value" style="color: var(--success);"
-                                    x-text="formatPercent(metrics?.wu_feng || 0)">0%</span>
-                            </div>
-                            <div class="metric-bar-track">
-                                <div class="metric-bar-fill fill-wu" :style="'width:' + ((metrics?.wu_feng || 0) * 100) + '%'"></div>
-                            </div>
-                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Resource Efficiency</div>
-                        </div>
-                        <div class="metric-bar">
-                            <div class="metric-bar-header">
-                                <span class="metric-bar-label">象大 Xiang Da</span>
-                                <span class="metric-bar-value" style="color: var(--accent);"
-                                    x-text="formatPercent(metrics?.xiang_da || 0)">0%</span>
-                            </div>
-                            <div class="metric-bar-track">
-                                <div class="metric-bar-fill fill-xiang" :style="'width:' + ((metrics?.xiang_da || 0) * 100) + '%'"></div>
-                            </div>
-                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Knowledge Coverage</div>
-                        </div>
-                        <div class="metric-bar">
-                            <div class="metric-bar-header">
-                                <span class="metric-bar-label">性自在 Zi Zai</span>
-                                <span class="metric-bar-value" style="color: #8b5cf6;"
-                                    x-text="formatPercent(metrics?.zi_zai || 0)">0%</span>
-                            </div>
-                            <div class="metric-bar-track">
-                                <div class="metric-bar-fill fill-zi" :style="'width:' + ((metrics?.zi_zai || 0) * 100) + '%'"></div>
-                            </div>
-                            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">User Satisfaction</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Recent Activity -->
-                <div class="panels-grid">
-                    <div class="panel">
-                        <div class="panel-title">📜 Recent Blocks</div>
-                        <div class="table-container">
-                            <table>
-                                <thead>
-                                    <tr><th>Block</th><th>Txs</th><th>Time</th></tr>
-                                </thead>
-                                <tbody>
-                                    <template x-for="block in recentBlocks.slice(0, 5)" :key="block.hash">
-                                        <tr>
-                                            <td class="mono" x-text="'#' + block.round">--</td>
-                                            <td x-text="block.tx_count">0</td>
-                                            <td x-text="formatTime(block.timestamp)">--</td>
-                                        </tr>
-                                    </template>
-                                    <tr x-show="recentBlocks.length === 0">
-                                        <td colspan="3" class="empty-state">No recent blocks</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                    <div class="panel">
-                        <div class="panel-title">⚡ Recent Transactions</div>
-                        <div class="table-container">
-                            <table>
-                                <thead>
-                                    <tr><th>Hash</th><th>Status</th><th>Gas</th></tr>
-                                </thead>
-                                <tbody>
-                                    <template x-for="txn in recentTxns.slice(0, 5)" :key="txn.hash">
-                                        <tr>
-                                            <td class="mono">
-                                                <a href="#" @click.prevent="openTxnDetail(txn.hash)" x-text="txn.hash.substring(0, 10) + '...'">--</a>
-                                            </td>
-                                            <td><span class="badge" :class="txn.status === 'executed' || txn.status === 'success' ? 'badge-success' : 'badge-muted'" x-text="txn.status">--</span></td>
-                                            <td x-text="txn.gas_used">0</td>
-                                        </tr>
-                                    </template>
-                                    <tr x-show="recentTxns.length === 0">
-                                        <td colspan="3" class="empty-state">No recent transactions</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Blocks Tab -->
-            <div class="section" :class="tab === 'blocks' ? 'active' : ''">
-                <div class="page-header">
-                    <h1>Blocks</h1>
-                    <p>All committed blocks</p>
-                </div>
-                <div class="panel">
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr><th>Round</th><th>Hash</th><th>Author</th><th>Txs</th><th>Time</th></tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="block in recentBlocks" :key="block.hash">
-                                    <tr>
-                                        <td x-text="'#' + block.round">--</td>
-                                        <td class="mono" x-text="block.hash.substring(0, 16) + '...'">--</td>
-                                        <td class="mono" x-text="block.author.substring(0, 12) + '...'">--</td>
-                                        <td x-text="block.tx_count">0</td>
-                                        <td x-text="formatTime(block.timestamp)">--</td>
-                                    </tr>
-                                </template>
-                                <tr x-show="recentBlocks.length === 0">
-                                    <td colspan="5" class="empty-state">No blocks found</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="pagination">
-                        <div>Showing <span x-text="recentBlocks.length">0</span> / <span x-text="blocksTotal">0</span></div>
-                        <div class="controls">
-                            <button class="btn" :disabled="blocksHistory.length === 0" @click="prevBlocks()">Prev</button>
-                            <button class="btn" :disabled="!blocksHasMore" @click="nextBlocks()">Next</button>
-                            <label>Page size</label>
-                            <select x-model.number="blocksLimit" @change="resetBlocks()">
-                                <option :value="50">50</option>
-                                <option :value="100">100</option>
-                                <option :value="200">200</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Transactions Tab -->
-            <div class="section" :class="tab === 'transactions' ? 'active' : ''">
-                <div class="page-header">
-                    <h1>Transactions</h1>
-                    <p>Transaction history</p>
-                </div>
-                <div class="panel">
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr><th>Hash</th><th>Status</th><th>Gas Used</th><th>Sender</th><th>Time</th></tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="txn in recentTxns" :key="txn.hash">
-                                    <tr>
-                                        <td class="mono">
-                                            <a href="#" @click.prevent="openTxnDetail(txn.hash)" x-text="txn.hash.substring(0, 16) + '...'">--</a>
-                                        </td>
-                                        <td><span class="badge" :class="txn.status === 'executed' || txn.status === 'success' ? 'badge-success' : 'badge-muted'" x-text="txn.status">--</span></td>
-                                        <td x-text="txn.gas_used">0</td>
-                                        <td class="mono" x-text="txn.sender.substring(0, 12) + '...'">--</td>
-                                        <td x-text="formatTime(txn.timestamp)">--</td>
-                                    </tr>
-                                </template>
-                                <tr x-show="recentTxns.length === 0">
-                                    <td colspan="5" class="empty-state">No transactions found</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="pagination">
-                        <div>Showing <span x-text="recentTxns.length">0</span> / <span x-text="txTotal">0</span></div>
-                        <div class="controls">
-                            <button class="btn" :disabled="txHistory.length === 0" @click="prevTxns()">Prev</button>
-                            <button class="btn" :disabled="!txHasMore" @click="nextTxns()">Next</button>
-                            <label>Page size</label>
-                            <select x-model.number="txLimit" @change="resetTxns()">
-                                <option :value="50">50</option>
-                                <option :value="100">100</option>
-                                <option :value="200">200</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Validators Tab -->
-            <div class="section" :class="tab === 'validators' ? 'active' : ''">
-                <div class="page-header">
-                    <h1>Validators</h1>
-                    <p>Active validator set and stake distribution</p>
-                </div>
-                <div class="panel">
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr><th>ID</th><th>Stake</th><th>Voting Power</th><th>Status</th></tr>
-                            </thead>
-                            <tbody>
-                                <template x-for="v in validators" :key="v.id">
-                                    <tr>
-                                        <td class="mono" x-text="v.id.substring(0, 16) + '...'">--</td>
-                                        <td x-text="formatNumber(v.stake)">0</td>
-                                        <td x-text="formatNumber(v.voting_power)">0</td>
-                                        <td><span class="badge badge-success" x-text="v.is_active ? 'Active' : 'Inactive'">--</span></td>
-                                    </tr>
-                                </template>
-                                <tr x-show="validators.length === 0">
-                                    <td colspan="4" class="empty-state">No validators configured</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Epoch Tab -->
-            <div class="section" :class="tab === 'epoch' ? 'active' : ''">
-                <div class="page-header">
-                    <h1>Epoch</h1>
-                    <p>Current epoch information</p>
-                </div>
-                <div class="card-grid">
-                    <div class="card">
-                        <div class="card-title">Epoch Number</div>
-                        <div class="card-value" x-text="epoch?.epoch_number ?? 0">0</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-title">Total Stake</div>
-                        <div class="card-value" x-text="formatNumber(epoch?.total_stake || 0)">0</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-title">Validators</div>
-                        <div class="card-value" x-text="epoch?.validator_count || 0">0</div>
-                    </div>
-                    <div class="card">
-                        <div class="card-title">Quorum Threshold</div>
-                        <div class="card-value" x-text="formatNumber(epoch?.quorum_threshold || 0)">0</div>
-                    </div>
-                </div>
-                <div class="panel">
-                    <div class="stat-row">
-                        <span class="stat-label">Needs Reconfiguration</span>
-                        <span class="stat-value" :class="epoch?.needs_reconfiguration ? 'warning' : 'success'"
-                            x-text="epoch?.needs_reconfiguration ? 'Yes' : 'No'">--</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Metrics Tab -->
-            <div class="section" :class="tab === 'metrics' ? 'active' : ''">
-                <div class="page-header">
-                    <h1>System Metrics</h1>
-                    <p>Node performance and system information</p>
-                </div>
-                <div class="panels-grid">
-                    <div class="panel">
-                        <div class="panel-title">🖥️ System Info</div>
-                        <div class="stat-row">
-                            <span class="stat-label">CPU Cores</span>
-                            <span class="stat-value" x-text="systemInfo?.cpu_count || '--'">--</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">Total Memory</span>
-                            <span class="stat-value" x-text="systemInfo ? formatBytes(systemInfo.total_memory_bytes) : '--'">--</span>
-                        </div>
-                        <div class="stat-row">
-                            <span class="stat-label">CPU Usage</span>
-                            <span class="stat-value" x-text="(systemInfo?.cpu_usage_percent || 0).toFixed(1) + '%'">0%</span>
-                        </div>
-                    </div>
-                    <div class="panel">
-                        <div class="panel-title">📈 Tri-Source Metrics</div>
-                        <div class="metric-bar">
-                            <div class="metric-bar-header">
-                                <span class="metric-bar-label">物丰 Wu Feng</span>
-                                <span class="metric-bar-value" style="color: var(--success);" x-text="formatPercent(metrics?.wu_feng || 0)">0%</span>
-                            </div>
-                            <div class="metric-bar-track">
-                                <div class="metric-bar-fill fill-wu" :style="'width:' + ((metrics?.wu_feng || 0) * 100) + '%'"></div>
-                            </div>
-                        </div>
-                        <div class="metric-bar">
-                            <div class="metric-bar-header">
-                                <span class="metric-bar-label">象大 Xiang Da</span>
-                                <span class="metric-bar-value" style="color: var(--accent);" x-text="formatPercent(metrics?.xiang_da || 0)">0%</span>
-                            </div>
-                            <div class="metric-bar-track">
-                                <div class="metric-bar-fill fill-xiang" :style="'width:' + ((metrics?.xiang_da || 0) * 100) + '%'"></div>
-                            </div>
-                        </div>
-                        <div class="metric-bar">
-                            <div class="metric-bar-header">
-                                <span class="metric-bar-label">性自在 Zi Zai</span>
-                                <span class="metric-bar-value" style="color: #8b5cf6;" x-text="formatPercent(metrics?.zi_zai || 0)">0%</span>
-                            </div>
-                            <div class="metric-bar-track">
-                                <div class="metric-bar-fill fill-zi" :style="'width:' + ((metrics?.zi_zai || 0) * 100) + '%'"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
-
-        <!-- Transaction detail modal -->
-        <div x-show="txnDetailOpen" x-transition.opacity style="position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; padding: 1.5rem; z-index: 2000;">
-            <div style="width: min(960px, 100%); max-height: 85vh; overflow: auto; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1rem 0.75rem;">
-                <div style="display:flex; align-items:center; justify-content: space-between; gap: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);">
-                    <div>
-                        <div style="font-weight: 600;">Transaction Detail</div>
-                        <div class="mono" style="font-size: 0.85rem; color: var(--text-muted);" x-text="txnDetailHash">--</div>
-                    </div>
-                    <div style="display:flex; gap: 0.5rem;">
-                        <button class="btn" :disabled="!txnDetailRaw" @click="copyText(txnDetailRaw)">Copy JSON</button>
-                        <button class="btn" @click="closeTxnDetail()">Close</button>
-                    </div>
-                </div>
-                <div style="padding: 0.75rem 0;">
-                    <template x-if="txnDetailLoading">
-                        <div class="empty-state">Loading…</div>
-                    </template>
-                    <template x-if="!txnDetailLoading && txnDetailError">
-                        <div class="empty-state" x-text="txnDetailError"></div>
-                    </template>
-                    <template x-if="!txnDetailLoading && txnDetailRaw">
-                        <pre style="white-space: pre-wrap; word-break: break-word; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; font-size: 0.85rem;" x-text="txnDetailRaw"></pre>
-                    </template>
-                </div>
-            </div>
-        </div>
-
-        <script>
-            function dashboard() {
-                return {
-                    tab: 'dashboard',
-                    nodeInfo: null,
-                    consensus: null,
-                    txnStats: null,
-                    metrics: null,
-                    systemInfo: null,
-                    epoch: null,
-                    validators: [],
-                    recentBlocks: [],
-                    recentTxns: [],
-
-                    txnDetailOpen: false,
-                    txnDetailHash: "",
-                    txnDetailLoading: false,
-                    txnDetailRaw: "",
-                    txnDetailError: "",
-
-                    // Pagination state
-                    blocksLimit: 50,
-                    blocksCursor: null,
-                    blocksHistory: [],
-                    blocksHasMore: false,
-                    blocksTotal: 0,
-
-                    txLimit: 50,
-                    txCursor: null,
-                    txHistory: [],
-                    txHasMore: false,
-                    txTotal: 0,
-
-                    async fetchData() {
-                        try {
-                            const [nodeRes, consensusRes, txnRes, metricsRes, systemRes] = await Promise.all([
-                                fetch("/api/node/info").then(r => r.json()).catch(() => null),
-                                fetch("/api/consensus/status").then(r => r.json()).catch(() => null),
-                                fetch("/api/txn/stats").then(r => r.json()).catch(() => null),
-                                fetch("/api/metrics").then(r => r.json()).catch(() => null),
-                                fetch("/api/system/info").then(r => r.json()).catch(() => null),
-                            ]);
-                            this.nodeInfo = nodeRes;
-                            this.consensus = consensusRes;
-                            this.txnStats = txnRes;
-                            this.metrics = metricsRes;
-                            this.systemInfo = systemRes;
-                        } catch (e) {
-                            console.error("Failed to fetch data:", e);
-                        }
-                    },
-
-                    async fetchBlocks() {
-                        try {
-                            const url = new URL("/api/blocks", window.location.origin);
-                            url.searchParams.set("limit", String(this.blocksLimit));
-                            if (this.blocksCursor) url.searchParams.set("cursor", String(this.blocksCursor));
-                            const res = await fetch(url.toString()).then(r => r.json()).catch(() => null);
-                            if (res && res.blocks) {
-                                this.recentBlocks = res.blocks;
-                                this.blocksHasMore = !!res.has_more;
-                                this.blocksCursor = res.next_cursor ?? null;
-                                this.blocksTotal = res.total ?? 0;
-                            }
-                        } catch (e) {
-                            console.error("Failed to fetch blocks:", e);
-                        }
-                    },
-
-                    async fetchTransactions() {
-                        try {
-                            const url = new URL("/api/transactions", window.location.origin);
-                            url.searchParams.set("limit", String(this.txLimit));
-                            if (this.txCursor) url.searchParams.set("cursor", String(this.txCursor));
-                            const res = await fetch(url.toString()).then(r => r.json()).catch(() => null);
-                            if (res && res.transactions) {
-                                this.recentTxns = res.transactions;
-                                this.txHasMore = !!res.has_more;
-                                this.txCursor = res.next_cursor ?? null;
-                                this.txTotal = res.total ?? 0;
-                            }
-                        } catch (e) {
-                            console.error("Failed to fetch transactions:", e);
-                        }
-                    },
-
-                    async openTxnDetail(hash) {
-                        this.txnDetailOpen = true;
-                        this.txnDetailHash = hash;
-                        this.txnDetailLoading = true;
-                        this.txnDetailError = "";
-                        this.txnDetailRaw = "";
-                        try {
-                            const res = await fetch(`/api/transactions/${hash}`).then(r => r.json());
-                            this.txnDetailRaw = JSON.stringify(res, null, 2);
-                        } catch (e) {
-                            this.txnDetailError = `Failed to load transaction detail: ${e}`;
-                        } finally {
-                            this.txnDetailLoading = false;
-                        }
-                    },
-
-                    closeTxnDetail() {
-                        this.txnDetailOpen = false;
-                    },
-
-                    async copyText(text) {
-                        try {
-                            await navigator.clipboard.writeText(text);
-                        } catch (_) {}
-                    },
-
-                    resetBlocks() {
-                        this.blocksCursor = null;
-                        this.blocksHistory = [];
-                        this.fetchBlocks();
-                    },
-
-                    nextBlocks() {
-                        if (this.blocksCursor) this.blocksHistory.push(this.blocksCursor);
-                        this.fetchBlocks();
-                    },
-
-                    prevBlocks() {
-                        // Pop current cursor; previous cursor becomes last of stack (or null).
-                        this.blocksHistory.pop();
-                        this.blocksCursor = this.blocksHistory.length > 0 ? this.blocksHistory[this.blocksHistory.length - 1] : null;
-                        this.fetchBlocks();
-                    },
-
-                    resetTxns() {
-                        this.txCursor = null;
-                        this.txHistory = [];
-                        this.fetchTransactions();
-                    },
-
-                    nextTxns() {
-                        if (this.txCursor) this.txHistory.push(this.txCursor);
-                        this.fetchTransactions();
-                    },
-
-                    prevTxns() {
-                        this.txHistory.pop();
-                        this.txCursor = this.txHistory.length > 0 ? this.txHistory[this.txHistory.length - 1] : null;
-                        this.fetchTransactions();
-                    },
-
-                    async fetchValidators() {
-                        try {
-                            const res = await fetch("/api/validators").then(r => r.json()).catch(() => null);
-                            if (res && res.validators) this.validators = res.validators;
-                        } catch (e) {
-                            console.error("Failed to fetch validators:", e);
-                        }
-                    },
-
-                    async fetchEpoch() {
-                        try {
-                            const res = await fetch("/api/epoch").then(r => r.json()).catch(() => null);
-                            if (res) this.epoch = res;
-                        } catch (e) {
-                            console.error("Failed to fetch epoch:", e);
-                        }
-                    },
-
-                    formatUptime(seconds) {
-                        if (!seconds) return "0m";
-                        const days = Math.floor(seconds / 86400);
-                        const hours = Math.floor((seconds % 86400) / 3600);
-                        const mins = Math.floor((seconds % 3600) / 60);
-                        if (days > 0) return `${days}d ${hours}h`;
-                        if (hours > 0) return `${hours}h ${mins}m`;
-                        return `${mins}m`;
-                    },
-
-                    formatTime(timestamp) {
-                        if (!timestamp) return "--";
-                        const date = new Date(timestamp * 1000);
-                        return date.toLocaleTimeString();
-                    },
-
-                    formatBytes(bytes) {
-                        if (!bytes) return "0 B";
-                        const units = ["B", "KB", "MB", "GB", "TB"];
-                        let i = 0;
-                        while (bytes >= 1024 && i < units.length - 1) {
-                            bytes /= 1024;
-                            i++;
-                        }
-                        return bytes.toFixed(1) + " " + units[i];
-                    },
-
-                    formatNumber(num) {
-                        if (num === undefined || num === null) return "0";
-                        return num.toLocaleString();
-                    },
-
-                    formatPercent(val) {
-                        return (val * 100).toFixed(1) + "%";
-                    },
-
-                    init() {
-                        this.fetchData();
-                        this.fetchBlocks();
-                        this.fetchTransactions();
-                        this.fetchValidators();
-                        this.fetchEpoch();
-                        setInterval(() => this.fetchData(), 5000);
-                    },
-                };
-            }
-        </script>
-    </body>
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>zknot3 — Node Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config={darkMode:'class',theme:{extend:{colors:{
+  surface:{50:'#f8fafc',100:'#f1f5f9',200:'#e2e8f0',300:'#cbd5e1',400:'#94a3b8',500:'#64748b',600:'#475569',700:'#334155',800:'#1e293b',900:'#0f172a',950:'#020617'},
+  accent:{50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a5fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a'},
+}}}}}
+</script>
+<script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+<script defer src="https://unpkg.com/alpinejs@3.14.9/dist/cdn.min.js"></script>
+<style>
+[x-cloak]{display:none!important}
+.fade-in{animation:fadeIn .25s ease-out}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.pulse-dot{animation:pulseDot 2s infinite}
+@keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.4}}
+.tab-link{transition:all .15s}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+/* HTMX request indicator */
+.htmx-request .spinner{display:inline-block!important}
+.spinner{display:none}
+</style>
+</head>
+<body class="bg-surface-950 text-surface-100 font-sans antialiased min-h-screen" x-data="dashboard" x-cloak>
+
+<header class="sticky top-0 z-50 bg-surface-900/85 backdrop-blur border-b border-surface-800">
+  <div class="flex items-center justify-between px-5 py-2.5">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent-500 to-accent-700 flex items-center justify-center text-sm font-bold text-white shadow-lg shadow-accent-500/25">Z3</div>
+      <div><h1 class="text-base font-semibold tracking-tight">zknot3</h1><p class="text-[11px] text-surface-500 leading-tight">Node Dashboard</p></div>
+    </div>
+    <div class="flex items-center gap-4 text-xs">
+      <span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400 pulse-dot"></span><span class="text-surface-400 font-mono" x-text="nodeState"></span></span>
+      <span class="text-surface-700">·</span>
+      <span class="text-surface-400 font-mono" x-text="uptime"></span>
+    </div>
+  </div>
+</header>
+
+<div class="flex">
+  <aside class="w-52 shrink-0 bg-surface-900 border-r border-surface-800 min-h-[calc(100vh-49px)] sticky top-[49px] flex flex-col">
+    <nav class="p-2.5 space-y-0.5 flex-1">
+      <template x-for="t in tabs" :key="t.id">
+        <button @click="active=t.id"
+          :class="active===t.id?'bg-accent-600/15 text-accent-300 border-accent-500':'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50 border-transparent'"
+          class="tab-link w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2.5 border-l-[3px]">
+          <span x-text="t.icon" class="text-base w-5 text-center shrink-0"></span>
+          <span x-text="t.label"></span>
+        </button>
+      </template>
+    </nav>
+    <div class="p-3 border-t border-surface-800 text-[10px] text-surface-600 space-y-0.5">
+      <p>HTMX · Alpine.js · Tailwind</p><p class="font-mono">v0.13.0</p>
+    </div>
+  </aside>
+
+  <main class="flex-1 p-5 overflow-auto">
+
+    <!-- TAB: Dashboard -->
+    <div x-show="active==='dashboard'" class="fade-in space-y-5">
+
+      <div class="grid grid-cols-4 gap-3">
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Blocks</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.blocks)">—</div><div class="text-[11px] text-surface-500 mt-1">committed</div></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">TXs</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.txs)">—</div><div class="text-[11px] text-surface-500 mt-1">executed</div></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Validators</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.validators)">—</div><div class="text-[11px] text-surface-500 mt-1">active</div></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Round</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.round)">—</div><div class="text-[11px] text-surface-500 mt-1">consensus</div></div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-3">Consensus</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="consensusHTML"></div></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-3">Mempool</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="poolHTML"></div></div>
+      </div>
+
+      <div class="bg-surface-900 rounded-xl border border-surface-800">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-surface-800"><h3 class="text-[13px] font-semibold text-surface-300">Recent Blocks</h3><span class="text-[11px] text-surface-600">10s auto</span></div>
+        <div class="overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase tracking-wider bg-surface-800/30"><th class="text-left px-4 py-2.5">Block</th><th class="text-left px-4 py-2.5">Round</th><th class="text-left px-4 py-2.5">Author</th><th class="text-left px-4 py-2.5">TXs</th></tr></thead><tbody x-html="blocksHTML"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- TAB: Blocks -->
+    <div x-show="active==='blocks'" class="fade-in space-y-4">
+      <h2 class="text-lg font-semibold">Blocks</h2>
+      <div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Hash</th><th class="px-4 py-2.5 text-left">Round</th><th class="px-4 py-2.5 text-left">Author</th><th class="px-4 py-2.5 text-left">TXs</th><th class="px-4 py-2.5 text-left">Time</th></tr></thead><tbody x-html="blocksFullHTML"></tbody></table></div>
+    </div>
+
+    <!-- TAB: Transactions -->
+    <div x-show="active==='transactions'" class="fade-in space-y-4">
+      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Transactions</h2><input type="text" placeholder="Search by hash..." @keyup.enter="openTx($el.value)" class="px-3 py-1.5 text-[13px] bg-surface-800 border border-surface-700 rounded-lg text-surface-200 placeholder-surface-500 focus:outline-none focus:border-accent-500 w-64 font-mono"></div>
+      <div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Hash</th><th class="px-4 py-2.5 text-left">Status</th><th class="px-4 py-2.5 text-left">Gas</th><th class="px-4 py-2.5 text-left">Sender</th></tr></thead><tbody x-html="txnsHTML"></tbody></table></div>
+      <div x-show="txModal.open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @click.self="txModal.open=false" x-transition>
+        <div class="bg-surface-900 border border-surface-700 rounded-2xl p-6 max-w-xl w-full max-h-[80vh] overflow-y-auto shadow-2xl"><div class="flex items-center justify-between mb-4"><h3 class="text-base font-semibold">Transaction Detail</h3><button @click="txModal.open=false" class="text-surface-500 hover:text-surface-200 text-xl leading-none">&times;</button></div><div class="text-[13px] space-y-2 font-mono text-surface-300" x-html="txDetailHTML"></div></div>
+      </div>
+    </div>
+
+    <!-- TAB: Validators -->
+    <div x-show="active==='validators'" class="fade-in space-y-4">
+      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Validators</h2><span class="text-[11px] text-surface-600">30s refresh</span></div>
+      <div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Validator</th><th class="px-4 py-2.5 text-right">Stake</th><th class="px-4 py-2.5 text-right">Power %</th><th class="px-4 py-2.5 text-center">Status</th></tr></thead><tbody x-html="validatorsHTML"></tbody></table></div>
+    </div>
+
+    <!-- TAB: Epoch -->
+    <div x-show="active==='epoch'" class="fade-in space-y-4">
+      <h2 class="text-lg font-semibold">Epoch</h2>
+      <div class="grid grid-cols-4 gap-3">
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Current</p><p class="text-2xl font-bold" x-text="fmtNum(epoch.current)">—</p></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Total Stake</p><p class="text-2xl font-bold" x-text="fmtStake(epoch.stake)">—</p></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Validators</p><p class="text-2xl font-bold" x-text="fmtNum(epoch.validators)">—</p></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Quorum</p><p class="text-2xl font-bold" x-text="fmtNum(epoch.quorum)">—</p></div>
+      </div>
+    </div>
+
+    <!-- TAB: Metrics -->
+    <div x-show="active==='metrics'" class="fade-in space-y-5">
+      <h2 class="text-lg font-semibold">Metrics</h2>
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-4">Tri-Source (三源合恰)</h3><div class="space-y-3" x-html="triSourceHTML"></div></div>
+        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-4">System</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="sysInfoHTML"></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── Helpers ──
+const F = {
+  h: (h,n=6) => h&&h.length>=n*2 ? `<span class="font-mono text-accent-300" title="${h}">${h.slice(0,n)}…${h.slice(-n)}</span>` : (h||'—'),
+  hash: (h,n=6) => h&&h.length>=n*2 ? h.slice(0,n)+'…'+h.slice(-n) : (h||'—'),
+  num: (n) => n!=null ? Number(n).toLocaleString() : '—',
+  stake: (s) => { if(!s) return '0'; if(s>1e15) return (s/1e15).toFixed(1)+'P'; if(s>1e12) return (s/1e12).toFixed(1)+'T'; if(s>1e9) return (s/1e9).toFixed(1)+'B'; if(s>1e6) return (s/1e6).toFixed(1)+'M'; return Number(s).toLocaleString(); },
+  time: (ts) => ts ? new Date(ts*1000).toLocaleTimeString() : '—',
+  status: (s) => { const m={success:'bg-green-500/20 text-green-400',executed:'bg-green-500/20 text-green-400',pending:'bg-amber-500/20 text-amber-400',failed:'bg-red-500/20 text-red-400',committed:'bg-accent-500/20 text-accent-400'}; const c=m[s]||'bg-surface-700 text-surface-400'; return `<span class="px-2 py-0.5 rounded text-[11px] font-medium ${c}">${s||'unknown'}</span>`; },
+  bar: (v,color='bg-accent-500') => `<div class="w-full bg-surface-800 rounded-full h-1.5"><div class="${color} h-1.5 rounded-full transition-all" style="width:${Math.min(100,Math.max(0,v||0))}%"></div></div>`,
+  row: (cells) => '<tr class="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors">'+cells.map(c=>`<td class="px-4 py-2.5">${c}</td>`).join('')+'</tr>',
+};
+
+// ── Fetch + render ──
+async function fetchJSON(url) { try { const r=await fetch(url); return r.ok ? r.json() : null; } catch(e) { return null; } }
+
+async function loadDashboard() {
+  const [info, cs, ts] = await Promise.all([fetchJSON('/api/node/info'), fetchJSON('/api/consensus/status'), fetchJSON('/api/txn/stats')]);
+  if (info) {
+    app.nodeState = info.state||'running';
+    app.uptime = info.uptime_seconds ? (info.uptime_seconds>86400?Math.floor(info.uptime_seconds/86400)+'d ':'').concat(Math.floor((info.uptime_seconds%86400)/3600)+'h') : '--';
+    app.dash.blocks = info.committed_blocks||0;
+    app.dash.validators = info.active_validators || (cs ? cs.active_validators : 0);
+    app.dash.round = cs ? cs.current_round : 0;
+  }
+  if (ts) app.dash.txs = ts.total_executed||0;
+  // Consensus panel
+  if (cs) app.consensusHTML = `
+    <div class="flex justify-between"><span class="text-surface-500">Round</span><span class="font-mono font-semibold">${F.num(cs.current_round)}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Committed</span><span class="font-mono">${F.hash(cs.highest_committed_block)||'none'}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Validators</span><span class="font-mono">${cs.active_validators||0}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Quorum</span><span class="font-mono ${cs.quorum_reached?'text-green-400':'text-amber-400'}">${cs.quorum_reached?'Reached':'Pending'}</span></div>`;
+  // Mempool
+  if (ts) app.poolHTML = `
+    <div class="flex justify-between"><span class="text-surface-500">Pending</span><span class="font-mono">${F.num(ts.pending)}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Executing</span><span class="font-mono">${F.num(ts.executing)}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Total Executed</span><span class="font-mono font-semibold">${F.num(ts.total_executed)}</span></div>`;
+}
+
+async function loadBlocks() {
+  const data = await fetchJSON('/api/blocks?limit=8');
+  if (!data || !data.blocks) return;
+  app.blocksHTML = data.blocks.map(b => F.row([
+    F.h(b.hash,7), F.num(b.round), F.h(b.author,5), F.num(b.tx_count)
+  ])).join('');
+  app.blocksFullHTML = (data.blocks||[]).map(b => F.row([
+    F.h(b.hash,8), F.num(b.round), F.h(b.author,6), F.num(b.tx_count), F.time(b.timestamp)
+  ])).join('');
+}
+
+async function loadTxns() {
+  const data = await fetchJSON('/api/transactions?limit=25');
+  if (!data || !data.transactions) return;
+  app.txnsHTML = data.transactions.map(t => F.row([
+    `<a href="#" @click.prevent="openTx('${F.hash(t.hash,32)}')" class="text-accent-400 hover:text-accent-300 font-mono">${F.h(t.hash,7)}</a>`,
+    F.status(t.status), F.num(t.gas_used), F.h(t.sender,6)
+  ])).join('');
+}
+
+async function loadValidators() {
+  const data = await fetchJSON('/api/validators');
+  if (!data || !data.validators) return;
+  const total = (data.validators||[]).reduce((s,v)=>s+(v.stake||0),0);
+  app.validatorsHTML = data.validators.map(v => F.row([
+    F.h(v.validator_id||v.id,8),
+    `<span class="font-mono text-right block">${F.stake(v.stake)}</span>`,
+    `<span class="font-mono text-right block">${total>0?((v.stake||0)/total*100).toFixed(1):'0'}%</span>`,
+    `<span class="px-2 py-0.5 rounded text-[11px] font-medium ${v.connected!==false?'bg-green-500/20 text-green-400':'bg-surface-700 text-surface-400'}">${v.connected!==false?'Active':'Offline'}</span>`
+  ])).join('');
+}
+
+async function loadEpoch() {
+  const data = await fetchJSON('/api/epoch');
+  if (!data) return;
+  app.epoch = {current:data.epoch_number||data.current_epoch||0, stake:data.total_stake||0, validators:data.validator_count||0, quorum:data.quorum_threshold||0};
+}
+
+async function loadMetrics() {
+  const [m, sys] = await Promise.all([fetchJSON('/api/metrics'), fetchJSON('/api/system/info')]);
+  if (m) app.triSourceHTML = `
+    <div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Wu Feng (Form)</span><span class="font-mono">${m.wu_feng||0}%</span></div>${F.bar(m.wu_feng,'bg-accent-500')}</div>
+    <div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Xiang Da (Property)</span><span class="font-mono">${m.xiang_da||0}%</span></div>${F.bar(m.xiang_da,'bg-green-400')}</div>
+    <div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Zi Zai (Measure)</span><span class="font-mono">${m.zi_zai||0}%</span></div>${F.bar(m.zi_zai,'bg-amber-400')}</div>`;
+  if (sys) app.sysInfoHTML = `
+    <div class="flex justify-between"><span class="text-surface-500">CPU Cores</span><span class="font-mono">${sys.cpu_count||'—'}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Memory</span><span class="font-mono">${sys.total_memory_bytes?F.stake(sys.total_memory_bytes):'—'}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">CPU Usage</span><span class="font-mono">${sys.cpu_usage_percent!=null?sys.cpu_usage_percent.toFixed(1)+'%':'—'}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">State</span><span class="font-mono">${app.nodeState||'—'}</span></div>`;
+}
+
+async function loadTxDetail(hash) {
+  if (!hash) { app.txDetailHTML = '<p class="text-surface-500">No transaction selected</p>'; return; }
+  const data = await fetchJSON('/api/transactions/'+hash);
+  if (!data) { app.txDetailHTML = '<p class="text-red-400">Transaction not found</p>'; return; }
+  app.txDetailHTML = `
+    <div class="flex justify-between"><span class="text-surface-500">Hash</span><span class="text-accent-300">${F.hash(data.hash,32)}</span></div>
+    ${data.receipt?`<div class="flex justify-between"><span class="text-surface-500">Status</span>${F.status(data.receipt.status)}</div>
+    <div class="flex justify-between"><span class="text-surface-500">Gas Used</span><span class="font-mono">${F.num(data.receipt.gas_used)}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Sender</span><span class="font-mono">${F.hash(data.receipt.sender,32)}</span></div>`:''}
+    ${data.execution_result?`<div class="flex justify-between"><span class="text-surface-500">Exec Status</span>${F.status(data.execution_result.status)}</div>
+    <div class="flex justify-between"><span class="text-surface-500">Exec Gas</span><span class="font-mono">${F.num(data.execution_result.gas_used)}</span></div>
+    <div class="flex justify-between"><span class="text-surface-500">Output Objects</span><span class="font-mono">${F.num(data.execution_result.output_len)}</span></div>`:''}
+    ${data.note?`<div class="mt-3 p-2 rounded bg-surface-800 text-[12px] text-surface-500">${data.note}</div>`:''}`;
+}
+
+// ── Polling ──
+let pollTimer;
+function startPolling() {
+  loadDashboard(); loadBlocks(); loadTxns(); loadValidators(); loadEpoch(); loadMetrics();
+  pollTimer = setInterval(async () => {
+    await Promise.all([loadDashboard(), loadBlocks(), loadTxns()]);
+  }, 10000);
+  // Slower polls
+  setInterval(async () => { await Promise.all([loadValidators(), loadEpoch(), loadMetrics()]); }, 30000);
+}
+
+// ── Alpine App ──
+const app = Alpine.reactive({
+  active: 'dashboard',
+  tabs: [
+    {id:'dashboard',label:'Dashboard',icon:'\u{1F4CA}'},{id:'blocks',label:'Blocks',icon:'\u{1F9F1}'},
+    {id:'transactions',label:'Transactions',icon:'\u{1F4B3}'},{id:'validators',label:'Validators',icon:'\u{1F510}'},
+    {id:'epoch',label:'Epoch',icon:'\u{23F3}'},{id:'metrics',label:'Metrics',icon:'\u{1F4C8}'},
+  ],
+  nodeState:'connecting', uptime:'--',
+  dash:{blocks:0,txs:0,validators:0,round:0},
+  consensusHTML:'<p class="text-surface-600">Loading...</p>',
+  poolHTML:'<p class="text-surface-600">Loading...</p>',
+  blocksHTML:'<tr><td colspan="4" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
+  blocksFullHTML:'<tr><td colspan="5" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
+  txnsHTML:'<tr><td colspan="4" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
+  validatorsHTML:'<tr><td colspan="4" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
+  epoch:{current:0,stake:0,validators:0,quorum:0},
+  triSourceHTML:'<p class="text-surface-600">Loading...</p>',
+  sysInfoHTML:'<p class="text-surface-600">Loading...</p>',
+  txModal:{open:false,hash:''},
+  txDetailHTML:'',
+  openTx(h) { if(!h) return; const clean=h.replace('0x',''); this.txModal={open:true,hash:clean}; loadTxDetail(clean); },
+  fmtNum: F.num, fmtStake: F.stake,
+});
+
+document.addEventListener('alpine:init', () => { Alpine.data('dashboard', () => app); });
+document.addEventListener('DOMContentLoaded', startPolling);
+</script>
+</body>
 </html>
