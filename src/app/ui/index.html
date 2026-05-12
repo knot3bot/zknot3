@@ -1,273 +1,225 @@
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>zknot3 — Node Dashboard</title>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>zknot3 Explorer</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script>
-tailwind.config={darkMode:'class',theme:{extend:{colors:{
-  surface:{50:'#f8fafc',100:'#f1f5f9',200:'#e2e8f0',300:'#cbd5e1',400:'#94a3b8',500:'#64748b',600:'#475569',700:'#334155',800:'#1e293b',900:'#0f172a',950:'#020617'},
-  accent:{50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a5fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a'},
-}}}}}
-</script>
+<script>tailwind.config={darkMode:'class',theme:{extend:{colors:{surface:{50:'#f8fafc',100:'#f1f5f9',200:'#e2e8f0',300:'#cbd5e1',400:'#94a3b8',500:'#64748b',600:'#475569',700:'#334155',800:'#1e293b',900:'#0f172a',950:'#020617'},accent:{50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a5fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a'},g:{50:'#f0fdf4',400:'#4ade80',500:'#22c55e',600:'#16a34a'},r:{50:'#fef2f2',400:'#f87171',500:'#ef4444'},y:{50:'#fffbeb',400:'#fbbf24',500:'#f59e0b'}}}}}}</script>
 <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
 <script defer src="https://unpkg.com/alpinejs@3.14.9/dist/cdn.min.js"></script>
-<style>
-[x-cloak]{display:none!important}
-.fade-in{animation:fadeIn .25s ease-out}
-@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.pulse-dot{animation:pulseDot 2s infinite}
-@keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.4}}
-.tab-link{transition:all .15s}
-::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
-/* HTMX request indicator */
-.htmx-request .spinner{display:inline-block!important}
-.spinner{display:none}
-</style>
+<style>[x-cloak]{display:none!important}.fade-in{animation:fi .25s ease-out}@keyframes fi{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.pulse-dot{animation:pd 2s infinite}@keyframes pd{0%,100%{opacity:1}50%{opacity:.4}}.tab-link{transition:all .15s}::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}</style>
 </head>
-<body class="bg-surface-950 text-surface-100 font-sans antialiased min-h-screen" x-data="dashboard" x-cloak>
+<body class="bg-surface-950 text-surface-100 font-sans antialiased min-h-screen" x-data="app" x-cloak>
 
+<!-- HEADER with search -->
 <header class="sticky top-0 z-50 bg-surface-900/85 backdrop-blur border-b border-surface-800">
-  <div class="flex items-center justify-between px-5 py-2.5">
-    <div class="flex items-center gap-3">
-      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent-500 to-accent-700 flex items-center justify-center text-sm font-bold text-white shadow-lg shadow-accent-500/25">Z3</div>
-      <div><h1 class="text-base font-semibold tracking-tight">zknot3</h1><p class="text-[11px] text-surface-500 leading-tight">Node Dashboard</p></div>
-    </div>
-    <div class="flex items-center gap-4 text-xs">
-      <span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400 pulse-dot"></span><span class="text-surface-400 font-mono" x-text="nodeState"></span></span>
-      <span class="text-surface-700">·</span>
-      <span class="text-surface-400 font-mono" x-text="uptime"></span>
-    </div>
-  </div>
+<div class="flex items-center justify-between px-5 py-2.5">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded-lg bg-gradient-to-br from-accent-500 to-accent-700 flex items-center justify-center text-sm font-bold text-white">Z3</div>
+<div><h1 class="text-base font-semibold tracking-tight">zknot3</h1><p class="text-[11px] text-surface-500 leading-tight">Blockchain Explorer</p></div>
+</div>
+<!-- Search Bar (BscScan-style) -->
+<form class="flex items-center gap-1" @submit.prevent="doSearch()">
+<div class="relative">
+<input type="text" x-model="searchQ" placeholder="Search by Address / Tx Hash / Block Hash..."
+class="w-80 px-3 py-1.5 text-[13px] bg-surface-800 border border-surface-700 rounded-lg text-surface-200 placeholder-surface-500 focus:outline-none focus:border-accent-500 font-mono">
+<button type="submit" class="absolute right-1 top-1/2 -translate-y-1/2 bg-accent-600 hover:bg-accent-500 text-white text-xs px-3 py-1 rounded-md transition-colors">Search</button>
+</div>
+</form>
+<div class="flex items-center gap-4 text-xs">
+<span class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-green-400 pulse-dot"></span><span class="text-surface-400 font-mono" x-text="nodeState"></span></span>
+<span class="text-surface-400 font-mono" x-text="uptime"></span>
+</div>
+</div>
 </header>
 
 <div class="flex">
-  <aside class="w-52 shrink-0 bg-surface-900 border-r border-surface-800 min-h-[calc(100vh-49px)] sticky top-[49px] flex flex-col">
-    <nav class="p-2.5 space-y-0.5 flex-1">
-      <template x-for="t in tabs" :key="t.id">
-        <button @click="active=t.id"
-          :class="active===t.id?'bg-accent-600/15 text-accent-300 border-accent-500':'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50 border-transparent'"
-          class="tab-link w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2.5 border-l-[3px]">
-          <span x-text="t.icon" class="text-base w-5 text-center shrink-0"></span>
-          <span x-text="t.label"></span>
-        </button>
-      </template>
-    </nav>
-    <div class="p-3 border-t border-surface-800 text-[10px] text-surface-600 space-y-0.5">
-      <p>HTMX · Alpine.js · Tailwind</p><p class="font-mono">v0.13.0</p>
-    </div>
-  </aside>
+<!-- SIDEBAR -->
+<aside class="w-52 shrink-0 bg-surface-900 border-r border-surface-800 min-h-[calc(100vh-49px)] sticky top-[49px] flex flex-col">
+<nav class="p-2.5 space-y-0.5 flex-1">
+<template x-for="t in tabs" :key="t.id">
+<button @click="switchTab(t.id)" :class="active===t.id?'bg-accent-600/15 text-accent-300 border-accent-500':'text-surface-400 hover:text-surface-200 hover:bg-surface-800/50 border-transparent'"
+class="tab-link w-full text-left px-3 py-2 rounded-lg text-[13px] flex items-center gap-2.5 border-l-[3px]">
+<span x-text="t.icon" class="text-base w-5 text-center shrink-0"></span><span x-text="t.label"></span>
+</button>
+</template>
+</nav>
+<div class="p-3 border-t border-surface-800 text-[10px] text-surface-600 space-y-0.5"><p>HTMX · Alpine.js · Tailwind</p><p class="font-mono">v0.13.0</p></div>
+</aside>
 
-  <main class="flex-1 p-5 overflow-auto">
+<!-- MAIN CONTENT -->
+<main class="flex-1 p-5 overflow-auto">
 
-    <!-- TAB: Dashboard -->
-    <div x-show="active==='dashboard'" class="fade-in space-y-5">
-
-      <div class="grid grid-cols-4 gap-3">
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Blocks</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.blocks)">—</div><div class="text-[11px] text-surface-500 mt-1">committed</div></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">TXs</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.txs)">—</div><div class="text-[11px] text-surface-500 mt-1">executed</div></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Validators</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.validators)">—</div><div class="text-[11px] text-surface-500 mt-1">active</div></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Round</div><div class="text-[28px] font-bold tabular-nums" x-text="fmtNum(dash.round)">—</div><div class="text-[11px] text-surface-500 mt-1">consensus</div></div>
-      </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-3">Consensus</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="consensusHTML"></div></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-3">Mempool</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="poolHTML"></div></div>
-      </div>
-
-      <div class="bg-surface-900 rounded-xl border border-surface-800">
-        <div class="flex items-center justify-between px-4 py-3 border-b border-surface-800"><h3 class="text-[13px] font-semibold text-surface-300">Recent Blocks</h3><span class="text-[11px] text-surface-600">10s auto</span></div>
-        <div class="overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase tracking-wider bg-surface-800/30"><th class="text-left px-4 py-2.5">Block</th><th class="text-left px-4 py-2.5">Round</th><th class="text-left px-4 py-2.5">Author</th><th class="text-left px-4 py-2.5">TXs</th></tr></thead><tbody x-html="blocksHTML"></tbody></table></div>
-      </div>
-    </div>
-
-    <!-- TAB: Blocks -->
-    <div x-show="active==='blocks'" class="fade-in space-y-4">
-      <h2 class="text-lg font-semibold">Blocks</h2>
-      <div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Hash</th><th class="px-4 py-2.5 text-left">Round</th><th class="px-4 py-2.5 text-left">Author</th><th class="px-4 py-2.5 text-left">TXs</th><th class="px-4 py-2.5 text-left">Time</th></tr></thead><tbody x-html="blocksFullHTML"></tbody></table></div>
-    </div>
-
-    <!-- TAB: Transactions -->
-    <div x-show="active==='transactions'" class="fade-in space-y-4">
-      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Transactions</h2><input type="text" placeholder="Search by hash..." @keyup.enter="openTx($el.value)" class="px-3 py-1.5 text-[13px] bg-surface-800 border border-surface-700 rounded-lg text-surface-200 placeholder-surface-500 focus:outline-none focus:border-accent-500 w-64 font-mono"></div>
-      <div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Hash</th><th class="px-4 py-2.5 text-left">Status</th><th class="px-4 py-2.5 text-left">Gas</th><th class="px-4 py-2.5 text-left">Sender</th></tr></thead><tbody x-html="txnsHTML"></tbody></table></div>
-      <div x-show="txModal.open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @click.self="txModal.open=false" x-transition>
-        <div class="bg-surface-900 border border-surface-700 rounded-2xl p-6 max-w-xl w-full max-h-[80vh] overflow-y-auto shadow-2xl"><div class="flex items-center justify-between mb-4"><h3 class="text-base font-semibold">Transaction Detail</h3><button @click="txModal.open=false" class="text-surface-500 hover:text-surface-200 text-xl leading-none">&times;</button></div><div class="text-[13px] space-y-2 font-mono text-surface-300" x-html="txDetailHTML"></div></div>
-      </div>
-    </div>
-
-    <!-- TAB: Validators -->
-    <div x-show="active==='validators'" class="fade-in space-y-4">
-      <div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Validators</h2><span class="text-[11px] text-surface-600">30s refresh</span></div>
-      <div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Validator</th><th class="px-4 py-2.5 text-right">Stake</th><th class="px-4 py-2.5 text-right">Power %</th><th class="px-4 py-2.5 text-center">Status</th></tr></thead><tbody x-html="validatorsHTML"></tbody></table></div>
-    </div>
-
-    <!-- TAB: Epoch -->
-    <div x-show="active==='epoch'" class="fade-in space-y-4">
-      <h2 class="text-lg font-semibold">Epoch</h2>
-      <div class="grid grid-cols-4 gap-3">
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Current</p><p class="text-2xl font-bold" x-text="fmtNum(epoch.current)">—</p></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Total Stake</p><p class="text-2xl font-bold" x-text="fmtStake(epoch.stake)">—</p></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Validators</p><p class="text-2xl font-bold" x-text="fmtNum(epoch.validators)">—</p></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Quorum</p><p class="text-2xl font-bold" x-text="fmtNum(epoch.quorum)">—</p></div>
-      </div>
-    </div>
-
-    <!-- TAB: Metrics -->
-    <div x-show="active==='metrics'" class="fade-in space-y-5">
-      <h2 class="text-lg font-semibold">Metrics</h2>
-      <div class="grid grid-cols-2 gap-3">
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-4">Tri-Source (三源合恰)</h3><div class="space-y-3" x-html="triSourceHTML"></div></div>
-        <div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-4">System</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="sysInfoHTML"></div></div>
-      </div>
-    </div>
-  </main>
+<!-- ========== TAB: Dashboard ========== -->
+<div x-show="active==='dashboard'" class="fade-in space-y-5">
+<div class="grid grid-cols-4 gap-3">
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Blocks</div><div class="text-[28px] font-bold tabular-nums" x-text="fmt(dash.blocks)">—</div><div class="text-[11px] text-surface-500 mt-1">committed</div></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Transactions</div><div class="text-[28px] font-bold tabular-nums" x-text="fmt(dash.txs)">—</div><div class="text-[11px] text-surface-500 mt-1">executed</div></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Validators</div><div class="text-[28px] font-bold tabular-nums" x-text="fmt(dash.vals)">—</div><div class="text-[11px] text-surface-500 mt-1">active</div></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><div class="text-[11px] text-surface-500 uppercase tracking-wider font-medium mb-2">Round</div><div class="text-[28px] font-bold tabular-nums" x-text="fmt(dash.round)">—</div><div class="text-[11px] text-surface-500 mt-1">consensus</div></div>
 </div>
 
+<div class="grid grid-cols-2 gap-3">
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-3">Consensus</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="panels.consensus"></div></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-3">Mempool</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="panels.mempool"></div></div>
+</div>
+
+<div class="bg-surface-900 rounded-xl border border-surface-800">
+<div class="flex items-center justify-between px-4 py-3 border-b border-surface-800"><h3 class="text-[13px] font-semibold text-surface-300">Recent Blocks</h3><button @click="refresh('blocks')" class="text-[11px] text-accent-400 hover:text-accent-300">Refresh</button></div>
+<div class="overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase tracking-wider bg-surface-800/30"><th class="text-left px-4 py-2.5 w-[120px]">Block</th><th class="text-left px-4 py-2.5">Round</th><th class="text-left px-4 py-2.5">Author</th><th class="text-left px-4 py-2.5">TXs</th></tr></thead><tbody x-html="panels.blocks"></tbody></table></div>
+</div>
+</div>
+
+<!-- ========== TAB: Explorer ========== -->
+<div x-show="active==='explorer'" class="fade-in space-y-5">
+<!-- Search Results (when active) -->
+<div x-show="searchResult.type" class="bg-surface-900 rounded-xl border border-surface-800 p-5">
+<div class="flex items-center justify-between mb-4"><h2 class="text-base font-semibold">Search Result</h2><span class="px-2 py-0.5 rounded text-[11px] font-medium bg-accent-600/20 text-accent-300 uppercase" x-text="searchResult.type"></span></div>
+
+<!-- Transaction result -->
+<template x-if="searchResult.type==='transaction'">
+<div class="space-y-3 text-[13px]">
+<div class="grid grid-cols-2 gap-3"><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Transaction Hash</p><p class="font-mono text-accent-300 break-all" x-text="searchResult.hash"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Status</p><p class="font-mono" x-html="badge(searchResult.receipt?.status||'unknown')"></p></div></div>
+<div class="grid grid-cols-4 gap-3"><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Gas Used</p><p class="font-mono" x-text="fmt(searchResult.receipt?.gas_used)"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Exec Status</p><p class="font-mono" x-html="badge(searchResult.execution_result?.status||'—')"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Exec Gas</p><p class="font-mono" x-text="fmt(searchResult.execution_result?.gas_used)"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Output Objects</p><p class="font-mono" x-text="fmt(searchResult.execution_result?.output_objects)"></p></div></div>
+<div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Sender</p><p class="font-mono text-accent-300 break-all" x-text="searchResult.receipt?.sender||'—'"></p></div>
+</div></template>
+
+<!-- Address result -->
+<template x-if="searchResult.type==='address'">
+<div class="space-y-3 text-[13px]">
+<div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Address</p><p class="font-mono text-accent-300 break-all" x-text="searchResult.hash"></p></div>
+<div class="grid grid-cols-3 gap-3"><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Balance</p><p class="font-mono text-lg" x-text="searchResult.balance||'—'"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Objects</p><p class="font-mono text-lg" x-text="fmt(searchResult.object_count)"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Transactions</p><p class="font-mono text-lg" x-text="fmt(searchResult.tx_count)"></p></div></div>
+</div></template>
+
+<!-- Block result -->
+<template x-if="searchResult.type==='block'">
+<div class="space-y-3 text-[13px]"><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Block Hash</p><p class="font-mono text-accent-300 break-all" x-text="searchResult.hash"></p></div>
+<div class="grid grid-cols-3 gap-3"><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Round</p><p class="font-mono text-lg" x-text="fmt(searchResult.round)"></p></div><div class="bg-surface-800/50 rounded-lg p-3"><p class="text-surface-500 text-[11px] mb-1">Author</p><p class="font-mono text-accent-300 break-all" x-text="searchResult.author||'—'"></p></div></div></div></template>
+
+<template x-if="!searchResult.type"><p class="text-surface-500 text-center py-4 text-[13px]">No results found. Try a 64-character hex hash.</p></template>
+</div>
+
+<!-- Explorer sections (when no search active) -->
+<div x-show="!searchResult.type" class="space-y-5">
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-5">
+<h3 class="text-[13px] font-semibold text-surface-300 mb-3">🔍 Blockchain Explorer</h3>
+<p class="text-[13px] text-surface-500 mb-4">Search for addresses, transactions, or blocks using the search bar above. Enter a 64-character hex string (with or without 0x prefix).</p>
+<div class="grid grid-cols-3 gap-3 text-center">
+<div class="bg-surface-800/50 rounded-lg p-4 hover:bg-surface-800 transition-colors cursor-pointer" @click="searchQ='0x';$el.querySelector('input').focus()">
+<div class="text-2xl mb-2">💳</div><p class="text-[13px] font-medium text-surface-300">Transactions</p><p class="text-[11px] text-surface-500 mt-1">Look up by tx hash</p></div>
+<div class="bg-surface-800/50 rounded-lg p-4 hover:bg-surface-800 transition-colors cursor-pointer" @click="searchQ='0x';$el.querySelector('input').focus()">
+<div class="text-2xl mb-2">👛</div><p class="text-[13px] font-medium text-surface-300">Addresses</p><p class="text-[11px] text-surface-500 mt-1">Look up by address</p></div>
+<div class="bg-surface-800/50 rounded-lg p-4 hover:bg-surface-800 transition-colors cursor-pointer" @click="searchQ='0x';$el.querySelector('input').focus()">
+<div class="text-2xl mb-2">🧱</div><p class="text-[13px] font-medium text-surface-300">Blocks</p><p class="text-[11px] text-surface-500 mt-1">Look up by block hash</p></div>
+</div></div>
+
+<!-- Latest Blocks quick view -->
+<div class="bg-surface-900 rounded-xl border border-surface-800"><div class="flex items-center justify-between px-4 py-3 border-b border-surface-800"><h3 class="text-[13px] font-semibold text-surface-300">Latest Blocks</h3></div><div class="overflow-x-auto" x-html="panels.blocksFull"></div></div>
+</div></div>
+
+<!-- ========== TAB: Network ========== -->
+<div x-show="active==='network'" class="fade-in space-y-5">
+<h2 class="text-lg font-semibold">Network</h2>
+<div class="grid grid-cols-3 gap-3">
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Connected Peers</p><p class="text-2xl font-bold" x-text="fmt(network.peers)">—</p></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Peer ID</p><p class="text-sm font-mono text-accent-300 truncate" x-text="network.selfId||'—'">—</p></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Transport</p><p class="text-sm font-mono" x-text="network.transport">TCP</p></div>
+</div>
+<div class="bg-surface-900 rounded-xl border border-surface-800"><div class="px-4 py-3 border-b border-surface-800"><h3 class="text-[13px] font-semibold text-surface-300">Peer List</h3></div><div class="overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Peer ID</th><th class="px-4 py-2.5 text-left">Type</th></tr></thead><tbody x-html="panels.peers"></tbody></table></div></div>
+</div>
+
+<!-- ========== TAB: Validators ========== -->
+<div x-show="active==='validators'" class="fade-in space-y-4">
+<div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Validators</h2><span class="text-[11px] text-surface-600">30s refresh</span></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Validator</th><th class="px-4 py-2.5 text-right">Stake</th><th class="px-4 py-2.5 text-right">Power %</th><th class="px-4 py-2.5 text-center">Status</th></tr></thead><tbody x-html="panels.validators"></tbody></table></div>
+</div>
+
+<!-- ========== TAB: Transactions ========== -->
+<div x-show="active==='transactions'" class="fade-in space-y-4">
+<div class="flex items-center justify-between"><h2 class="text-lg font-semibold">Transactions</h2></div>
+<div class="bg-surface-900 rounded-xl border border-surface-800 overflow-x-auto"><table class="w-full text-[13px]"><thead><tr class="text-surface-500 text-[11px] uppercase bg-surface-800/30"><th class="px-4 py-2.5 text-left">Hash</th><th class="px-4 py-2.5 text-left">Status</th><th class="px-4 py-2.5 text-left">Gas</th><th class="px-4 py-2.5 text-left">Sender</th></tr></thead><tbody x-html="panels.txns"></tbody></table></div>
+<!-- Tx detail modal -->
+<div x-show="txModal.open" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" @click.self="txModal.open=false" x-transition>
+<div class="bg-surface-900 border border-surface-700 rounded-2xl p-6 max-w-xl w-full max-h-[80vh] overflow-y-auto shadow-2xl"><div class="flex items-center justify-between mb-4"><h3 class="text-base font-semibold">Transaction Detail</h3><button @click="txModal.open=false" class="text-surface-500 hover:text-surface-200 text-xl leading-none">&times;</button></div><div class="text-[13px] space-y-2 font-mono text-surface-300" x-html="txDetail"></div></div>
+</div>
+</div>
+
+<!-- ========== TAB: Epoch ========== -->
+<div x-show="active==='epoch'" class="fade-in space-y-4"><h2 class="text-lg font-semibold">Epoch</h2>
+<div class="grid grid-cols-4 gap-3"><div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Current</p><p class="text-2xl font-bold" x-text="fmt(epoch.cur)">—</p></div><div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Total Stake</p><p class="text-2xl font-bold" x-text="stakeFmt(epoch.stake)">—</p></div><div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Validators</p><p class="text-2xl font-bold" x-text="fmt(epoch.vals)">—</p></div><div class="bg-surface-900 rounded-xl border border-surface-800 p-4 text-center"><p class="text-[11px] text-surface-500 mb-1">Quorum</p><p class="text-2xl font-bold" x-text="fmt(epoch.quorum)">—</p></div></div>
+</div>
+
+<!-- ========== TAB: Metrics ========== -->
+<div x-show="active==='metrics'" class="fade-in space-y-5"><h2 class="text-lg font-semibold">Metrics</h2>
+<div class="grid grid-cols-2 gap-3"><div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-4">Tri-Source (三源合恰)</h3><div class="space-y-3" x-html="panels.tri"></div></div><div class="bg-surface-900 rounded-xl border border-surface-800 p-4"><h3 class="text-[13px] font-semibold text-surface-300 mb-4">System</h3><div class="space-y-2 text-[13px] text-surface-400" x-html="panels.sys"></div></div></div>
+</div>
+</main></div>
+
 <script>
-// ── Helpers ──
-const F = {
-  h: (h,n=6) => h&&h.length>=n*2 ? `<span class="font-mono text-accent-300" title="${h}">${h.slice(0,n)}…${h.slice(-n)}</span>` : (h||'—'),
-  hash: (h,n=6) => h&&h.length>=n*2 ? h.slice(0,n)+'…'+h.slice(-n) : (h||'—'),
-  num: (n) => n!=null ? Number(n).toLocaleString() : '—',
-  stake: (s) => { if(!s) return '0'; if(s>1e15) return (s/1e15).toFixed(1)+'P'; if(s>1e12) return (s/1e12).toFixed(1)+'T'; if(s>1e9) return (s/1e9).toFixed(1)+'B'; if(s>1e6) return (s/1e6).toFixed(1)+'M'; return Number(s).toLocaleString(); },
-  time: (ts) => ts ? new Date(ts*1000).toLocaleTimeString() : '—',
-  status: (s) => { const m={success:'bg-green-500/20 text-green-400',executed:'bg-green-500/20 text-green-400',pending:'bg-amber-500/20 text-amber-400',failed:'bg-red-500/20 text-red-400',committed:'bg-accent-500/20 text-accent-400'}; const c=m[s]||'bg-surface-700 text-surface-400'; return `<span class="px-2 py-0.5 rounded text-[11px] font-medium ${c}">${s||'unknown'}</span>`; },
-  bar: (v,color='bg-accent-500') => `<div class="w-full bg-surface-800 rounded-full h-1.5"><div class="${color} h-1.5 rounded-full transition-all" style="width:${Math.min(100,Math.max(0,v||0))}%"></div></div>`,
-  row: (cells) => '<tr class="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors">'+cells.map(c=>`<td class="px-4 py-2.5">${c}</td>`).join('')+'</tr>',
+//── Helpers ──
+const H={
+  h:(h,n=6)=>h&&h.length>=n*2?`<span class="font-mono text-accent-300" title="${h}">${h.slice(0,n)}…${h.slice(-n)}</span>`:(h||'—'),
+  n:(n)=>n!=null?Number(n).toLocaleString():'—',
+  s:(s)=>{if(!s)return'0';if(s>1e15)return(s/1e15).toFixed(1)+'P';if(s>1e12)return(s/1e12).toFixed(1)+'T';if(s>1e9)return(s/1e9).toFixed(1)+'B';if(s>1e6)return(s/1e6).toFixed(1)+'M';return Number(s).toLocaleString();},
+  t:(ts)=>ts?new Date(ts*1000).toLocaleTimeString():'—',
+  st:(s)=>{const m={success:'bg-green-500/20 text-green-400',executed:'bg-green-500/20 text-green-400',pending:'bg-amber-500/20 text-amber-400',failed:'bg-red-500/20 text-red-400',committed:'bg-accent-500/20 text-accent-400'};const c=m[s]||'bg-surface-700 text-surface-400';return`<span class="px-2 py-0.5 rounded text-[11px] font-medium ${c}">${s||'unknown'}</span>`;},
+  bar:(v,c='bg-accent-500')=>`<div class="w-full bg-surface-800 rounded-full h-1.5"><div class="${c} h-1.5 rounded-full transition-all" style="width:${Math.min(100,Math.max(0,v||0))}%"></div></div>`,
+  row:(c)=>'<tr class="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors">'+c.map(x=>`<td class="px-4 py-2.5">${x}</td>`).join('')+'</tr>',
+  id:(h)=>`<a href="#" @click.prevent="searchQ='${h}';doSearch()" class="text-accent-400 hover:text-accent-300 font-mono">${H.h(h,7)}</a>`,
 };
 
-// ── Fetch + render ──
-async function fetchJSON(url) { try { const r=await fetch(url); return r.ok ? r.json() : null; } catch(e) { return null; } }
+async function J(u){try{const r=await fetch(u);return r.ok?r.json():null}catch(e){return null}}
 
-async function loadDashboard() {
-  const [info, cs, ts] = await Promise.all([fetchJSON('/api/node/info'), fetchJSON('/api/consensus/status'), fetchJSON('/api/txn/stats')]);
-  if (info) {
-    app.nodeState = info.state||'running';
-    app.uptime = info.uptime_seconds ? (info.uptime_seconds>86400?Math.floor(info.uptime_seconds/86400)+'d ':'').concat(Math.floor((info.uptime_seconds%86400)/3600)+'h') : '--';
-    app.dash.blocks = info.committed_blocks||0;
-    app.dash.validators = info.active_validators || (cs ? cs.active_validators : 0);
-    app.dash.round = cs ? cs.current_round : 0;
-  }
-  if (ts) app.dash.txs = ts.total_executed||0;
-  // Consensus panel
-  if (cs) app.consensusHTML = `
-    <div class="flex justify-between"><span class="text-surface-500">Round</span><span class="font-mono font-semibold">${F.num(cs.current_round)}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Committed</span><span class="font-mono">${F.hash(cs.highest_committed_block)||'none'}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Validators</span><span class="font-mono">${cs.active_validators||0}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Quorum</span><span class="font-mono ${cs.quorum_reached?'text-green-400':'text-amber-400'}">${cs.quorum_reached?'Reached':'Pending'}</span></div>`;
-  // Mempool
-  if (ts) app.poolHTML = `
-    <div class="flex justify-between"><span class="text-surface-500">Pending</span><span class="font-mono">${F.num(ts.pending)}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Executing</span><span class="font-mono">${F.num(ts.executing)}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Total Executed</span><span class="font-mono font-semibold">${F.num(ts.total_executed)}</span></div>`;
+//── Data loaders ──
+async function loadDash(){
+  const[info,cs,ts]=await Promise.all([J('/api/node/info'),J('/api/consensus/status'),J('/api/txn/stats')]);
+  if(info){A.nodeState=info.state||'running';A.uptime=info.uptime_seconds?(info.uptime_seconds>86400?Math.floor(info.uptime_seconds/86400)+'d ':'').concat(Math.floor((info.uptime_seconds%86400)/3600)+'h'):'--';A.dash.blocks=info.committed_blocks||0;A.dash.vals=info.active_validators||(cs?cs.active_validators:0);A.dash.round=cs?cs.current_round:0;}
+  if(ts)A.dash.txs=ts.total_executed||0;
+  if(cs)A.panels.consensus=`<div class="flex justify-between"><span class="text-surface-500">Round</span><span class="font-mono font-semibold">${H.n(cs.current_round)}</span></div><div class="flex justify-between"><span class="text-surface-500">Committed</span><span class="font-mono">${H.h(cs.highest_committed_block)||'none'}</span></div><div class="flex justify-between"><span class="text-surface-500">Validators</span><span class="font-mono">${cs.active_validators||0}</span></div><div class="flex justify-between"><span class="text-surface-500">Quorum</span><span class="font-mono ${cs.quorum_reached?'text-green-400':'text-amber-400'}">${cs.quorum_reached?'Reached':'Pending'}</span></div>`;
+  if(ts)A.panels.mempool=`<div class="flex justify-between"><span class="text-surface-500">Pending</span><span class="font-mono">${H.n(ts.pending)}</span></div><div class="flex justify-between"><span class="text-surface-500">Executing</span><span class="font-mono">${H.n(ts.executing)}</span></div><div class="flex justify-between"><span class="text-surface-500">Total Executed</span><span class="font-mono font-semibold">${H.n(ts.total_executed)}</span></div>`;
 }
 
-async function loadBlocks() {
-  const data = await fetchJSON('/api/blocks?limit=8');
-  if (!data || !data.blocks) return;
-  app.blocksHTML = data.blocks.map(b => F.row([
-    F.h(b.hash,7), F.num(b.round), F.h(b.author,5), F.num(b.tx_count)
-  ])).join('');
-  app.blocksFullHTML = (data.blocks||[]).map(b => F.row([
-    F.h(b.hash,8), F.num(b.round), F.h(b.author,6), F.num(b.tx_count), F.time(b.timestamp)
-  ])).join('');
+async function loadBlocks(full){
+  const d=await J('/api/blocks?limit='+(full?25:8));if(!d||!d.blocks)return;
+  const rows=d.blocks.map(b=>H.row([H.id(b.hash),H.n(b.round),H.h(b.author,5),H.n(b.tx_count)]));
+  if(full)A.panels.blocksFull=rows.join('');else A.panels.blocks=rows.join('');
 }
+async function loadTxns(){const d=await J('/api/transactions?limit=25');if(d&&d.transactions)A.panels.txns=d.transactions.map(t=>H.row([H.id(t.hash),H.st(t.status),H.n(t.gas_used),H.h(t.sender,6)])).join('');}
+async function loadValidators(){const d=await J('/api/validators');if(!d||!d.validators)return;const t=(d.validators||[]).reduce((s,v)=>s+(v.stake||0),0);A.panels.validators=d.validators.map(v=>H.row([H.h(v.validator_id||v.id,8),`<span class="font-mono text-right block">${H.s(v.stake)}</span>`,`<span class="font-mono text-right block">${t>0?((v.stake||0)/t*100).toFixed(1):'0'}%</span>`,`<span class="px-2 py-0.5 rounded text-[11px] font-medium ${v.connected!==false?'bg-green-500/20 text-green-400':'bg-surface-700 text-surface-400'}">${v.connected!==false?'Active':'Offline'}</span>`])).join('');}
+async function loadEpoch(){const d=await J('/api/epoch');if(d){A.epoch.cur=d.epoch_number||d.current_epoch||0;A.epoch.stake=d.total_stake||0;A.epoch.vals=d.validator_count||0;A.epoch.quorum=d.quorum_threshold||0;}}
+async function loadMetrics(){const[m,s]=await Promise.all([J('/api/metrics'),J('/api/system/info')]);if(m)A.panels.tri=`<div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Wu Feng (Form)</span><span class="font-mono">${m.wu_feng||0}%</span></div>${H.bar(m.wu_feng,'bg-accent-500')}</div><div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Xiang Da (Property)</span><span class="font-mono">${m.xiang_da||0}%</span></div>${H.bar(m.xiang_da,'bg-green-400')}</div><div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Zi Zai (Measure)</span><span class="font-mono">${m.zi_zai||0}%</span></div>${H.bar(m.zi_zai,'bg-amber-400')}</div>`;if(s)A.panels.sys=`<div class="flex justify-between"><span class="text-surface-500">CPU Cores</span><span class="font-mono">${s.cpu_count||'—'}</span></div><div class="flex justify-between"><span class="text-surface-500">Memory</span><span class="font-mono">${s.total_memory_bytes?H.s(s.total_memory_bytes):'—'}</span></div><div class="flex justify-between"><span class="text-surface-500">CPU</span><span class="font-mono">${s.cpu_usage_percent!=null?s.cpu_usage_percent.toFixed(1)+'%':'—'}</span></div>`;}
+async function loadPeers(){const d=await J('/api/network/peers');if(!d)return;A.network.peers=d.total||0;A.panels.peers=(d.peers||[]).map(p=>H.row([H.h(p.peer_id,10),`<span class="font-mono text-surface-400">${p.type||'TCP'}</span>`])).join('');if(!A.panels.peers)A.panels.peers='<tr><td colspan="2" class="px-4 py-6 text-center text-surface-600">No peers connected</td></tr>';}
+async function doTxDetail(hash){if(!hash){A.txDetail='<p class="text-surface-500">No tx selected</p>';return;}const d=await J('/api/transactions/'+hash);if(!d){A.txDetail='<p class="text-red-400">Not found</p>';return;}A.txDetail=`<div class="flex justify-between"><span class="text-surface-500">Hash</span><span class="text-accent-300">${H.h(d.hash,32)}</span></div>${d.receipt?`<div class="flex justify-between"><span class="text-surface-500">Status</span>${H.st(d.receipt.status)}</div><div class="flex justify-between"><span class="text-surface-500">Gas Used</span><span class="font-mono">${H.n(d.receipt.gas_used)}</span></div><div class="flex justify-between"><span class="text-surface-500">Sender</span><span class="font-mono">${H.h(d.receipt.sender,32)}</span></div>`:''}${d.execution_result?`<div class="flex justify-between"><span class="text-surface-500">Exec Status</span>${H.st(d.execution_result.status)}</div><div class="flex justify-between"><span class="text-surface-500">Exec Gas</span><span class="font-mono">${H.n(d.execution_result.gas_used)}</span></div><div class="flex justify-between"><span class="text-surface-500">Output Objects</span><span class="font-mono">${H.n(d.execution_result.output_len)}</span></div>`:''}`;}
+async function doSearch(){const q=A.searchQ.trim();if(!q)return;A.active='explorer';const d=await J('/api/search?q='+encodeURIComponent(q));if(!d){A.searchResult={type:'',hash:q};return;}A.searchResult=d;}
 
-async function loadTxns() {
-  const data = await fetchJSON('/api/transactions?limit=25');
-  if (!data || !data.transactions) return;
-  app.txnsHTML = data.transactions.map(t => F.row([
-    `<a href="#" @click.prevent="openTx('${F.hash(t.hash,32)}')" class="text-accent-400 hover:text-accent-300 font-mono">${F.h(t.hash,7)}</a>`,
-    F.status(t.status), F.num(t.gas_used), F.h(t.sender,6)
-  ])).join('');
-}
-
-async function loadValidators() {
-  const data = await fetchJSON('/api/validators');
-  if (!data || !data.validators) return;
-  const total = (data.validators||[]).reduce((s,v)=>s+(v.stake||0),0);
-  app.validatorsHTML = data.validators.map(v => F.row([
-    F.h(v.validator_id||v.id,8),
-    `<span class="font-mono text-right block">${F.stake(v.stake)}</span>`,
-    `<span class="font-mono text-right block">${total>0?((v.stake||0)/total*100).toFixed(1):'0'}%</span>`,
-    `<span class="px-2 py-0.5 rounded text-[11px] font-medium ${v.connected!==false?'bg-green-500/20 text-green-400':'bg-surface-700 text-surface-400'}">${v.connected!==false?'Active':'Offline'}</span>`
-  ])).join('');
-}
-
-async function loadEpoch() {
-  const data = await fetchJSON('/api/epoch');
-  if (!data) return;
-  app.epoch = {current:data.epoch_number||data.current_epoch||0, stake:data.total_stake||0, validators:data.validator_count||0, quorum:data.quorum_threshold||0};
-}
-
-async function loadMetrics() {
-  const [m, sys] = await Promise.all([fetchJSON('/api/metrics'), fetchJSON('/api/system/info')]);
-  if (m) app.triSourceHTML = `
-    <div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Wu Feng (Form)</span><span class="font-mono">${m.wu_feng||0}%</span></div>${F.bar(m.wu_feng,'bg-accent-500')}</div>
-    <div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Xiang Da (Property)</span><span class="font-mono">${m.xiang_da||0}%</span></div>${F.bar(m.xiang_da,'bg-green-400')}</div>
-    <div><div class="flex justify-between text-[12px] mb-1"><span class="text-surface-400">Zi Zai (Measure)</span><span class="font-mono">${m.zi_zai||0}%</span></div>${F.bar(m.zi_zai,'bg-amber-400')}</div>`;
-  if (sys) app.sysInfoHTML = `
-    <div class="flex justify-between"><span class="text-surface-500">CPU Cores</span><span class="font-mono">${sys.cpu_count||'—'}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Memory</span><span class="font-mono">${sys.total_memory_bytes?F.stake(sys.total_memory_bytes):'—'}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">CPU Usage</span><span class="font-mono">${sys.cpu_usage_percent!=null?sys.cpu_usage_percent.toFixed(1)+'%':'—'}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">State</span><span class="font-mono">${app.nodeState||'—'}</span></div>`;
-}
-
-async function loadTxDetail(hash) {
-  if (!hash) { app.txDetailHTML = '<p class="text-surface-500">No transaction selected</p>'; return; }
-  const data = await fetchJSON('/api/transactions/'+hash);
-  if (!data) { app.txDetailHTML = '<p class="text-red-400">Transaction not found</p>'; return; }
-  app.txDetailHTML = `
-    <div class="flex justify-between"><span class="text-surface-500">Hash</span><span class="text-accent-300">${F.hash(data.hash,32)}</span></div>
-    ${data.receipt?`<div class="flex justify-between"><span class="text-surface-500">Status</span>${F.status(data.receipt.status)}</div>
-    <div class="flex justify-between"><span class="text-surface-500">Gas Used</span><span class="font-mono">${F.num(data.receipt.gas_used)}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Sender</span><span class="font-mono">${F.hash(data.receipt.sender,32)}</span></div>`:''}
-    ${data.execution_result?`<div class="flex justify-between"><span class="text-surface-500">Exec Status</span>${F.status(data.execution_result.status)}</div>
-    <div class="flex justify-between"><span class="text-surface-500">Exec Gas</span><span class="font-mono">${F.num(data.execution_result.gas_used)}</span></div>
-    <div class="flex justify-between"><span class="text-surface-500">Output Objects</span><span class="font-mono">${F.num(data.execution_result.output_len)}</span></div>`:''}
-    ${data.note?`<div class="mt-3 p-2 rounded bg-surface-800 text-[12px] text-surface-500">${data.note}</div>`:''}`;
-}
-
-// ── Polling ──
-let pollTimer;
-function startPolling() {
-  loadDashboard(); loadBlocks(); loadTxns(); loadValidators(); loadEpoch(); loadMetrics();
-  pollTimer = setInterval(async () => {
-    await Promise.all([loadDashboard(), loadBlocks(), loadTxns()]);
-  }, 10000);
-  // Slower polls
-  setInterval(async () => { await Promise.all([loadValidators(), loadEpoch(), loadMetrics()]); }, 30000);
-}
-
-// ── Alpine App ──
-const app = Alpine.reactive({
-  active: 'dashboard',
-  tabs: [
-    {id:'dashboard',label:'Dashboard',icon:'\u{1F4CA}'},{id:'blocks',label:'Blocks',icon:'\u{1F9F1}'},
-    {id:'transactions',label:'Transactions',icon:'\u{1F4B3}'},{id:'validators',label:'Validators',icon:'\u{1F510}'},
-    {id:'epoch',label:'Epoch',icon:'\u{23F3}'},{id:'metrics',label:'Metrics',icon:'\u{1F4C8}'},
+//── Alpine App ──
+const A=Alpine.reactive({
+  active:'dashboard',
+  tabs:[
+    {id:'dashboard',label:'Dashboard',icon:'\u{1F4CA}'},{id:'explorer',label:'Explorer',icon:'\u{1F50D}'},
+    {id:'network',label:'Network',icon:'\u{1F310}'},{id:'validators',label:'Validators',icon:'\u{1F510}'},
+    {id:'transactions',label:'Transactions',icon:'\u{1F4B3}'},{id:'epoch',label:'Epoch',icon:'\u{23F3}'},
+    {id:'metrics',label:'Metrics',icon:'\u{1F4C8}'},
   ],
+  searchQ:'', searchResult:{},
   nodeState:'connecting', uptime:'--',
-  dash:{blocks:0,txs:0,validators:0,round:0},
-  consensusHTML:'<p class="text-surface-600">Loading...</p>',
-  poolHTML:'<p class="text-surface-600">Loading...</p>',
-  blocksHTML:'<tr><td colspan="4" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
-  blocksFullHTML:'<tr><td colspan="5" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
-  txnsHTML:'<tr><td colspan="4" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
-  validatorsHTML:'<tr><td colspan="4" class="px-4 py-10 text-center text-surface-600">Loading...</td></tr>',
-  epoch:{current:0,stake:0,validators:0,quorum:0},
-  triSourceHTML:'<p class="text-surface-600">Loading...</p>',
-  sysInfoHTML:'<p class="text-surface-600">Loading...</p>',
-  txModal:{open:false,hash:''},
-  txDetailHTML:'',
-  openTx(h) { if(!h) return; const clean=h.replace('0x',''); this.txModal={open:true,hash:clean}; loadTxDetail(clean); },
-  fmtNum: F.num, fmtStake: F.stake,
+  dash:{blocks:0,txs:0,vals:0,round:0},
+  panels:{consensus:'',mempool:'',blocks:'',blocksFull:'',txns:'',validators:'',tri:'',sys:'',peers:''},
+  epoch:{cur:0,stake:0,vals:0,quorum:0},
+  network:{peers:0,selfId:'—',transport:'TCP'},
+  txModal:{open:false,hash:''},txDetail:'',
+  fmt:H.n, stakeFmt:H.s, badge:H.st,
+  switchTab(id){this.active=id;this.searchResult={};},
+  doSearch, refresh(n){if(n==='blocks')loadBlocks(false);},
+  openTx(h){if(!h)return;const c=h.replace('0x','');this.txModal={open:true,hash:c};doTxDetail(c);},
 });
 
-document.addEventListener('alpine:init', () => { Alpine.data('dashboard', () => app); });
-document.addEventListener('DOMContentLoaded', startPolling);
+document.addEventListener('alpine:init',()=>{Alpine.data('app',()=>A)});
+//── Init + Polling ──
+async function init(){await Promise.all([loadDash(),loadBlocks(false),loadBlocks(true),loadTxns(),loadValidators(),loadEpoch(),loadMetrics(),loadPeers()]);}
+document.addEventListener('DOMContentLoaded',init);
+setInterval(async()=>{await Promise.all([loadDash(),loadBlocks(false),loadTxns()]);},10000);
+setInterval(async()=>{await Promise.all([loadValidators(),loadEpoch(),loadMetrics(),loadPeers(),loadBlocks(true)]);},30000);
 </script>
 </body>
 </html>

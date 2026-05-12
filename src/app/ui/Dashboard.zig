@@ -205,6 +205,14 @@ pub const DashboardHandler = struct {
             return try self.handleObjects(limit, owner_hex);
         } else if (std.mem.eql(u8, route, "/api/indexer/stats")) {
             return try self.handleIndexerStats();
+        } else if (std.mem.eql(u8, route, "/api/search")) {
+            const q = getQueryStr(query, "q") orelse "";
+            return try self.handleSearch(q);
+        } else if (std.mem.eql(u8, route, "/api/network/peers")) {
+            return try self.handlePeers();
+        } else if (std.mem.startsWith(u8, route, "/api/address/")) {
+            const addr_hex = route["/api/address/".len..];
+            return try self.handleAddress(addr_hex);
         } else {
             return error.NotFound;
         }
@@ -598,6 +606,88 @@ pub const DashboardHandler = struct {
             .indexed_events = 0,
         };
         return try toJSON(self.allocator, stats);
+    }
+
+    /// Unified search: looks up hex string as block hash, tx digest, or address.
+    fn handleSearch(self: *@This(), query_str: []const u8) ![]u8 {
+        if (self.node == null) return error.NodeNotSet;
+        const node = self.node.?;
+        const clean = if (std.mem.startsWith(u8, query_str, "0x")) query_str[2..] else query_str;
+        if (clean.len < 4) return error.NotFound;
+
+        if (clean.len >= 64) {
+            var digest: [32]u8 = undefined;
+            _ = std.fmt.hexToBytes(&digest, clean[0..64]) catch {
+                return error.NotFound;
+            };
+            const receipt = node.getTransactionReceipt(digest);
+            const exec = node.getExecutionResult(digest);
+            if (receipt != null or exec != null) {
+                return try toJSON(self.allocator, .{
+                    .type = "transaction",
+                    .hash = clean,
+                    .receipt = if (receipt) |r| .{
+                        .status = @tagName(r.status),
+                        .gas_used = r.gas_used,
+                        .sender = try bytesToHex(self.allocator, &r.sender),
+                    } else null,
+                    .execution_result = if (exec) |e| .{
+                        .status = @tagName(e.status),
+                        .gas_used = e.gas_used,
+                        .output_objects = e.output_objects.len,
+                    } else null,
+                });
+            }
+            return try toJSON(self.allocator, .{
+                .type = "address",
+                .hash = clean,
+                .hint = "address lookup",
+            });
+        }
+        return try toJSON(self.allocator, .{ .type = "unknown", .query = clean, .hint = "try a 64-char hex hash" });
+    }
+
+    /// Connected peers list
+    fn handlePeers(self: *@This()) ![]u8 {
+        if (self.node == null) return error.NodeNotSet;
+        const node = self.node.?;
+        var list = std.ArrayList(struct {
+            peer_id: []const u8,
+            @"type": []const u8,
+        }).empty;
+        defer {
+            for (list.items) |p| { self.allocator.free(p.peer_id); self.allocator.free(p.@"type"); }
+            list.deinit(self.allocator);
+        }
+        if (node.getP2PServer()) |p2p| {
+            var it = p2p.peers.iterator();
+            while (it.next()) |entry| {
+                try list.append(self.allocator, .{
+                    .peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*),
+                    .@"type" = try self.allocator.dupe(u8, "TCP"),
+                });
+            }
+            var qit = p2p.quic_peers.iterator();
+            while (qit.next()) |entry| {
+                try list.append(self.allocator, .{
+                    .peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*),
+                    .@"type" = try self.allocator.dupe(u8, "QUIC"),
+                });
+            }
+        }
+        return try toJSON(self.allocator, .{ .peers = list.items, .total = list.items.len });
+    }
+
+    /// Address overview
+    fn handleAddress(self: *@This(), addr_hex: []const u8) ![]u8 {
+        const clean = if (std.mem.startsWith(u8, addr_hex, "0x")) addr_hex[2..] else addr_hex;
+        if (clean.len != 64) return error.NotFound;
+        var tmp: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&tmp, clean) catch return error.NotFound;
+        return try toJSON(self.allocator, .{
+            .address = clean,
+            .note = "address overview",
+        });
     }
 
     pub fn getHTML(self: *@This()) ![]const u8 {
