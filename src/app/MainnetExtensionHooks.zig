@@ -177,7 +177,7 @@ pub const Manager = struct {
     processed_evidence: std.AutoArrayHashMapUnmanaged([32]u8, void),
     total_slashed: u64 = 0,
     current_epoch: u64 = 0,
-    validator_set_hash: [32]u8 = [_]u8{0} ** 32,
+    validator_set_hash: [32]u8 = @as([32]u8, @splat(0)),
     /// Optional M4-only WAL (separate from LSM); owned by `Node`.
     m4_wal: ?*wal_pkg.WAL = null,
 
@@ -1298,14 +1298,14 @@ test "mainnet hooks allocate ids monotonically" {
     defer mgr.deinit();
 
     const op_id_1 = try mgr.submitStakeOperation(.{
-        .validator = [_]u8{1} ** 32,
-        .delegator = [_]u8{2} ** 32,
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
         .amount = 10,
         .action = .stake,
     });
     const op_id_2 = try mgr.submitStakeOperation(.{
-        .validator = [_]u8{1} ** 32,
-        .delegator = [_]u8{2} ** 32,
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
         .amount = 5,
         .action = .unstake,
     });
@@ -1319,13 +1319,13 @@ test "mainnet hooks governance proposal id increments" {
     defer mgr.deinit();
 
     const p1 = try mgr.submitGovernanceProposal(.{
-        .proposer = [_]u8{9} ** 32,
+        .proposer = @as([32]u8, @splat(9)),
         .title = "t1",
         .description = "d1",
         .kind = .parameter_change,
     });
     const p2 = try mgr.submitGovernanceProposal(.{
-        .proposer = [_]u8{9} ** 32,
+        .proposer = @as([32]u8, @splat(9)),
         .title = "t2",
         .description = "d2",
         .kind = .chain_upgrade,
@@ -1339,8 +1339,8 @@ test "mainnet hooks apply stake and slash to validator stake" {
     var mgr = try Manager.init(allocator);
     defer mgr.deinit();
 
-    const validator = [_]u8{7} ** 32;
-    const delegator = [_]u8{8} ** 32;
+    const validator = @as([32]u8, @splat(7));
+    const delegator = @as([32]u8, @splat(8));
 
     _ = try mgr.submitStakeOperation(.{
         .validator = validator,
@@ -1368,11 +1368,11 @@ test "mainnet hooks buildCheckpointProof emits canonical signing payload" {
 
     const proof = try mgr.buildCheckpointProof(.{
         .sequence = 9,
-        .object_id = [_]u8{0xAB} ** 32,
+        .object_id = @as([32]u8, @splat(0xAB)),
     });
     defer mgr.freeCheckpointProof(proof);
 
-    const expected = m4ProofSigningMessage(proof.state_root, 9, [_]u8{0xAB} ** 32);
+    const expected = m4ProofSigningMessage(proof.state_root, 9, @as([32]u8, @splat(0xAB)));
     try std.testing.expectEqual(@as(usize, 80), proof.proof_bytes.len);
     try std.testing.expect(std.mem.eql(u8, proof.proof_bytes, &expected));
     try std.testing.expectEqual(@as(usize, 0), proof.signatures.len);
@@ -1383,8 +1383,8 @@ test "equivocation evidence replay is deduplicated" {
     var mgr = try Manager.init(allocator);
     defer mgr.deinit();
 
-    const validator = [_]u8{0x22} ** 32;
-    const delegator = [_]u8{0x33} ** 32;
+    const validator = @as([32]u8, @splat(0x22));
+    const delegator = @as([32]u8, @splat(0x33));
 
     _ = try mgr.submitStakeOperation(.{
         .validator = validator,
@@ -1408,7 +1408,7 @@ test "governance vote WAL roundtrip" {
     var mgr = try Manager.init(allocator);
     defer mgr.deinit();
 
-    const validator = [_]u8{0x11} ** 32;
+    const validator = @as([32]u8, @splat(0x11));
     try mgr.validator_stake.put(allocator, validator, 500);
 
     // Create a proposal first (votes need a proposal to exist)
@@ -1451,8 +1451,8 @@ test "M4 state snapshot roundtrip" {
     var mgr = try Manager.init(allocator);
     defer mgr.deinit();
 
-    const validator = [_]u8{0x22} ** 32;
-    const delegator = [_]u8{0x33} ** 32;
+    const validator = @as([32]u8, @splat(0x22));
+    const delegator = @as([32]u8, @splat(0x33));
 
     // Populate some state
     try mgr.validator_stake.put(allocator, validator, 1000);
@@ -1464,9 +1464,9 @@ test "M4 state snapshot roundtrip" {
         .proposer = validator, .title = "p1", .description = "d1", .kind = .parameter_change, .activation_epoch = 3,
     });
     try mgr.voteOnProposal(1, validator, true);
-    try mgr.processed_evidence.put(allocator, [_]u8{0xEE} ** 32, {});
+    try mgr.processed_evidence.put(allocator, @as([32]u8, @splat(0xEE)), {});
     mgr.current_epoch = 7;
-    mgr.validator_set_hash = [_]u8{0xAA} ** 32;
+    mgr.validator_set_hash = @as([32]u8, @splat(0xAA));
     mgr.total_slashed = 50;
 
     // Serialize snapshot
@@ -1488,6 +1488,6 @@ test "M4 state snapshot roundtrip" {
     // submitStakeOperation added 500 to the pre-existing 1000/500 stakes
     try std.testing.expectEqual(@as(u64, 1500), mgr2.validator_stake.get(validator).?);
     try std.testing.expectEqual(@as(u64, 1000), mgr2.delegations.get(.{ .validator = validator, .delegator = delegator }).?);
-    try std.testing.expect(mgr2.processed_evidence.contains([_]u8{0xEE} ** 32));
-    try std.testing.expect(std.mem.eql(u8, &mgr2.validator_set_hash, &[_]u8{0xAA} ** 32));
+    try std.testing.expect(mgr2.processed_evidence.contains(@as([32]u8, @splat(0xEE))));
+    try std.testing.expect(std.mem.eql(u8, &mgr2.validator_set_hash, &@as([32]u8, @splat(0xAA))));
 }

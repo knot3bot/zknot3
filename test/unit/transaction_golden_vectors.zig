@@ -16,7 +16,7 @@ const Signature = @import("../../src/property/crypto/Signature.zig");
 
 fn makePositiveTx(allocator: std.mem.Allocator) !Transaction {
     return .{
-        .sender = [_]u8{0xAA} ** 32,
+        .sender = @as([32]u8, @splat(0xAA)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "transfer"),
         .gas_budget = 1000,
@@ -137,7 +137,7 @@ test "golden-negative: tampered program invalidates signature" {
 
 test "golden-negative: unsigned transaction fails verification" {
     const tx = Transaction{
-        .sender = [_]u8{0xBB} ** 32,
+        .sender = @as([32]u8, @splat(0xBB)),
         .inputs = &.{},
         .program = "test",
         .gas_budget = 100,
@@ -155,7 +155,7 @@ test "golden-negative: unsigned transaction fails verification" {
 test "golden-boundary: empty program digest and serialization" {
     const allocator = std.testing.allocator;
     var tx = Transaction{
-        .sender = [_]u8{0xCC} ** 32,
+        .sender = @as([32]u8, @splat(0xCC)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, ""),
         .gas_budget = 1,
@@ -178,7 +178,7 @@ test "golden-boundary: empty program digest and serialization" {
 test "golden-boundary: max gas and sequence" {
     const allocator = std.testing.allocator;
     var tx = Transaction{
-        .sender = [_]u8{0xDD} ** 32,
+        .sender = @as([32]u8, @splat(0xDD)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "noop"),
         .gas_budget = std.math.maxInt(u64),
@@ -199,13 +199,13 @@ test "golden-boundary: max gas and sequence" {
 test "golden-boundary: deserialize rejects truncated payload" {
     const allocator = std.testing.allocator;
     // Too short to be a valid v1 transaction
-    const bad = &[_]u8{0} ** 10;
+    const bad = &@as([10]u8, @splat(0));
     try std.testing.expectError(error.MalformedTransaction, Transaction.deserialize(allocator, bad));
 }
 
 test "golden-boundary: deserialize rejects oversized inputs_len" {
     const allocator = std.testing.allocator;
-    var buf = [_]u8{0} ** 256;
+    var buf = @as([256]u8, @splat(0));
     @memset(&buf, 0);
     // inputs_len = 0xFFFFFFFF (way too large)
     std.mem.writeInt(u32, buf[32..36], 0xFFFFFFFF, .big);

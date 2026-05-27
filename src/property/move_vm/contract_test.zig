@@ -149,7 +149,7 @@ test "Move VM: resource tracking in contract execution" {
     defer tracker.deinit();
 
     // Create a KNOT3 coin resource
-    const owner = [_]u8{0xAB} ** 32;
+    const owner = @as([32]u8, @splat(0xAB));
     const coin = try Resource.init(
         core.ObjectID.hash("knot3_coin"),
         .Coin,

@@ -232,9 +232,9 @@ test "FormInvariants: duplicate ID fails" {
 
 test "FormInvariants: monotonic versions" {
     const versions = &[_]Versioned{
-        .{ .seq = 1, .causal = [_]u8{1} ** 16 },
-        .{ .seq = 2, .causal = [_]u8{2} ** 16 },
-        .{ .seq = 3, .causal = [_]u8{3} ** 16 },
+        .{ .seq = 1, .causal = @as([16]u8, @splat(1)) },
+        .{ .seq = 2, .causal = @as([16]u8, @splat(2)) },
+        .{ .seq = 3, .causal = @as([16]u8, @splat(3)) },
     };
 
     try FormInvariants.isMonotonic(versions);
@@ -242,9 +242,9 @@ test "FormInvariants: monotonic versions" {
 
 test "FormInvariants: non-monotonic fails" {
     const versions = &[_]Versioned{
-        .{ .seq = 3, .causal = [_]u8{1} ** 16 },
-        .{ .seq = 2, .causal = [_]u8{2} ** 16 },
-        .{ .seq = 4, .causal = [_]u8{3} ** 16 },
+        .{ .seq = 3, .causal = @as([16]u8, @splat(1)) },
+        .{ .seq = 2, .causal = @as([16]u8, @splat(2)) },
+        .{ .seq = 4, .causal = @as([16]u8, @splat(3)) },
     };
 
     try std.testing.expectError(InvariantError.VersionNotMonotonic, FormInvariants.isMonotonic(versions));

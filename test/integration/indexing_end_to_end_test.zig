@@ -42,7 +42,7 @@ test "E2E: transaction execution produces indexable events" {
 
     // Execute a transaction
     const tx = pipeline.Transaction{
-        .sender = [_]u8{0x42} ** 32,
+        .sender = @as([32]u8, @splat(0x42)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "transfer"),
         .gas_budget = 1000,
@@ -90,7 +90,7 @@ test "E2E: batch execution produces multiple indexed events" {
     var txs: [3]pipeline.Transaction = undefined;
     for (0..3) |i| {
         txs[i] = .{
-            .sender = [_]u8{@intCast(i)} ** 32,
+            .sender = @as([32]u8, @splat(@intCast(i))),
             .inputs = &.{},
             .program = try allocator.dupe(u8, "batch"),
             .gas_budget = 1000,

@@ -18,7 +18,7 @@ pub fn receiveBlock(
     block_data: []const u8,
 ) !void {
     var block = try Mysticeti.Block.create(
-        .{0} ** 32,
+        @as([32]u8, @splat(0)),
         Mysticeti.Round{ .value = 0 },
         block_data,
         &.{},
@@ -88,8 +88,8 @@ test "receiveVote returns equivocation when same voter votes two digests in same
     var committed_blocks: BlockMap = .empty;
     defer committed_blocks.deinit(allocator);
 
-    var block_a = try Mysticeti.Block.create([_]u8{1} ** 32, .{ .value = 10 }, "a", &.{}, allocator);
-    var block_b = try Mysticeti.Block.create([_]u8{2} ** 32, .{ .value = 10 }, "b", &.{}, allocator);
+    var block_a = try Mysticeti.Block.create(@as([32]u8, @splat(1)), .{ .value = 10 }, "a", &.{}, allocator);
+    var block_b = try Mysticeti.Block.create(@as([32]u8, @splat(2)), .{ .value = 10 }, "b", &.{}, allocator);
     try pending_blocks.put(allocator, block_a.digest, block_a);
     try pending_blocks.put(allocator, block_b.digest, block_b);
     defer {
@@ -97,7 +97,7 @@ test "receiveVote returns equivocation when same voter votes two digests in same
         if (pending_blocks.getPtr(block_b.digest)) |b| b.deinit(allocator);
     }
 
-    const seed = [_]u8{9} ** 32;
+    const seed = @as([32]u8, @splat(9));
     const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch return error.SigningFailed;
     const voter = kp.public_key.toBytes();
 

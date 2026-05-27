@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Zig tarball from build context (pre-downloaded)
-COPY zig-bin/zig-aarch64-linux-0.16.0.tar.xz /tmp/zig.tar.xz
+COPY zig-bin/zig-aarch64-linux-0.17.0.tar.xz /tmp/zig.tar.xz
 RUN tar xJf /tmp/zig.tar.xz --strip-components=1 -C /opt && rm /tmp/zig.tar.xz
 
 # Add Zig to PATH

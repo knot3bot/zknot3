@@ -8,7 +8,7 @@ const GovernanceStatus = MainnetExtensionHooks.GovernanceStatus;
 const GovernanceKind = MainnetExtensionHooks.GovernanceKind;
 
 fn makeValidator(id: u8) [32]u8 {
-    return [_]u8{id} ** 32;
+    return @as([32]u8, @splat(id));
 }
 
 test "governance: submit proposal and vote to approval" {

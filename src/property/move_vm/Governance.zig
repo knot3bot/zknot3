@@ -418,10 +418,10 @@ test "Governance basic operations" {
     var governance = try Governance.init(allocator, config);
     defer governance.deinit();
 
-    const creator = Address.fromBytes(&[32]u8{0x01} ** 32);
-    const contract = Address.fromBytes(&[32]u8{0x02} ** 32);
+    const creator = Address.fromBytes(&@as([32]u8, @splat(0x01)));
+    const contract = Address.fromBytes(&@as([32]u8, @splat(0x02)));
 
-    const new_bytecode_hash = Hash.fromBytes(&[32]u8{0x03} ** 32);
+    const new_bytecode_hash = Hash.fromBytes(&@as([32]u8, @splat(0x03)));
     const proposal_id = try governance.createProposal(
         creator,
         contract,

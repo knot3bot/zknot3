@@ -29,7 +29,7 @@ log_error() {
 }
 
 # 默认配置
-ZIG_VERSION="0.16.0"
+ZIG_VERSION="0.17.0"
 INSTALL_DIR="/usr/local/bin"
 DATA_DIR="/var/lib/zknot3"
 CONFIG_DIR="/etc/zknot3"

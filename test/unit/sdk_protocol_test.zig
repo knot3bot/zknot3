@@ -9,7 +9,7 @@ const RpcClient = @import("../../src/sdk/rpc.zig").RpcClient;
 
 fn makeSdkTx() SdkTransaction {
     return .{
-        .sender = [_]u8{0xAB} ** 32,
+        .sender = @as([32]u8, @splat(0xAB)),
         .inputs = &.{},
         .program = "transfer",
         .gas_budget = 1000,
@@ -19,7 +19,7 @@ fn makeSdkTx() SdkTransaction {
 
 fn makeNodeTx(allocator: std.mem.Allocator) !NodeTransaction {
     return .{
-        .sender = [_]u8{0xAB} ** 32,
+        .sender = @as([32]u8, @splat(0xAB)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "transfer"),
         .gas_budget = 1000,
@@ -41,7 +41,7 @@ test "sdk-protocol: SdkTransaction digest matches node Transaction digest" {
 
 test "sdk-protocol: digest changes with gas_budget and sequence" {
     const tx1 = SdkTransaction{
-        .sender = [_]u8{0x01} ** 32,
+        .sender = @as([32]u8, @splat(0x01)),
         .inputs = &.{},
         .program = "noop",
         .gas_budget = 100,

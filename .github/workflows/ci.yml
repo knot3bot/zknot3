@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        zig-version: ["0.16.0"]
+        zig-version: ["0.17.0"]
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +39,7 @@ jobs:
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.16.0
+          version:  0.17.0
           cache: true
 
       - name: Build release

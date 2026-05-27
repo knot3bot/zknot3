@@ -60,7 +60,7 @@ test "TxnAdmission rejects when node is not running" {
         .sender_sequence = &std.AutoArrayHashMapUnmanaged([32]u8, u64).empty,
     };
     const tx = pipeline.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = &.{},
         .gas_budget = 1,
@@ -85,7 +85,7 @@ test "TxnAdmission classify duplicate transaction as duplicate decision" {
     var keypair = try @import("../property/crypto/Signature.zig").KeyPair.generate();
     defer keypair.deinit();
     var tx = pipeline.Transaction{
-        .sender = [_]u8{3} ** 32,
+        .sender = @as([32]u8, @splat(3)),
         .inputs = &.{},
         .program = &.{},
         .gas_budget = 100,

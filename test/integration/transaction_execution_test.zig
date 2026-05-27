@@ -42,8 +42,8 @@ test "Transaction: object store basic operations" {
     defer allocator.free(data);
     const obj = Object{
         .id = id,
-        .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
-        .ownership = root.core.Ownership.ownedBy([_]u8{0} ** 32),
+        .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
+        .ownership = root.core.Ownership.ownedBy(@as([32]u8, @splat(0))),
         .type_tag = 1,
         .data = data,
     };

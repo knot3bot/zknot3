@@ -137,11 +137,11 @@ pub fn tryCommitBatch(
 
 fn makeVote(voter_seed: u8, round: u64, digest: [32]u8) Mysticeti.Vote {
     return .{
-        .voter = [_]u8{voter_seed} ** 32,
+        .voter = @as([32]u8, @splat(voter_seed)),
         .stake = 1,
         .round = .{ .value = round },
         .block_digest = digest,
-        .signature = [_]u8{0} ** 64,
+        .signature = @as([64]u8, @splat(0)),
     };
 }
 
@@ -154,7 +154,7 @@ test "CommitCoordinator returns null when no block reaches quorum" {
     defer committed.deinit(allocator);
 
     const block = try Mysticeti.Block.create(
-        [_]u8{1} ** 32,
+        @as([32]u8, @splat(1)),
         .{ .value = 7 },
         "payload-a",
         &.{},
@@ -198,13 +198,13 @@ test "CommitCoordinator commits quorum block and invokes callback once" {
     defer committed.deinit(allocator);
 
     var block = try Mysticeti.Block.create(
-        [_]u8{2} ** 32,
+        @as([32]u8, @splat(2)),
         .{ .value = 11 },
         "payload-b",
         &.{},
         allocator,
     );
-    try block.votes.put(allocator, [_]u8{9} ** 32, makeVote(9, block.round.value, block.digest));
+    try block.votes.put(allocator, @as([32]u8, @splat(9)), makeVote(9, block.round.value, block.digest));
     try pending.put(allocator, block.digest, block);
 
     const Ctx = struct { called: usize = 0 };
@@ -281,13 +281,13 @@ test "tryCommitBatch drains up to max_batch, then stops on empty sweep" {
     for (0..3) |i| {
         const seed: u8 = @intCast(50 + i);
         var b = try Mysticeti.Block.create(
-            [_]u8{seed} ** 32,
+            @as([32]u8, @splat(seed)),
             .{ .value = @intCast(20 + i) },
             "payload-batch",
             &.{},
             allocator,
         );
-        try b.votes.put(allocator, [_]u8{seed} ** 32, makeVote(seed, b.round.value, b.digest));
+        try b.votes.put(allocator, @as([32]u8, @splat(seed)), makeVote(seed, b.round.value, b.digest));
         created_digests[i] = b.digest;
         try pending.put(allocator, b.digest, b);
     }

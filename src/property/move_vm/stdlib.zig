@@ -112,7 +112,7 @@ test "stdlib Coin join returns valid object" {
 
 test "stdlib Transfer and Event smoke tests" {
     const obj_id = core.ObjectID.hash("test-obj");
-    const recipient = [_]u8{2} ** 32;
+    const recipient = @as([32]u8, @splat(2));
 
     try Transfer.transferObject(obj_id, recipient);
     try Transfer.freezeObject(obj_id);

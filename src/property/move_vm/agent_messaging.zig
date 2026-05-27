@@ -158,8 +158,8 @@ test "AgentMessaging task lifecycle" {
     var am = try AgentMessaging.init(allocator);
     defer am.deinit();
 
-    const alice = [_]u8{1} ** 32;
-    const bob = [_]u8{2} ** 32;
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
 
     const msg_id = try am.createTask(alice, bob, "Design a logo for Project X", 500, 86400);
     try std.testing.expect(!msg_id.eql(core.ObjectID.zero));
@@ -175,8 +175,8 @@ test "AgentMessaging cancel and refund" {
     var am = try AgentMessaging.init(allocator);
     defer am.deinit();
 
-    const alice = [_]u8{1} ** 32;
-    const bob = [_]u8{2} ** 32;
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
 
     const msg_id = try am.createTask(alice, bob, "Write documentation", 300, 3600);
     const refund = try am.cancelTask(msg_id);

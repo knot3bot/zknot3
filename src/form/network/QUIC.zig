@@ -482,7 +482,7 @@ test "QUICTransport listen and connection" {
 
     // Get the actual port the listener was assigned
     if (transport.listener) |listener| {
-        // Server address not directly accessible in Zig 0.16.0
+        // Server address not directly accessible in Zig 0.17.0
         _ = listener;
     }
 

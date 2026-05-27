@@ -109,7 +109,7 @@ pub const Ownership = struct {
 };
 
 test "Ownership owned" {
-    const addr = [_]u8{0xAB} ** 32;
+    const addr = @as([32]u8, @splat(0xAB));
     const own = Ownership.ownedBy(addr);
 
     try std.testing.expect(own.tag == .Owned);

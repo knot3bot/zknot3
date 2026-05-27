@@ -167,13 +167,13 @@ test "Marketplace list and buy with royalty" {
     var mp = try Marketplace.init(allocator);
     defer mp.deinit();
 
-    const seller = [_]u8{1} ** 32;
+    const seller = @as([32]u8, @splat(1));
     const creation = core.ObjectID.hash("artwork-1");
 
     const list_id = try mp.list(seller, creation, 1000, "KNOT", 500); // 5% royalty
     try std.testing.expect(!list_id.eql(core.ObjectID.zero));
 
-    const buyer = [_]u8{2} ** 32;
+    const buyer = @as([32]u8, @splat(2));
     const result = try mp.buy(list_id, buyer);
     try std.testing.expectEqual(@as(u64, 50), result.royalty_amount); // 5% of 1000
     try std.testing.expectEqual(@as(u64, 1000), mp.total_volume);
@@ -184,12 +184,12 @@ test "Marketplace bid and accept" {
     var mp = try Marketplace.init(allocator);
     defer mp.deinit();
 
-    const seller = [_]u8{1} ** 32;
+    const seller = @as([32]u8, @splat(1));
     const creation = core.ObjectID.hash("artwork-2");
     const list_id = try mp.list(seller, creation, 2000, "KNOT", 300);
 
-    const bidder1 = [_]u8{2} ** 32;
-    const bidder2 = [_]u8{3} ** 32;
+    const bidder1 = @as([32]u8, @splat(2));
+    const bidder2 = @as([32]u8, @splat(3));
     _ = try mp.bid(list_id, bidder1, 1800, 3600);
     _ = try mp.bid(list_id, bidder2, 2200, 3600);
 

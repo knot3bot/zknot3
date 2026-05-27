@@ -146,7 +146,7 @@ pub fn benchLSMTreePutGet(iterations: u64) !BenchmarkResult {
 
 pub fn benchSignatureSignVerify(iterations: u64) !BenchmarkResult {
     const message: []const u8 = "benchmark_message_for_signature_testing";
-    const seed = [_]u8{0xAB} ** 32;
+    const seed = @as([32]u8, @splat(0xAB));
 
     const secret_key = Signature.generateSecretKey(seed);
     const public_key = Signature.derivePublicKey(secret_key);
@@ -200,8 +200,8 @@ pub fn benchInterpreterExecute(iterations: u64) !BenchmarkResult {
 }
 
 pub fn benchVersionCompare(iterations: u64) !BenchmarkResult {
-    const v1 = Versioned{ .seq = 100, .causal = [_]u8{1} ** 16 };
-    const v2 = Versioned{ .seq = 200, .causal = [_]u8{2} ** 16 };
+    const v1 = Versioned{ .seq = 100, .causal = @as([16]u8, @splat(1)) };
+    const v2 = Versioned{ .seq = 200, .causal = @as([16]u8, @splat(2)) };
 
     const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
     var i: u64 = 0;

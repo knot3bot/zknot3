@@ -129,7 +129,7 @@ pub const CipherState = struct {
         }
 
         // Build 12-byte nonce from counter
-        var nonce: [12]u8 = [_]u8{0} ** 12;
+        var nonce: [12]u8 = @as([12]u8, @splat(0));
         std.mem.writeIntLittle(u64, &nonce, self.n);
 
         // Seal (encrypt + authenticate)
@@ -153,7 +153,7 @@ pub const CipherState = struct {
         }
 
         // Build 12-byte nonce from counter
-        var nonce: [12]u8 = [_]u8{0} ** 12;
+        var nonce: [12]u8 = @as([12]u8, @splat(0));
         std.mem.writeIntLittle(u64, &nonce, self.n);
 
         const plaintext_len = ciphertext.len - 16;

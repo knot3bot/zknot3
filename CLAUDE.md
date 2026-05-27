@@ -303,3 +303,29 @@ Key settings:
 - `storage.data_dir`: Data directory
 - `network.p2p_enabled`: Enable P2P networking
 - `vm.max_gas_budget`: Maximum gas per transaction
+
+## Zig 0.17 Migration Notes (2026-05-28)
+
+### Breaking Change: `**` Array Repeat Operator Removed
+
+Zig 0.17 removed the `**` (array repeat) operator. All occurrences must be replaced with `@splat` and `@as`:
+
+**Before (Zig 0.15/0.16):**
+```zig
+const a: [32]u8 = .{0} ** 32;
+const b = [_]u8{1} ** 32;
+const c = [_]?*KBucket{null} ** BUCKET_COUNT;
+```
+
+**After (Zig 0.17):**
+```zig
+const a: [32]u8 = @as([32]u8, @splat(0));
+const b = @as([32]u8, @splat(1));
+const c = @as([BUCKET_COUNT]?*KBucket, @splat(null));
+```
+
+**Key rules:**
+- `@splat(val)` requires a known result type — use `@as([N]T, @splat(val))` when context doesn't provide it
+- When the result type is already known (e.g., `const a: [32]u8 = ...`), bare `@splat(val)` works
+- String repeat `"00" ** N` must be expanded to literal strings or use comptime helpers
+- Non-u8 element types (e.g., `?*T`) also use the same `@as([N]?*T, @splat(null))` pattern

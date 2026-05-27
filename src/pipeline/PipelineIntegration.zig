@@ -24,7 +24,7 @@ test "Pipeline: Ingress -> Executor -> Egress" {
     
     // Submit a transaction
     const tx = Transaction{
-        .sender = [_]u8{0x42} ** 32,
+        .sender = @as([32]u8, @splat(0x42)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "move_true"),
         .gas_budget = 1000,
@@ -49,8 +49,8 @@ test "Pipeline: Ingress -> Executor -> Egress" {
     
     // Create certificate
     const signatures = &[_]SignaturePair{
-        .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{0xAA} ** 64, .stake = 1500 },
-        .{ .validator = [_]u8{2} ** 32, .signature = [_]u8{0xBB} ** 64, .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(1)), .signature = @as([64]u8, @splat(0xAA)), .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(2)), .signature = @as([64]u8, @splat(0xBB)), .stake = 1500 },
     };
     
     const cert = try egress.aggregate(execution, signatures);
@@ -76,7 +76,7 @@ test "Pipeline: Multiple transactions batch execution" {
     const num_txs = 5;
     for (0..num_txs) |i| {
         const tx = Transaction{
-            .sender = [_]u8{@intCast(i)} ** 32,
+            .sender = @as([32]u8, @splat(@intCast(i))),
             .inputs = &.{},
             .program = try allocator.dupe(u8, "nop"),
             .gas_budget = 1000,
@@ -115,7 +115,7 @@ test "Pipeline: Transaction digest consistency" {
     const allocator = std.testing.allocator;
     
     const tx = Transaction{
-        .sender = [_]u8{0xAB} ** 32,
+        .sender = @as([32]u8, @splat(0xAB)),
         .inputs = &.{},
         .program = "test_program",
         .gas_budget = 5000,
@@ -144,7 +144,7 @@ test "Pipeline: Egress quorum validation" {
     defer egress.deinit(allocator);
     
     const execution = Executor.ExecutionResult{
-        .digest = [_]u8{0xDE} ** 32,
+        .digest = @as([32]u8, @splat(0xDE)),
         .status = .success,
         .gas_used = 100,
         .output_objects = &.{},
@@ -153,7 +153,7 @@ test "Pipeline: Egress quorum validation" {
     
     // Insufficient stake should fail
     const low_stake_sigs = &[_]SignaturePair{
-        .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{1} ** 64, .stake = 1000 },
+        .{ .validator = @as([32]u8, @splat(1)), .signature = @as([64]u8, @splat(1)), .stake = 1000 },
     };
     
     const result = egress.aggregate(execution, low_stake_sigs);
@@ -161,8 +161,8 @@ test "Pipeline: Egress quorum validation" {
     
     // Sufficient stake should succeed
     const sufficient_sigs = &[_]SignaturePair{
-        .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{1} ** 64, .stake = 1500 },
-        .{ .validator = [_]u8{2} ** 32, .signature = [_]u8{2} ** 64, .stake = 1000 },
+        .{ .validator = @as([32]u8, @splat(1)), .signature = @as([64]u8, @splat(1)), .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(2)), .signature = @as([64]u8, @splat(2)), .stake = 1000 },
     };
     
     const cert = try egress.aggregate(execution, sufficient_sigs);
@@ -176,7 +176,7 @@ test "Pipeline: Certificate signature verification" {
     defer egress.deinit(allocator);
     
     const execution = Executor.ExecutionResult{
-        .digest = [_]u8{0xAD} ** 32,
+        .digest = @as([32]u8, @splat(0xAD)),
         .status = .success,
         .gas_used = 50,
         .output_objects = &.{},
@@ -184,8 +184,8 @@ test "Pipeline: Certificate signature verification" {
     };
     
     const signatures = &[_]SignaturePair{
-        .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{0xFF} ** 64, .stake = 2000 },
-        .{ .validator = [_]u8{2} ** 32, .signature = [_]u8{0xFE} ** 64, .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(1)), .signature = @as([64]u8, @splat(0xFF)), .stake = 2000 },
+        .{ .validator = @as([32]u8, @splat(2)), .signature = @as([64]u8, @splat(0xFE)), .stake = 1500 },
     };
     
     const cert = try egress.aggregate(execution, signatures);
@@ -205,10 +205,10 @@ test "Pipeline: Ingress backpressure" {
     defer ingress.deinit(allocator);
     
     // First two should succeed
-    try ingress.submit(.{ .sender = [_]u8{1} ** 32, .inputs = &.{}, .program = "a", .gas_budget = 1000, .sequence = 1 });
-    try ingress.submit(.{ .sender = [_]u8{2} ** 32, .inputs = &.{}, .program = "b", .gas_budget = 1000, .sequence = 2 });
+    try ingress.submit(.{ .sender = @as([32]u8, @splat(1)), .inputs = &.{}, .program = "a", .gas_budget = 1000, .sequence = 1 });
+    try ingress.submit(.{ .sender = @as([32]u8, @splat(2)), .inputs = &.{}, .program = "b", .gas_budget = 1000, .sequence = 2 });
     
     // Third should fail
-    const result = ingress.submit(.{ .sender = [_]u8{3} ** 32, .inputs = &.{}, .program = "c", .gas_budget = 1000, .sequence = 3 });
+    const result = ingress.submit(.{ .sender = @as([32]u8, @splat(3)), .inputs = &.{}, .program = "c", .gas_budget = 1000, .sequence = 3 });
     try std.testing.expect(result == error.TooManyPending);
 }

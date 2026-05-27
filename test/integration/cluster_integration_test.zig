@@ -9,7 +9,7 @@ const Executor = root.pipeline.Executor;
 const Ingress = root.pipeline.Ingress;
 
 fn makeValidatorId(i: u8) [32]u8 {
-    return [_]u8{i} ** 32;
+    return @as([32]u8, @splat(i));
 }
 
 fn createTestQuorum(allocator: std.mem.Allocator) !*Quorum {

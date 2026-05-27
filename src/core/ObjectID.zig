@@ -13,7 +13,7 @@ pub const ObjectID = struct {
     const Self = @This();
 
     /// Zero element (identity for XOR group)
-    pub const zero: Self = .{ .bytes = [_]u8{0} ** 32 };
+    pub const zero: Self = .{ .bytes = @as([32]u8, @splat(0)) };
 
     /// Compute BLAKE3-256 hash and create ObjectID
     pub fn hash(data: []const u8) Self {

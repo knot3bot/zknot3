@@ -359,8 +359,8 @@ pub const DashboardHandler = struct {
         // Stable sort by digest desc (wire has no timestamp).
         std.mem.sort(TxnInfo, txns.items, {}, struct {
             fn lt(_: void, a: TxnInfo, b: TxnInfo) bool {
-                var da: [32]u8 = .{0} ** 32;
-                var db: [32]u8 = .{0} ** 32;
+                var da: [32]u8 = @as([32]u8, @splat(0));
+                var db: [32]u8 = @as([32]u8, @splat(0));
                 _ = std.fmt.hexToBytes(&da, a.hash) catch {};
                 _ = std.fmt.hexToBytes(&db, b.hash) catch {};
                 return digestLtDesc(da, db);
@@ -371,7 +371,7 @@ pub const DashboardHandler = struct {
         var start: usize = 0;
         if (cursor_digest) |c| {
             while (start < txns.items.len) : (start += 1) {
-                var d: [32]u8 = .{0} ** 32;
+                var d: [32]u8 = @as([32]u8, @splat(0));
                 _ = std.fmt.hexToBytes(&d, txns.items[start].hash) catch {};
                 // In desc order, skip until digest is strictly < cursor (i.e. order != .gt and != .eq)
                 if (std.mem.order(u8, &d, &c) == .lt) break;

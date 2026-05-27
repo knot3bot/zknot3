@@ -150,8 +150,8 @@ test "DependencyGraph no overlap => single batch" {
     const allocator = std.testing.allocator;
 
     const txs = &[_]Ingress.Transaction{
-        .{ .sender = [_]u8{1} ** 32, .inputs = &.{core.ObjectID.fromBytes(&[_]u8{1} ** 32)}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = [_]u8{2} ** 32, .inputs = &.{core.ObjectID.fromBytes(&[_]u8{2} ** 32)}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{core.ObjectID.fromBytes(&@as([32]u8, @splat(1)))}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{core.ObjectID.fromBytes(&@as([32]u8, @splat(2)))}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
     };
 
     var graph = try DependencyGraph.init(allocator, txs);
@@ -169,11 +169,11 @@ test "DependencyGraph no overlap => single batch" {
 
 test "DependencyGraph overlap => two batches" {
     const allocator = std.testing.allocator;
-    const shared = core.ObjectID.fromBytes(&[_]u8{0xAA} ** 32);
+    const shared = core.ObjectID.fromBytes(&@as([32]u8, @splat(0xAA)));
 
     const txs = &[_]Ingress.Transaction{
-        .{ .sender = [_]u8{1} ** 32, .inputs = &.{shared}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = [_]u8{2} ** 32, .inputs = &.{shared}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{shared}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{shared}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
     };
 
     var graph = try DependencyGraph.init(allocator, txs);
@@ -195,13 +195,13 @@ test "DependencyGraph overlap => two batches" {
 
 test "DependencyGraph chain of overlaps" {
     const allocator = std.testing.allocator;
-    const id_a = core.ObjectID.fromBytes(&[_]u8{0xAA} ** 32);
-    const id_b = core.ObjectID.fromBytes(&[_]u8{0xBB} ** 32);
+    const id_a = core.ObjectID.fromBytes(&@as([32]u8, @splat(0xAA)));
+    const id_b = core.ObjectID.fromBytes(&@as([32]u8, @splat(0xBB)));
 
     const txs = &[_]Ingress.Transaction{
-        .{ .sender = [_]u8{1} ** 32, .inputs = &.{id_a}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = [_]u8{2} ** 32, .inputs = &.{id_a, id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = [_]u8{3} ** 32, .inputs = &.{id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{id_a}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{id_a, id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(3)), .inputs = &.{id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
     };
 
     var graph = try DependencyGraph.init(allocator, txs);

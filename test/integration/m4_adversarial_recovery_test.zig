@@ -28,7 +28,7 @@ fn cleanupDataDir(data_dir: []const u8) void {
 fn newTestNode(allocator: std.mem.Allocator, data_dir: []const u8) !struct { node: *Node, cfg: *Config } {
     const cfg = try allocator.create(Config);
     cfg.* = Config.default();
-    const seed = [_]u8{0x6E} ** 32;
+    const seed = @as([32]u8, @splat(0x6E));
     cfg.authority.signing_key = seed;
     cfg.authority.stake = 1_000_000_000;
     cfg.storage.data_dir = data_dir;
@@ -44,12 +44,12 @@ test "M4 adversarial: duplicate validator_id entries in proof wire do not inflat
 
     const state_root = try mgr.computeStateRoot();
     const seq: u64 = 11;
-    const object_id = [_]u8{0xEE} ** 32;
+    const object_id = @as([32]u8, @splat(0xEE));
     const msg = MainnetExtensionHooks.m4ProofSigningMessage(state_root, seq, object_id);
 
-    const s1 = [_]u8{0x11} ** 32;
-    const s2 = [_]u8{0x22} ** 32;
-    const s3 = [_]u8{0x33} ** 32;
+    const s1 = @as([32]u8, @splat(0x11));
+    const s2 = @as([32]u8, @splat(0x22));
+    const s3 = @as([32]u8, @splat(0x33));
 
     var v1 = try Validator.create((try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s1)).public_key.toBytes(), 400, "a", allocator);
     defer v1.deinit(allocator);
@@ -91,7 +91,7 @@ test "M4 adversarial: replayWalExtension rejects malformed equivocation WAL payl
     defer mgr.deinit();
 
     try std.testing.expectError(error.InvalidWalPayload, mgr.replayWalExtension(wal_mod.WalRecordType.m4_equivocation_evidence, "short"));
-    try std.testing.expectError(error.InvalidWalPayload, mgr.replayWalExtension(wal_mod.WalRecordType.m4_equivocation_evidence, "m4e1" ++ [_]u8{0} ** 10));
+    try std.testing.expectError(error.InvalidWalPayload, mgr.replayWalExtension(wal_mod.WalRecordType.m4_equivocation_evidence, "m4e1" ++ @as([10]u8, @splat(0))));
 }
 
 test "M4 recovery: recoverFromDisk then replayMainnetM4Wal restores M4 totals" {
@@ -101,8 +101,8 @@ test "M4 recovery: recoverFromDisk then replayMainnetM4Wal restores M4 totals" {
     defer cleanupDataDir(data_dir);
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const validator = [_]u8{0xC1} ** 32;
-    const delegator = [_]u8{0xC2} ** 32;
+    const validator = @as([32]u8, @splat(0xC1));
+    const delegator = @as([32]u8, @splat(0xC2));
 
     {
         const h = try newTestNode(allocator, data_dir);

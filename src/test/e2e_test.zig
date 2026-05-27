@@ -94,7 +94,7 @@ test "E2E: Transaction execution via Node" {
     defer allocator.free(program);
 
     const tx = Transaction{
-        .sender = [_]u8{0x42} ** 32,
+        .sender = @as([32]u8, @splat(0x42)),
         .inputs = &.{},
         .program = program,
         .gas_budget = 1000,
@@ -125,7 +125,7 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     defer allocator.free(program);
 
     const tx = Transaction{
-        .sender = [_]u8{0x01} ** 32,
+        .sender = @as([32]u8, @splat(0x01)),
         .inputs = &.{},
         .program = program,
         .gas_budget = 1000,
@@ -144,8 +144,8 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     try std.testing.expect(execution.status == .success);
 
     const signatures = &[_]SignaturePair{
-        .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{0xAA} ** 64, .stake = 1500 },
-        .{ .validator = [_]u8{2} ** 32, .signature = [_]u8{0xBB} ** 64, .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(1)), .signature = @as([64]u8, @splat(0xAA)), .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(2)), .signature = @as([64]u8, @splat(0xBB)), .stake = 1500 },
     };
 
     const cert = try egress.aggregate(execution, signatures);
@@ -177,7 +177,7 @@ test "E2E: Batch transaction execution via Node" {
     for (0..num_txs) |i| {
         programs[i] = try allocator.dupe(u8, "batch_test");
         txs[i] = Transaction{
-            .sender = [_]u8{@intCast(i)} ** 32,
+            .sender = @as([32]u8, @splat(@intCast(i))),
             .inputs = &.{},
             .program = programs[i],
             .gas_budget = 1000,

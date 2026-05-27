@@ -49,7 +49,7 @@ test "TxnPoolCoordinator stats and pending count" {
     defer pool.deinit();
 
     var tx = pipeline.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = try allocator.alloc(core.ObjectID, 0),
         .program = try allocator.dupe(u8, "coord-test"),
         .gas_budget = 1000,
@@ -76,7 +76,7 @@ test "TxnPoolCoordinator metricsSnapshot races cleanly vs writer thread" {
         fn writer(ctx: *@This()) void {
             var i: usize = 0;
             while (i < ctx.iterations) : (i += 1) {
-                var sender_id: [32]u8 = [_]u8{0} ** 32;
+                var sender_id: [32]u8 = @as([32]u8, @splat(0));
                 std.mem.writeInt(u64, sender_id[0..8], @intCast(i), .little);
                 var tx = pipeline.Transaction{
                     .sender = sender_id,
@@ -121,7 +121,7 @@ test "TxnPoolCoordinator cleanupExpiredTransactions removes expired txs" {
     defer pool.deinit();
 
     var tx = pipeline.Transaction{
-        .sender = [_]u8{2} ** 32,
+        .sender = @as([32]u8, @splat(2)),
         .inputs = try allocator.alloc(core.ObjectID, 0),
         .program = try allocator.dupe(u8, "coord-expire"),
         .gas_budget = 1000,

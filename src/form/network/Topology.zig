@@ -163,7 +163,7 @@ test "Topology quorum" {
     // Add 4 validators with equal stake
     for (0..4) |i| {
         _ = try topo.addValidator(.{
-            .id = [_]u8{@intCast(i)} ** 32,
+            .id = @as([32]u8, @splat(@intCast(i))),
             .stake = 1000,
             .network_address = "",
             .is_active = true,
@@ -181,7 +181,7 @@ test "Topology path finding" {
     // Linear chain: 0 -> 1 -> 2 -> 3
     for (0..3) |i| {
         _ = try topo.addValidator(.{
-            .id = [_]u8{@intCast(i)} ** 32,
+            .id = @as([32]u8, @splat(@intCast(i))),
             .stake = 1000,
             .network_address = "",
             .is_active = true,

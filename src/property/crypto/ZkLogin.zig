@@ -97,7 +97,7 @@ pub fn agentIdentity(provider: OAuthIssuer, subject: []const u8, allocator: std.
 }
 
 test "deriveAddress deterministic" {
-    const pk = [_]u8{1} ** 32;
+    const pk = @as([32]u8, @splat(1));
     const a1 = deriveAddress("https://accounts.google.com", "user123", pk);
     const a2 = deriveAddress("https://accounts.google.com", "user123", pk);
     try std.testing.expect(std.mem.eql(u8, &a1, &a2));

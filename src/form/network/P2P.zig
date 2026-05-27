@@ -369,7 +369,7 @@ pub fn createPeerID(public_key: [32]u8) [32]u8 {
 
 test "Peer creation" {
     const peer = Peer{
-        .id = [_]u8{1} ** 32,
+        .id = @as([32]u8, @splat(1)),
         .address = "127.0.0.1",
         .port = 8083,
         .is_outbound = true,
@@ -386,12 +386,12 @@ test "PeerManager with Kademlia routing" {
     var transport = try Transport.Transport.init(allocator, .{});
     defer transport.deinit();
 
-    const peer_id = [_]u8{1} ** 32;
+    const peer_id = @as([32]u8, @splat(1));
     var pm = try PeerManager.init(allocator, transport, peer_id);
     defer pm.deinit();
 
     const peer = Peer{
-        .id = [_]u8{2} ** 32,
+        .id = @as([32]u8, @splat(2)),
         .address = "127.0.0.1",
         .port = 8083,
         .is_outbound = true,

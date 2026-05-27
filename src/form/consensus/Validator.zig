@@ -234,7 +234,7 @@ pub const ValidatorSet = struct {
 test "Validator creation" {
     const allocator = std.testing.allocator;
 
-    const pk = [_]u8{1} ** 32;
+    const pk = @as([32]u8, @splat(1));
     var validator = try Validator.create(pk, 1000, "TestValidator", allocator);
     defer validator.deinit(allocator);
 
@@ -247,8 +247,8 @@ test "ValidatorSet operations" {
     var set = try ValidatorSet.init(allocator);
     defer set.deinit();
 
-    const pk1 = [_]u8{1} ** 32;
-    const pk2 = [_]u8{2} ** 32;
+    const pk1 = @as([32]u8, @splat(1));
+    const pk2 = @as([32]u8, @splat(2));
 
     const v1 = try Validator.create(pk1, 1000, "Validator1", allocator);
     const v2 = try Validator.create(pk2, 2000, "Validator2", allocator);
@@ -265,9 +265,9 @@ test "ValidatorSet top N" {
     var set = try ValidatorSet.init(allocator);
     defer set.deinit();
 
-    const pk1 = [_]u8{1} ** 32;
-    const pk2 = [_]u8{2} ** 32;
-    const pk3 = [_]u8{3} ** 32;
+    const pk1 = @as([32]u8, @splat(1));
+    const pk2 = @as([32]u8, @splat(2));
+    const pk3 = @as([32]u8, @splat(3));
 
     const v1 = try Validator.create(pk1, 1000, "V1", allocator);
     const v2 = try Validator.create(pk2, 3000, "V2", allocator);

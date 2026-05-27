@@ -51,7 +51,7 @@ test "ObjectStoreCoordinator put/get/delete roundtrip" {
 
     var object = ObjectStore.Object{
         .id = core.ObjectID.hash("coordinator-object"),
-        .version = core.Version{ .seq = 1, .causal = [_]u8{0} ** 16 },
+        .version = core.Version{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
         .ownership = core.Ownership.immutable(),
         .data = try allocator.dupe(u8, "payload"),
         .type_tag = 1,

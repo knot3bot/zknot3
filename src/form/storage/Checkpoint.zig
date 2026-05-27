@@ -232,7 +232,7 @@ pub const Checkpoint = struct {
             if (sibling_idx < level.len) {
                 try proof.append(level[sibling_idx]);
             } else {
-                try proof.append([_]u8{0} ** 32); // padding for odd leaf
+                try proof.append(@as([32]u8, @splat(0))); // padding for odd leaf
             }
             idx /= 2;
 
@@ -263,7 +263,7 @@ pub const Checkpoint = struct {
 /// Compute Merkle root from object changes (for verification)
 pub fn verifyStateRoot(changes: []const Checkpoint.ObjectChange, allocator: std.mem.Allocator) ![32]u8 {
     if (changes.len == 0) {
-        return [_]u8{0} ** 32;
+        return @as([32]u8, @splat(0));
     }
 
     var level = try allocator.alloc([32]u8, changes.len);
@@ -292,7 +292,7 @@ pub fn verifyStateRoot(changes: []const Checkpoint.ObjectChange, allocator: std.
             if (right < level.len) {
                 ctx.update(&level[right]);
             } else {
-                ctx.update(&[_]u8{0} ** 32);
+                ctx.update(&@as([32]u8, @splat(0)));
             }
 
             ctx.final(&next_level[i]);
@@ -320,7 +320,7 @@ pub const CheckpointSequence = struct {
     pub fn init() Self {
         return .{
             .current = 0,
-            .initial_digest = [_]u8{0} ** 32,
+            .initial_digest = @as([32]u8, @splat(0)),
         };
     }
 
@@ -386,14 +386,14 @@ test "Checkpoint creation" {
     const changes = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("obj1"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
 
     var cp = try Checkpoint.create(
         1,
-        [_]u8{0} ** 32,
+        @as([32]u8, @splat(0)),
         &changes,
         allocator,
     );
@@ -414,14 +414,14 @@ test "Checkpoint digest" {
     const changes = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("obj1"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
 
     var cp = try Checkpoint.create(
         1,
-        [_]u8{0} ** 32,
+        @as([32]u8, @splat(0)),
         &changes,
         allocator,
     );
@@ -438,12 +438,12 @@ test "Checkpoint verify state root" {
     const changes = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("obj1"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
 
-    var cp = try Checkpoint.create(1, [_]u8{0} ** 32, &changes, allocator);
+    var cp = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes, allocator);
     defer cp.deinit(allocator);
 
     // Verify should pass with no previous checkpoint and no validator set
@@ -457,22 +457,22 @@ test "Checkpoint verify fails on previous digest mismatch" {
     const changes_prev = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("obj_prev"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
-    var prev = try Checkpoint.create(7, [_]u8{0} ** 32, &changes_prev, allocator);
+    var prev = try Checkpoint.create(7, @as([32]u8, @splat(0)), &changes_prev, allocator);
     defer prev.deinit(allocator);
 
     const changes_cur = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("obj_cur"),
-            .version = .{ .seq = 2, .causal = [_]u8{1} ** 16 },
+            .version = .{ .seq = 2, .causal = @as([16]u8, @splat(1)) },
             .status = .modified,
         },
     };
     // Intentionally wrong previous digest.
-    var current = try Checkpoint.create(8, [_]u8{9} ** 32, &changes_cur, allocator);
+    var current = try Checkpoint.create(8, @as([32]u8, @splat(9)), &changes_cur, allocator);
     defer current.deinit(allocator);
 
     const is_valid = try current.verify(allocator, &prev, null, null);
@@ -485,17 +485,17 @@ test "Checkpoint verify fails on non-continuous sequence" {
     const changes_prev = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("seq_prev"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
-    var prev = try Checkpoint.create(11, [_]u8{0} ** 32, &changes_prev, allocator);
+    var prev = try Checkpoint.create(11, @as([32]u8, @splat(0)), &changes_prev, allocator);
     defer prev.deinit(allocator);
 
     const changes_cur = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("seq_cur"),
-            .version = .{ .seq = 2, .causal = [_]u8{2} ** 16 },
+            .version = .{ .seq = 2, .causal = @as([16]u8, @splat(2)) },
             .status = .modified,
         },
     };
@@ -510,15 +510,15 @@ test "Checkpoint digest binds object_changes" {
     const allocator = std.testing.allocator;
 
     const changes_a = [_]Checkpoint.ObjectChange{
-        .{ .id = core.ObjectID.hash("obj_a"), .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 }, .status = .created },
+        .{ .id = core.ObjectID.hash("obj_a"), .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) }, .status = .created },
     };
     const changes_b = [_]Checkpoint.ObjectChange{
-        .{ .id = core.ObjectID.hash("obj_b"), .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 }, .status = .created },
+        .{ .id = core.ObjectID.hash("obj_b"), .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) }, .status = .created },
     };
 
-    var cp_a = try Checkpoint.create(1, [_]u8{0} ** 32, &changes_a, allocator);
+    var cp_a = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes_a, allocator);
     defer cp_a.deinit(allocator);
-    var cp_b = try Checkpoint.create(1, [_]u8{0} ** 32, &changes_b, allocator);
+    var cp_b = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes_b, allocator);
     defer cp_b.deinit(allocator);
 
     const dig_a = try cp_a.digest(allocator);
@@ -535,17 +535,17 @@ test "Checkpoint verify accepts BLS quorum over signingCommitment" {
     const changes = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("bls_obj"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
 
-    var cp = try Checkpoint.create(1, [_]u8{0} ** 32, &changes, allocator);
+    var cp = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes, allocator);
     defer cp.deinit(allocator);
 
-    const sk1 = [_]u8{0x31} ** 32;
-    const sk2 = [_]u8{0x32} ** 32;
-    const sk3 = [_]u8{0x33} ** 32;
+    const sk1 = @as([32]u8, @splat(0x31));
+    const sk2 = @as([32]u8, @splat(0x32));
+    const sk3 = @as([32]u8, @splat(0x33));
     const msg = try cp.signingCommitment(allocator);
     const sig1 = Bls.sign(sk1, &msg);
     const sig2 = Bls.sign(sk2, &msg);
@@ -573,15 +573,15 @@ test "Checkpoint verify rejects BLS bitmap below quorum threshold" {
     const changes = [_]Checkpoint.ObjectChange{
         .{
             .id = core.ObjectID.hash("bls_obj_low"),
-            .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
             .status = .created,
         },
     };
 
-    var cp = try Checkpoint.create(1, [_]u8{0} ** 32, &changes, allocator);
+    var cp = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes, allocator);
     defer cp.deinit(allocator);
 
-    const sk1 = [_]u8{0x41} ** 32;
+    const sk1 = @as([32]u8, @splat(0x41));
     const msg = try cp.signingCommitment(allocator);
     cp.bls_signature = Bls.aggregateSig(&[_]Bls.Signature{Bls.sign(sk1, &msg)});
     const bitmap = [_]u8{ 1, 0, 0 };
@@ -589,9 +589,9 @@ test "Checkpoint verify rejects BLS bitmap below quorum threshold" {
 
     const vset = BlsValidatorSet{
         .validators = &[_]BlsValidator{
-            .{ .validator_id = [_]u8{0x01} ** 32, .public_key = Bls.derivePublicKey(sk1), .voting_power = 400 },
-            .{ .validator_id = [_]u8{0x02} ** 32, .public_key = Bls.derivePublicKey([_]u8{0x42} ** 32), .voting_power = 400 },
-            .{ .validator_id = [_]u8{0x03} ** 32, .public_key = Bls.derivePublicKey([_]u8{0x43} ** 32), .voting_power = 400 },
+            .{ .validator_id = @as([32]u8, @splat(0x01)), .public_key = Bls.derivePublicKey(sk1), .voting_power = 400 },
+            .{ .validator_id = @as([32]u8, @splat(0x02)), .public_key = Bls.derivePublicKey(@as([32]u8, @splat(0x42))), .voting_power = 400 },
+            .{ .validator_id = @as([32]u8, @splat(0x03)), .public_key = Bls.derivePublicKey(@as([32]u8, @splat(0x43))), .voting_power = 400 },
         },
     };
 
@@ -607,7 +607,7 @@ test "CheckpointSequence save and load roundtrip" {
 
     var seq = CheckpointSequence.init();
     seq.current = 42;
-    seq.initial_digest = [_]u8{0xAB} ** 32;
+    seq.initial_digest = @as([32]u8, @splat(0xAB));
     try seq.save(path);
 
     const loaded = try CheckpointSequence.load(path);
@@ -626,13 +626,13 @@ test "CheckpointSequence load missing file returns init" {
 test "Checkpoint state root determinism" {
     const allocator = std.testing.allocator;
     const changes = [_]Checkpoint.ObjectChange{
-        .{ .id = .{ .bytes = [_]u8{1} ** 32 }, .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 }, .status = .created },
-        .{ .id = .{ .bytes = [_]u8{2} ** 32 }, .version = .{ .seq = 2, .causal = [_]u8{0} ** 16 }, .status = .modified },
-        .{ .id = .{ .bytes = [_]u8{3} ** 32 }, .version = .{ .seq = 3, .causal = [_]u8{0} ** 16 }, .status = .deleted },
+        .{ .id = .{ .bytes = @as([32]u8, @splat(1)) }, .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) }, .status = .created },
+        .{ .id = .{ .bytes = @as([32]u8, @splat(2)) }, .version = .{ .seq = 2, .causal = @as([16]u8, @splat(0)) }, .status = .modified },
+        .{ .id = .{ .bytes = @as([32]u8, @splat(3)) }, .version = .{ .seq = 3, .causal = @as([16]u8, @splat(0)) }, .status = .deleted },
     };
 
     const root1 = try verifyStateRoot(&changes, allocator);
     const root2 = try verifyStateRoot(&changes, allocator);
     try std.testing.expect(std.mem.eql(u8, &root1, &root2));
-    try std.testing.expect(!std.mem.eql(u8, &root1, &([_]u8{0} ** 32)));
+    try std.testing.expect(!std.mem.eql(u8, &root1, &(@as([32]u8, @splat(0)))));
 }

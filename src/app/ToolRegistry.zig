@@ -350,7 +350,7 @@ test "Tool registration" {
     var registry = ToolRegistry.init(allocator);
     defer _ = registry.deinit();
     
-    const owner = [_]u8{0x42} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
     var tool = Tool.register(
         "transfer",
         "knot3",
@@ -372,7 +372,7 @@ test "Tool invocation validity" {
     var invocation = ToolInvocation{
         .id = ObjectID.hash("inv"),
         .tool_id = tool_id,
-        .caller = [_]u8{0x55} ** 32,
+        .caller = @as([32]u8, @splat(0x55)),
         .session_id = null,
         .parameters = "{\"amount\": 100}",
         .gas_offered = 1000,
@@ -391,8 +391,8 @@ test "Tool result creation" {
 
 test "ToolPermission validity" {
     const tool_id = ObjectID.hash("tool");
-    const grantee = [_]u8{0x55} ** 32;
-    const granted_by = [_]u8{0x42} ** 32;
+    const grantee = @as([32]u8, @splat(0x55));
+    const granted_by = @as([32]u8, @splat(0x42));
     
     var perm = ToolPermission.grant(tool_id, grantee, granted_by, 5000);
     try std.testing.expect(perm.isValid());

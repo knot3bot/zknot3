@@ -471,7 +471,7 @@ test "RPC m4 methods call node mainnet hooks" {
     const config = try allocator.create(Config);
     defer allocator.destroy(config);
     config.* = Config.default();
-    config.authority.signing_key = [_]u8{0x22} ** 32;
+    config.authority.signing_key = @as([32]u8, @splat(0x22));
     config.authority.stake = 1_000_000_000;
 
     const node = try Node.init(allocator, config, NodeDependencies{});

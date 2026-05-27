@@ -132,7 +132,7 @@ test "StakePool basic operations" {
     var pool = try StakePool.init(allocator);
     defer pool.deinit();
 
-    const validator = [_]u8{1} ** 32;
+    const validator = @as([32]u8, @splat(1));
 
     try pool.addStake(validator, 1000, true);
     try std.testing.expect(pool.getTotalStake() == 1000);
@@ -149,7 +149,7 @@ test "StakePool delegated stake tracking" {
     var pool = try StakePool.init(allocator);
     defer pool.deinit();
 
-    const validator = [_]u8{1} ** 32;
+    const validator = @as([32]u8, @splat(1));
 
     try pool.addStake(validator, 500, true);
     try pool.addStake(validator, 300, false); // delegated
@@ -170,7 +170,7 @@ test "StakePool quorum threshold" {
 
     // Add 4 validators with 1000 each
     for (0..4) |i| {
-        try pool.addStake([_]u8{@intCast(i)} ** 32, 1000, true);
+        try pool.addStake(@as([32]u8, @splat(@intCast(i))), 1000, true);
     }
 
     // Total = 4000, quorum = 4000*2/3 + 1 = 2667
@@ -185,7 +185,7 @@ test "StakePool overflow detection" {
     var pool = try StakePool.init(allocator);
     defer pool.deinit();
 
-    const validator = [_]u8{1} ** 32;
+    const validator = @as([32]u8, @splat(1));
 
     // Add near-max stake
     try pool.addStake(validator, std.math.maxInt(u128), true);
@@ -198,7 +198,7 @@ test "StakePool insufficient stake error" {
     var pool = try StakePool.init(allocator);
     defer pool.deinit();
 
-    const validator = [_]u8{1} ** 32;
+    const validator = @as([32]u8, @splat(1));
 
     try std.testing.expectError(error.InsufficientStake, pool.removeStake(validator, 100, true));
 }

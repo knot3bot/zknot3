@@ -22,7 +22,7 @@ fn decodeSig(sig_bytes: Signature) ?blst.P2_Affine {
 pub fn derivePublicKey(seed: SecretKey) PublicKey {
     var sk: blst.SecretKey = .{};
     sk.keygen(&seed, null);
-    const pk = blst.P1.from(&sk) catch return [_]u8{0} ** 48;
+    const pk = blst.P1.from(&sk) catch return @as([48]u8, @splat(0));
     return pk.compress();
 }
 
@@ -34,25 +34,25 @@ pub fn sign(seed: SecretKey, message: []const u8) Signature {
 }
 
 pub fn aggregatePk(pubkeys: []const PublicKey) PublicKey {
-    if (pubkeys.len == 0) return [_]u8{0} ** 48;
-    const first_affine = decodePk(pubkeys[0]) orelse return [_]u8{0} ** 48;
+    if (pubkeys.len == 0) return @as([48]u8, @splat(0));
+    const first_affine = decodePk(pubkeys[0]) orelse return @as([48]u8, @splat(0));
     var acc = first_affine.to_jacobian();
     var i: usize = 1;
     while (i < pubkeys.len) : (i += 1) {
-        const next_affine = decodePk(pubkeys[i]) orelse return [_]u8{0} ** 48;
-        acc.aggregate(&next_affine) catch return [_]u8{0} ** 48;
+        const next_affine = decodePk(pubkeys[i]) orelse return @as([48]u8, @splat(0));
+        acc.aggregate(&next_affine) catch return @as([48]u8, @splat(0));
     }
     return acc.to_affine().compress();
 }
 
 pub fn aggregateSig(signatures: []const Signature) Signature {
-    if (signatures.len == 0) return [_]u8{0} ** 96;
-    const first_affine = decodeSig(signatures[0]) orelse return [_]u8{0} ** 96;
+    if (signatures.len == 0) return @as([96]u8, @splat(0));
+    const first_affine = decodeSig(signatures[0]) orelse return @as([96]u8, @splat(0));
     var acc = first_affine.to_jacobian();
     var i: usize = 1;
     while (i < signatures.len) : (i += 1) {
-        const next_affine = decodeSig(signatures[i]) orelse return [_]u8{0} ** 96;
-        acc.aggregate(&next_affine) catch return [_]u8{0} ** 96;
+        const next_affine = decodeSig(signatures[i]) orelse return @as([96]u8, @splat(0));
+        acc.aggregate(&next_affine) catch return @as([96]u8, @splat(0));
     }
     return acc.to_affine().compress();
 }
@@ -65,7 +65,7 @@ pub fn verifyAggregated(message: []const u8, aggregated_pk: PublicKey, aggregate
 
 
 test "BLS sign and verify single" {
-    const sk = [_]u8{0x31} ** 32;
+    const sk = @as([32]u8, @splat(0x31));
     const pk = derivePublicKey(sk);
     const msg = "hello";
     const sig = sign(sk, msg);
@@ -73,8 +73,8 @@ test "BLS sign and verify single" {
 }
 
 test "BLS aggregate sign and verify" {
-    const sk1 = [_]u8{0x31} ** 32;
-    const sk2 = [_]u8{0x32} ** 32;
+    const sk1 = @as([32]u8, @splat(0x31));
+    const sk2 = @as([32]u8, @splat(0x32));
     const pk1 = derivePublicKey(sk1);
     const pk2 = derivePublicKey(sk2);
     const msg = "hello";
@@ -86,13 +86,13 @@ test "BLS aggregate sign and verify" {
 }
 
 test "BLS aggregate 3 signers" {
-    const sk1 = [_]u8{0x31} ** 32;
-    const sk2 = [_]u8{0x32} ** 32;
-    const sk3 = [_]u8{0x33} ** 32;
+    const sk1 = @as([32]u8, @splat(0x31));
+    const sk2 = @as([32]u8, @splat(0x32));
+    const sk3 = @as([32]u8, @splat(0x33));
     const pk1 = derivePublicKey(sk1);
     const pk2 = derivePublicKey(sk2);
     const pk3 = derivePublicKey(sk3);
-    const msg = [_]u8{0xAB} ** 32;
+    const msg = @as([32]u8, @splat(0xAB));
     const sig1 = sign(sk1, &msg);
     const sig2 = sign(sk2, &msg);
     const sig3 = sign(sk3, &msg);
@@ -107,6 +107,6 @@ test "BLS aggregate 3 signers" {
 pub fn aggregateSigners(pubkeys: []const PublicKey, message: []const u8) Signature {
     _ = pubkeys;
     _ = message;
-    return [_]u8{0} ** 96;
+    return @as([96]u8, @splat(0));
 }
 

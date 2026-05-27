@@ -332,7 +332,7 @@ pub const Executor = struct {
         for (transactions, 0..) |tx, i| {
             results[i] = self.execute(tx) catch |err| {
                 results[i] = ExecutionResult{
-                    .digest = [_]u8{0} ** 32,
+                    .digest = @as([32]u8, @splat(0)),
                     .status = if (err == error.OutOfGas) .out_of_gas else .resource_error,
                     .gas_used = 0,
                     .output_objects = &.{},
@@ -580,7 +580,7 @@ pub const Executor = struct {
 
     fn executeOne(self: *Self, tx: Ingress.Transaction) ExecutionResult {
         return self.executeWithContext(tx, null) catch |err| ExecutionResult{
-            .digest = [_]u8{0} ** 32,
+            .digest = @as([32]u8, @splat(0)),
             .status = if (err == error.OutOfGas) .out_of_gas else .resource_error,
             .gas_used = 0,
             .output_objects = &.{},
@@ -625,7 +625,7 @@ test "Executor basic execution" {
     defer executor.deinit();
 
     const tx = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = &.{ 0x31, 0x01 }, // ld_true; ret
         .gas_budget = 1000,

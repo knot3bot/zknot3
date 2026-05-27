@@ -94,7 +94,7 @@ pub const Ed25519 = struct {
 };
 
 test "Real Ed25519 sign and verify" {
-    const seed = [_]u8{1} ** 32;
+    const seed = @as([32]u8, @splat(1));
     const message = "test message";
     const sig_bytes = try Ed25519.sign(seed, message);
 

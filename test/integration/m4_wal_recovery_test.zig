@@ -22,7 +22,7 @@ fn cleanupDataDir(data_dir: []const u8) void {
 fn newTestNode(allocator: std.mem.Allocator, data_dir: []const u8) !struct { node: *Node, cfg: *Config } {
     const cfg = try allocator.create(Config);
     cfg.* = Config.default();
-    const seed = [_]u8{0x5D} ** 32;
+    const seed = @as([32]u8, @splat(0x5D));
     cfg.authority.signing_key = seed;
     cfg.authority.stake = 1_000_000_000;
     cfg.storage.data_dir = data_dir;
@@ -38,8 +38,8 @@ test "M4 WAL recovery: restart replay restores stake and slash totals" {
 
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const validator = [_]u8{0x71} ** 32;
-    const delegator = [_]u8{0x72} ** 32;
+    const validator = @as([32]u8, @splat(0x71));
+    const delegator = @as([32]u8, @splat(0x72));
 
     {
         const h = try newTestNode(allocator, data_dir);
@@ -79,8 +79,8 @@ test "M4 WAL recovery: double cold restart is idempotent for slash totals" {
 
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const validator = [_]u8{0x81} ** 32;
-    const delegator = [_]u8{0x82} ** 32;
+    const validator = @as([32]u8, @splat(0x81));
+    const delegator = @as([32]u8, @splat(0x82));
 
     {
         const h0 = try newTestNode(allocator, data_dir);
@@ -117,8 +117,8 @@ test "M4 WAL recovery: equivocation evidence not double-applied live or after re
 
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const validator = [_]u8{0x91} ** 32;
-    const delegator = [_]u8{0x92} ** 32;
+    const validator = @as([32]u8, @splat(0x91));
+    const delegator = @as([32]u8, @splat(0x92));
     const evidence = "same-evidence-payload";
 
     {
@@ -164,8 +164,8 @@ test "M4 WAL recovery: truncated M4 WAL tail makes restart replay fail closed" {
 
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const validator = [_]u8{0xA1} ** 32;
-    const delegator = [_]u8{0xA2} ** 32;
+    const validator = @as([32]u8, @splat(0xA1));
+    const delegator = @as([32]u8, @splat(0xA2));
 
     {
         const h = try newTestNode(allocator, data_dir);
@@ -225,7 +225,7 @@ test "M4 WAL recovery: epoch advance and validator set rotation replay across re
     defer cleanupDataDir(data_dir);
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const expected_hash = [_]u8{0xAB} ** 32;
+    const expected_hash = @as([32]u8, @splat(0xAB));
     {
         const h = try newTestNode(allocator, data_dir);
         defer h.node.deinit();

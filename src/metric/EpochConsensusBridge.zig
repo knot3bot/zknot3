@@ -161,7 +161,7 @@ test "EpochConsensusBridge validator stake" {
     var bridge = try EpochConsensusBridge.init(allocator, epoch_manager, stake_pool, quorum);
     defer bridge.deinit();
 
-    const validator_id = [_]u8{1} ** 32;
+    const validator_id = @as([32]u8, @splat(1));
     try bridge.registerValidatorStake(validator_id, 1000);
 
     const power = bridge.getValidatorVotingPower(validator_id);
@@ -183,7 +183,7 @@ test "EpochConsensusBridge epoch info" {
     var bridge = try EpochConsensusBridge.init(allocator, epoch_manager, stake_pool, quorum);
     defer bridge.deinit();
 
-    const validator_id = [_]u8{1} ** 32;
+    const validator_id = @as([32]u8, @splat(1));
     try bridge.registerValidatorStake(validator_id, 4000);
 
     const info = bridge.getConsensusEpochInfo();

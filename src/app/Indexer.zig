@@ -404,9 +404,9 @@ test "Indexer basic operations" {
     defer allocator.free(obj_data);
     const obj = IndexedObject{
         .id = core.ObjectID.hash("test"),
-        .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
+        .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
         .type = obj_type,
-        .owner = [_]u8{1} ** 32,
+        .owner = @as([32]u8, @splat(1)),
         .data = obj_data,
         .timestamp = 0,
     };
@@ -424,7 +424,7 @@ test "Indexer event indexing" {
     var indexer = try Indexer.init(allocator, config);
     defer indexer.deinit();
     
-    const tx_digest = [_]u8{1} ** 32;
+    const tx_digest = @as([32]u8, @splat(1));
     
     const event_type = try allocator.dupe(u8, "CoinTransfer");
     defer allocator.free(event_type);

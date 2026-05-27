@@ -196,7 +196,7 @@ test "Quorum basic operations" {
 
     // Add 4 validators with 1000 stake each
     for (0..4) |i| {
-        try quorum.addValidator([_]u8{@intCast(i)} ** 32, 1000);
+        try quorum.addValidator(@as([32]u8, @splat(@intCast(i))), 1000);
     }
 
     try std.testing.expect(quorum.totalStake() == 4000);
@@ -210,18 +210,18 @@ test "Quorum voting" {
     var quorum = try Quorum.init(allocator);
     defer quorum.deinit();
 
-    try quorum.addValidator([_]u8{1} ** 32, 3000);
-    try quorum.addValidator([_]u8{2} ** 32, 3000);
+    try quorum.addValidator(@as([32]u8, @splat(1)), 3000);
+    try quorum.addValidator(@as([32]u8, @splat(2)), 3000);
 
     // 2/3 threshold = 4000, so 3001 stake needed
     const votes = &[_]Quorum.Vote{
-        .{ .id = [_]u8{1} ** 32, .stake = 3000 },
+        .{ .id = @as([32]u8, @splat(1)), .stake = 3000 },
     };
     try std.testing.expect(!quorum.hasQuorum(votes));
 
     const votes2 = &[_]Quorum.Vote{
-        .{ .id = [_]u8{1} ** 32, .stake = 3000 },
-        .{ .id = [_]u8{2} ** 32, .stake = 3000 },
+        .{ .id = @as([32]u8, @splat(1)), .stake = 3000 },
+        .{ .id = @as([32]u8, @splat(2)), .stake = 3000 },
     };
     try std.testing.expect(quorum.hasQuorum(votes2));
 }
@@ -231,7 +231,7 @@ test "Quorum removeValidator updates total_stake" {
     var quorum = try Quorum.init(allocator);
     defer quorum.deinit();
 
-    const vid = [_]u8{1} ** 32;
+    const vid = @as([32]u8, @splat(1));
     try quorum.updateValidatorStake(vid, 1000);
     try std.testing.expectEqual(@as(u128, 1000), quorum.totalStake());
 

@@ -46,5 +46,5 @@ test "Move: interpreter init" {
 }
 
 fn makeId(i: u8) [32]u8 {
-    return [_]u8{i} ** 32;
+    return @as([32]u8, @splat(i));
 }

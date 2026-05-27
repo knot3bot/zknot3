@@ -304,7 +304,7 @@ test "TokenBalance available" {
 
 test "AgentWallet create" {
     const agent_id = ObjectID.hash("agent");
-    const owner = [_]u8{0x42} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
     
     var wallet = AgentWallet.create(agent_id, owner);
     
@@ -314,7 +314,7 @@ test "AgentWallet create" {
 
 test "AgentWallet deposit and withdraw" {
     const agent_id = ObjectID.hash("agent");
-    const owner = [_]u8{0x42} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
     
     var wallet = AgentWallet.create(agent_id, owner);
     
@@ -327,7 +327,7 @@ test "AgentWallet deposit and withdraw" {
 
 test "AgentWallet freeze" {
     const agent_id = ObjectID.hash("agent");
-    const owner = [_]u8{0x42} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
     
     var wallet = AgentWallet.create(agent_id, owner);
     
@@ -373,8 +373,8 @@ test "AuthRequest validity" {
         .id = ObjectID.hash("req"),
         .wallet_id = ObjectID.hash("wallet"),
         .amount = 1000,
-        .recipient = [_]u8{0x55} ** 32,
-        .owner = [_]u8{0x42} ** 32,
+        .recipient = @as([32]u8, @splat(0x55)),
+        .owner = @as([32]u8, @splat(0x42)),
         .is_approved = false,
         .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
         .expires_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,

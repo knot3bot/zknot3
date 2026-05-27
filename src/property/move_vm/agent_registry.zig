@@ -170,7 +170,7 @@ test "AgentRegistry register and discover" {
     var reg = try AgentRegistry.init(allocator);
     defer reg.deinit();
 
-    const owner = [_]u8{1} ** 32;
+    const owner = @as([32]u8, @splat(1));
     const caps = [_]AgentCapability{.image_gen, .text_gen};
 
     const id = try reg.register(owner, "ArtBot-3000", &caps, "https://artbot.example.com/api");
@@ -186,7 +186,7 @@ test "AgentRegistry reputation update" {
     var reg = try AgentRegistry.init(allocator);
     defer reg.deinit();
 
-    const owner = [_]u8{1} ** 32;
+    const owner = @as([32]u8, @splat(1));
     const caps = [_]AgentCapability{.code_gen};
     const id = try reg.register(owner, "CodeBot", &caps, "https://codebot.example.com");
 

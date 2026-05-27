@@ -80,8 +80,8 @@ test "tx_context::sender returns injected sender" {
     interpreter.registry = &reg;
 
     var tx_ctx = TxContext{
-        .sender = [_]u8{0xAB} ** 32,
-        .tx_hash = [_]u8{0x00} ** 32,
+        .sender = @as([32]u8, @splat(0xAB)),
+        .tx_hash = @as([32]u8, @splat(0x00)),
         .epoch = 7,
         .gas_price = 1,
         .gas_budget = 1000,
@@ -104,7 +104,7 @@ test "tx_context::sender returns injected sender" {
     try std.testing.expect(result.success);
     try std.testing.expect(result.return_value != null);
     try std.testing.expect(result.return_value.?.tag == .address);
-    try std.testing.expectEqualSlices(u8, &[_]u8{0xAB} ** 32, &result.return_value.?.data.address);
+    try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0xAB)), &result.return_value.?.data.address);
 }
 
 test "tx_context::epoch returns injected epoch" {
@@ -123,8 +123,8 @@ test "tx_context::epoch returns injected epoch" {
     interpreter.registry = &reg;
 
     var tx_ctx = TxContext{
-        .sender = [_]u8{0x00} ** 32,
-        .tx_hash = [_]u8{0x00} ** 32,
+        .sender = @as([32]u8, @splat(0x00)),
+        .tx_hash = @as([32]u8, @splat(0x00)),
         .epoch = 42,
         .gas_price = 1,
         .gas_budget = 1000,
@@ -164,8 +164,8 @@ test "event::emit collects events into ExecutionResult" {
     interpreter.registry = &reg;
 
     var tx_ctx = TxContext{
-        .sender = [_]u8{0xCD} ** 32,
-        .tx_hash = [_]u8{0x00} ** 32,
+        .sender = @as([32]u8, @splat(0xCD)),
+        .tx_hash = @as([32]u8, @splat(0x00)),
         .epoch = 1,
         .gas_price = 1,
         .gas_budget = 1000,
@@ -198,7 +198,7 @@ test "event::emit collects events into ExecutionResult" {
     const result = try interpreter.execute(module);
     try std.testing.expect(result.success);
     try std.testing.expectEqual(@as(usize, 1), result.events.len);
-    try std.testing.expectEqualSlices(u8, &[_]u8{0xCD} ** 32, &result.events[0].sender);
+    try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0xCD)), &result.events[0].sender);
     try std.testing.expectEqualSlices(u8, &[_]u8{0x01, 0x02, 0x03}, result.events[0].payload);
 }
 
@@ -219,8 +219,8 @@ test "object::new returns fresh ObjectID via tx_context" {
     interpreter.registry = &reg;
 
     var tx_ctx = TxContext{
-        .sender = [_]u8{0x00} ** 32,
-        .tx_hash = [_]u8{0x00} ** 32,
+        .sender = @as([32]u8, @splat(0x00)),
+        .tx_hash = @as([32]u8, @splat(0x00)),
         .epoch = 1,
         .gas_price = 1,
         .gas_budget = 1000,
@@ -244,7 +244,7 @@ test "object::new returns fresh ObjectID via tx_context" {
     try std.testing.expect(result.return_value != null);
     try std.testing.expect(result.return_value.?.tag == .address);
     // Fresh ID should not be all zeros
-    try std.testing.expect(!std.mem.eql(u8, &[_]u8{0} ** 32, &result.return_value.?.data.address));
+    try std.testing.expect(!std.mem.eql(u8, &@as([32]u8, @splat(0)), &result.return_value.?.data.address));
 }
 
 test "balance::split returns split amount" {

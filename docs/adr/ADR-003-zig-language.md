@@ -25,7 +25,7 @@ Candidates:
 
 ## Decision
 
-**Use Zig** (currently 0.16.0).
+**Use Zig** (currently 0.17.0).
 
 Zig's unique advantages for blockchain systems:
 - `defer`/`errdefer` for deterministic cleanup (no GC pauses)
@@ -66,7 +66,7 @@ if (comptime builtin.os.tag == .linux) {
 
 ### Negative
 - Smaller ecosystem than Rust/Go
-- Language still evolving (0.16.0, breaking changes between versions)
+- Language still evolving (0.17.0, breaking changes between versions)
 - Fewer blockchain reference implementations to learn from
 - Developer hiring pool is smaller
 

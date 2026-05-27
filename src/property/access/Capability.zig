@@ -78,8 +78,8 @@ pub const Capability = struct {
 
 test "Capability creation" {
     const allocator = std.testing.allocator;
-    const issuer = [_]u8{1} ** 32;
-    const secret_key = [_]u8{2} ** 32;
+    const issuer = @as([32]u8, @splat(1));
+    const secret_key = @as([32]u8, @splat(2));
     const target = core.ObjectID.hash("target");
 
     const cap = try Capability.create(
@@ -96,8 +96,8 @@ test "Capability creation" {
 
 test "Capability verification" {
     const allocator = std.testing.allocator;
-    const issuer = [_]u8{1} ** 32;
-    const secret_key = [_]u8{2} ** 32;
+    const issuer = @as([32]u8, @splat(1));
+    const secret_key = @as([32]u8, @splat(2));
 
     const cap = try Capability.create(
         .mutate,
@@ -123,8 +123,8 @@ test "Capability verification" {
 
 test "Capability action check" {
     const allocator = std.testing.allocator;
-    const issuer = [_]u8{1} ** 32;
-    const secret_key = [_]u8{2} ** 32;
+    const issuer = @as([32]u8, @splat(1));
+    const secret_key = @as([32]u8, @splat(2));
 
     const cap = try Capability.create(
         .withdraw,

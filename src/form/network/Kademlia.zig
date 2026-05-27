@@ -141,7 +141,7 @@ pub const RoutingTable = struct {
         self.* = .{
             .allocator = allocator,
             .local_peer_id = local_peer_id,
-            .buckets = [_]?*KBucket{null} ** BUCKET_COUNT,
+            .buckets = @as([BUCKET_COUNT]?*KBucket, @splat(null)),
         };
 
         // Initialize all buckets
@@ -323,7 +323,7 @@ pub fn encodeKadMessage(allocator: std.mem.Allocator, msg: KadMessage) ![]u8 {
 
     try buf.append(allocator,@intFromEnum(msg.msg_type));
     try buf.appendSlice(allocator, &msg.sender_id);
-    const tid = msg.target_id orelse [_]u8{0} ** 32;
+    const tid = msg.target_id orelse @as([32]u8, @splat(0));
     try buf.appendSlice(allocator, &tid);
     const peer_count: u16 = @intCast(msg.peers.len);
     var count_bytes: [2]u8 = undefined;
@@ -347,7 +347,7 @@ pub fn decodeKadMessage(allocator: std.mem.Allocator, data: []const u8) !KadMess
     const peer_count = std.mem.readInt(u16, data[65..67], .big);
     const peers_start = 67;
 
-    const has_target = !std.mem.eql(u8, &target_id, &([_]u8{0} ** 32));
+    const has_target = !std.mem.eql(u8, &target_id, &(@as([32]u8, @splat(0))));
     var peers: []const [32]u8 = &.{};
     if (peer_count > 0 and data.len >= peers_start + peer_count * 32) {
         const raw = try allocator.alloc([32]u8, peer_count);
@@ -367,8 +367,8 @@ pub fn decodeKadMessage(allocator: std.mem.Allocator, data: []const u8) !KadMess
 }
 
 test "KBucket distance calculation" {
-    const a = [_]u8{0x00} ** 32;
-    const b = [_]u8{0xff} ** 32;
+    const a = @as([32]u8, @splat(0x00));
+    const b = @as([32]u8, @splat(0xff));
     
     const dist = KBucket.xorDistance(a, b);
     try std.testing.expect(dist > 0);
@@ -376,7 +376,7 @@ test "KBucket distance calculation" {
 
 test "RoutingTable init and deinit" {
     const allocator = std.testing.allocator;
-    const local_id = [_]u8{0x12} ** 32;
+    const local_id = @as([32]u8, @splat(0x12));
     
     const rt = try RoutingTable.init(allocator, local_id);
     defer rt.deinit();
@@ -386,12 +386,12 @@ test "RoutingTable init and deinit" {
 
 test "RoutingTable add/remove peer" {
     const allocator = std.testing.allocator;
-    const local_id = [_]u8{0x12} ** 32;
+    const local_id = @as([32]u8, @splat(0x12));
     
     const rt = try RoutingTable.init(allocator, local_id);
     defer rt.deinit();
     
-    const peer_id = [_]u8{0x34} ** 32;
+    const peer_id = @as([32]u8, @splat(0x34));
     try rt.addPeer(peer_id, "127.0.0.1", 8083);
     
     try std.testing.expect(rt.totalPeers() == 1);
@@ -402,15 +402,15 @@ test "RoutingTable add/remove peer" {
 
 test "RoutingTable closest peers" {
     const allocator = std.testing.allocator;
-    const local_id = [_]u8{0x00} ** 32;
+    const local_id = @as([32]u8, @splat(0x00));
     
     const rt = try RoutingTable.init(allocator, local_id);
     defer rt.deinit();
     
     // Add several peers
-    const peer1 = [_]u8{0x01} ** 32;
-    const peer2 = [_]u8{0x10} ** 32;
-    const peer3 = [_]u8{0xff} ** 32;
+    const peer1 = @as([32]u8, @splat(0x01));
+    const peer2 = @as([32]u8, @splat(0x10));
+    const peer3 = @as([32]u8, @splat(0xff));
     
     try rt.addPeer(peer1, "127.0.0.1", 8083);
     try rt.addPeer(peer2, "127.0.0.1", 8084);
@@ -425,9 +425,9 @@ test "RoutingTable closest peers" {
 test "KadMessage encode/decode round-trip" {
     const allocator = std.testing.allocator;
 
-    const sender_id = [_]u8{0xAB} ** 32;
-    const target_id = [_]u8{0xCD} ** 32;
-    const peers = [_][32]u8{ [_]u8{0x01} ** 32, [_]u8{0x02} ** 32 };
+    const sender_id = @as([32]u8, @splat(0xAB));
+    const target_id = @as([32]u8, @splat(0xCD));
+    const peers = [_][32]u8{ @as([32]u8, @splat(0x01)), @as([32]u8, @splat(0x02)) };
 
     // Test FIND_NODE message
     const msg = KadMessage{
@@ -471,7 +471,7 @@ test "KadMessage encode/decode round-trip" {
 
 test "KadMessage ping/pong" {
     const allocator = std.testing.allocator;
-    const sender = [_]u8{0xEE} ** 32;
+    const sender = @as([32]u8, @splat(0xEE));
 
     const ping = KadMessage{
         .msg_type = .ping,

@@ -60,7 +60,7 @@ pub const SparseMerkle = struct {
         const self = try allocator.create(Self);
         self.* = .{
             .allocator = allocator,
-            .root = [_]u8{0} ** 32,
+            .root = @as([32]u8, @splat(0)),
             .depth = 256,
             .node_count = 0,
         };
@@ -232,7 +232,7 @@ test "SparseMerkle insert" {
 
     const root = tree.getRoot();
     // Root should be non-zero after insert
-    try std.testing.expect(!std.mem.eql(u8, &root, &[_]u8{0} ** 32));
+    try std.testing.expect(!std.mem.eql(u8, &root, &@as([32]u8, @splat(0))));
 }
 
 test "SparseMerkle contains" {

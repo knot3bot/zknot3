@@ -39,7 +39,7 @@ pub const LightClientState = struct {
                         .allocator = allocator,
                         .trusted_checkpoint = null,
                         .latest_verified_sequence = 0,
-                        .validator_set_hash = [_]u8{0} ** 32,
+                        .validator_set_hash = @as([32]u8, @splat(0)),
                 };
         return self;
     }
@@ -226,11 +226,11 @@ test "LightClientState init" {
 test "Checkpoint verification" {
     const allocator = std.testing.allocator;
     const changes = [_]Checkpoint.ObjectChange{};
-    var cp = try Checkpoint.create(3, [_]u8{1} ** 32, &changes, allocator);
+    var cp = try Checkpoint.create(3, @as([32]u8, @splat(1)), &changes, allocator);
     defer cp.deinit(allocator);
 
     try std.testing.expect(verifyCheckpointProof(&cp, cp.state_root));
-    try std.testing.expect(!verifyCheckpointProof(&cp, [_]u8{8} ** 32));
+    try std.testing.expect(!verifyCheckpointProof(&cp, @as([32]u8, @splat(8))));
 }
 
 test "verifyCheckpointProofQuorum accepts signed M4 proof" {
@@ -239,11 +239,11 @@ test "verifyCheckpointProofQuorum accepts signed M4 proof" {
     defer mgr.deinit();
 
     const state_root = try mgr.computeStateRoot();
-    const msg = MainnetExtensionHooks.m4ProofSigningMessage(state_root, 12, [_]u8{0x11} ** 32);
+    const msg = MainnetExtensionHooks.m4ProofSigningMessage(state_root, 12, @as([32]u8, @splat(0x11)));
     const proof_bytes = try allocator.dupe(u8, &msg);
     errdefer allocator.free(proof_bytes);
 
-    const seed = [_]u8{0x55} ** 32;
+    const seed = @as([32]u8, @splat(0x55));
     const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
     const pk = kp.public_key.toBytes();
     var vid: [32]u8 = undefined;
@@ -261,7 +261,7 @@ test "verifyCheckpointProofQuorum accepts signed M4 proof" {
 
     const proof = MainnetExtensionHooks.CheckpointProof{
         .sequence = 12,
-        .object_id = [_]u8{0x11} ** 32,
+        .object_id = @as([32]u8, @splat(0x11)),
         .state_root = state_root,
         .proof_bytes = proof_bytes,
         .signatures = signatures,
@@ -282,9 +282,9 @@ test "verifyCheckpointProofQuorum rejects BLS bitmap below quorum" {
     var mgr = try MainnetExtensionHooks.Manager.init(allocator);
     defer mgr.deinit();
 
-    const s1 = [_]u8{0x71} ** 32;
-    const s2 = [_]u8{0x72} ** 32;
-    const s3 = [_]u8{0x73} ** 32;
+    const s1 = @as([32]u8, @splat(0x71));
+    const s2 = @as([32]u8, @splat(0x72));
+    const s3 = @as([32]u8, @splat(0x73));
     const kp1 = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s1);
     const kp2 = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s2);
     const kp3 = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s3);
@@ -297,7 +297,7 @@ test "verifyCheckpointProofQuorum rejects BLS bitmap below quorum" {
     defer v3.deinit(allocator);
 
     const state_root = try mgr.computeStateRoot();
-    const msg = MainnetExtensionHooks.m4ProofSigningMessage(state_root, 23, [_]u8{0x19} ** 32);
+    const msg = MainnetExtensionHooks.m4ProofSigningMessage(state_root, 23, @as([32]u8, @splat(0x19)));
     const proof_bytes = try allocator.dupe(u8, &msg);
     errdefer allocator.free(proof_bytes);
 
@@ -328,7 +328,7 @@ test "verifyCheckpointProofQuorum rejects BLS bitmap below quorum" {
 
     const proof = MainnetExtensionHooks.CheckpointProof{
         .sequence = 23,
-        .object_id = [_]u8{0x19} ** 32,
+        .object_id = @as([32]u8, @splat(0x19)),
         .state_root = state_root,
         .proof_bytes = proof_bytes,
         .signatures = signatures,
@@ -347,12 +347,12 @@ test "verifyCheckpointProofQuorum rejects BLS bitmap below quorum" {
 test "verifyEpochProof accepts consistent checkpoint, next set hash, and boundary" {
     const allocator = std.testing.allocator;
     const changes = [_]Checkpoint.ObjectChange{};
-    var cp = try Checkpoint.create(20, [_]u8{1} ** 32, &changes, allocator);
+    var cp = try Checkpoint.create(20, @as([32]u8, @splat(1)), &changes, allocator);
     defer cp.deinit(allocator);
 
-    var v1 = try Validator.create([_]u8{0x03} ** 32, 100, "a", allocator);
+    var v1 = try Validator.create(@as([32]u8, @splat(0x03)), 100, "a", allocator);
     defer v1.deinit(allocator);
-    var v2 = try Validator.create([_]u8{0x04} ** 32, 200, "b", allocator);
+    var v2 = try Validator.create(@as([32]u8, @splat(0x04)), 200, "b", allocator);
     defer v2.deinit(allocator);
 
     const next = &[_]Validator{ v1, v2 };
@@ -365,15 +365,15 @@ test "verifyEpochProof accepts consistent checkpoint, next set hash, and boundar
 test "verifyEpochProof rejects wrong hash, zero hash, bad state root, and off-boundary sequence" {
     const allocator = std.testing.allocator;
     const changes = [_]Checkpoint.ObjectChange{};
-    var cp = try Checkpoint.create(21, [_]u8{2} ** 32, &changes, allocator);
+    var cp = try Checkpoint.create(21, @as([32]u8, @splat(2)), &changes, allocator);
     defer cp.deinit(allocator);
 
-    var v1 = try Validator.create([_]u8{0x13} ** 32, 50, "x", allocator);
+    var v1 = try Validator.create(@as([32]u8, @splat(0x13)), 50, "x", allocator);
     defer v1.deinit(allocator);
     const next = &[_]Validator{v1};
     const good_hash = computeValidatorSetHash(next);
 
-    try std.testing.expect(!try verifyEpochProof(allocator, &cp, [_]u8{0} ** 32, next, 0));
+    try std.testing.expect(!try verifyEpochProof(allocator, &cp, @as([32]u8, @splat(0)), next, 0));
 
     var wrong_hash: [32]u8 = good_hash;
     wrong_hash[0] ^= 0xff;
@@ -382,6 +382,6 @@ test "verifyEpochProof rejects wrong hash, zero hash, bad state root, and off-bo
     try std.testing.expect(!try verifyEpochProof(allocator, &cp, good_hash, next, 10));
 
     var cp_bad = cp;
-    cp_bad.state_root = [_]u8{0xee} ** 32;
+    cp_bad.state_root = @as([32]u8, @splat(0xee));
     try std.testing.expect(!try verifyEpochProof(allocator, &cp_bad, good_hash, next, 0));
 }

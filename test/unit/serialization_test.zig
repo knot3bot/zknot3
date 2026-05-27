@@ -39,7 +39,7 @@ test "ObjectID: hash is deterministic" {
 // =============================================================================
 
 test "Ownership: encode produces bytes" {
-    const original = Ownership.ownedBy([_]u8{0xAB} ** 32);
+    const original = Ownership.ownedBy(@as([32]u8, @splat(0xAB)));
     const encoded = try original.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
@@ -70,7 +70,7 @@ test "Ownership: immutable encode" {
 
 test "Checkpoint: serialize and deserialize" {
     const allocator = std.testing.allocator;
-    const prev_digest = [_]u8{0x01} ** 32;
+    const prev_digest = @as([32]u8, @splat(0x01));
 
     var cp = try Checkpoint.create(1, prev_digest, &.{}, allocator);
     defer cp.deinit(allocator);
@@ -100,7 +100,7 @@ test "Signature: keypair generation and sign verify" {
 
 test "Block: create and digest" {
     const allocator = std.testing.allocator;
-    const author = [_]u8{0x02} ** 32;
+    const author = @as([32]u8, @splat(0x02));
 
     var block = try Mysticeti.Block.create(author, .{ .value = 1 }, &.{}, &.{}, allocator);
     defer block.deinit(allocator);
@@ -118,8 +118,8 @@ test "Quorum: basic operations" {
     var quorum = try Quorum.init(allocator);
     defer quorum.deinit();
 
-    try quorum.addValidator([_]u8{0x01} ** 32, 1000);
-    try quorum.addValidator([_]u8{0x02} ** 32, 2000);
+    try quorum.addValidator(@as([32]u8, @splat(0x01)), 1000);
+    try quorum.addValidator(@as([32]u8, @splat(0x02)), 2000);
 
     try std.testing.expect(quorum.totalStake() == 3000);
     try std.testing.expect(quorum.activeStake() == 3000);

@@ -13,7 +13,7 @@ test "M4 proof can be verified by light client path" {
     const config = try allocator.create(Config);
     defer allocator.destroy(config);
     config.* = Config.default();
-    const seed = [_]u8{0x3C} ** 32;
+    const seed = @as([32]u8, @splat(0x3C));
     config.authority.signing_key = seed;
     config.authority.stake = 1_000_000_000;
 
@@ -21,8 +21,8 @@ test "M4 proof can be verified by light client path" {
     defer node.deinit();
 
     _ = try node.submitStakeOperation(.{
-        .validator = [_]u8{1} ** 32,
-        .delegator = [_]u8{2} ** 32,
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
         .amount = 10,
         .action = .stake,
         .metadata = "bootstrap",
@@ -30,7 +30,7 @@ test "M4 proof can be verified by light client path" {
 
     const proof = try node.buildCheckpointProof(.{
         .sequence = 5,
-        .object_id = [_]u8{0xAA} ** 32,
+        .object_id = @as([32]u8, @splat(0xAA)),
     });
     defer node.freeCheckpointProof(proof);
 

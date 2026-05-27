@@ -16,7 +16,7 @@ pub const Version = struct {
     /// Initial version (sequence 0)
     pub const initial: Self = .{
         .seq = 0,
-        .causal = [_]u8{0} ** 16,
+        .causal = @as([16]u8, @splat(0)),
     };
 
     /// Compare two versions using lexicographic ordering
@@ -119,8 +119,8 @@ pub const VersionLattice = struct {
 };
 
 test "Version comparison" {
-    const v1 = Version{ .seq = 5, .causal = [_]u8{1} ** 16 };
-    const v2 = Version{ .seq = 10, .causal = [_]u8{1} ** 16 };
+    const v1 = Version{ .seq = 5, .causal = @as([16]u8, @splat(1)) };
+    const v2 = Version{ .seq = 10, .causal = @as([16]u8, @splat(1)) };
 
     try std.testing.expect(v1.lessThan(v2));
     try std.testing.expect(!v2.lessThan(v1));
@@ -129,7 +129,7 @@ test "Version comparison" {
 }
 
 test "Version encoding" {
-    const v = Version{ .seq = 0xDEADBEEF, .causal = [_]u8{0xAB} ** 16 };
+    const v = Version{ .seq = 0xDEADBEEF, .causal = @as([16]u8, @splat(0xAB)) };
     const encoded = v.encode();
     const decoded = try Version.decode(&encoded);
     try std.testing.expect(decoded.seq == v.seq);

@@ -37,7 +37,7 @@ test "e2e: getCheckpointProof verifies under docker devnet" {
 }
 
 fn tryMaterial(comptime b: u8) [32]u8 {
-    const seed: [32]u8 = .{b} ** 32;
+    const seed: [32]u8 = @as([32]u8, @splat(b));
     const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch @panic("bad seed");
     return kp.public_key.toBytes();
 }

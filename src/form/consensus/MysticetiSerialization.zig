@@ -256,7 +256,7 @@ pub fn deserializeCommitCertificate(data: []const u8, allocator: std.mem.Allocat
 test "Block serialization" {
     const allocator = std.testing.allocator;
     const block = try Block.create(
-        [_]u8{1} ** 32,
+        @as([32]u8, @splat(1)),
         .{ .value = 2 },
         "test payload",
         &[_]Round{ .{ .value = 0 }, .{ .value = 1 } },
@@ -279,11 +279,11 @@ test "Block serialization" {
 test "Vote serialization" {
     const allocator = std.testing.allocator;
     const vote = Vote{
-        .voter = [_]u8{2} ** 32,
+        .voter = @as([32]u8, @splat(2)),
         .stake = 1000,
         .round = .{ .value = 2 },
-        .block_digest = [_]u8{0} ** 32,
-        .signature = [_]u8{0} ** 64,
+        .block_digest = @as([32]u8, @splat(0)),
+        .signature = @as([64]u8, @splat(0)),
     };
 
     const serialized = try serializeVote(vote, allocator);
@@ -300,8 +300,8 @@ test "Vote serialization" {
 test "Batch operations" {
     const allocator = std.testing.allocator;
     const blocks = [_]Block{
-        try Block.create([_]u8{1} ** 32, .{ .value = 0 }, "block 0", &.{}, allocator),
-        try Block.create([_]u8{2} ** 32, .{ .value = 1 }, "block 1", &.{}, allocator),
+        try Block.create(@as([32]u8, @splat(1)), .{ .value = 0 }, "block 0", &.{}, allocator),
+        try Block.create(@as([32]u8, @splat(2)), .{ .value = 1 }, "block 1", &.{}, allocator),
     };
     defer blocks[0].deinit(allocator);
     defer blocks[1].deinit(allocator);

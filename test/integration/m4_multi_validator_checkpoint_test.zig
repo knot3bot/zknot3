@@ -28,11 +28,11 @@ test "M4 Node buildCheckpointProof with extra seeds passes 2-of-3 LightClient qu
     defer cleanupDataDir(data_dir);
     try std.Io.Dir.cwd().createDirPath(io_mod.io, data_dir);
 
-    const s1 = [_]u8{0x61} ** 32;
-    const s2 = [_]u8{0x62} ** 32;
-    const s3 = [_]u8{0x63} ** 32;
-    const b1 = [_]u8{0x71} ** 32;
-    const b2 = [_]u8{0x72} ** 32;
+    const s1 = @as([32]u8, @splat(0x61));
+    const s2 = @as([32]u8, @splat(0x62));
+    const s3 = @as([32]u8, @splat(0x63));
+    const b1 = @as([32]u8, @splat(0x71));
+    const b2 = @as([32]u8, @splat(0x72));
 
     var v1 = try Validator.create((try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(s1)).public_key.toBytes(), 401, "a", allocator);
     defer v1.deinit(allocator);
@@ -56,7 +56,7 @@ test "M4 Node buildCheckpointProof with extra seeds passes 2-of-3 LightClient qu
     defer node.deinit();
     defer allocator.destroy(cfg);
 
-    const proof = try node.buildCheckpointProof(.{ .sequence = 3, .object_id = [_]u8{0xaa} ** 32 });
+    const proof = try node.buildCheckpointProof(.{ .sequence = 3, .object_id = @as([32]u8, @splat(0xaa)) });
     defer node.freeCheckpointProof(proof);
     try std.testing.expect(proof.bls_signature.len > 0);
     try std.testing.expect(proof.bls_signer_bitmap.len > 0);

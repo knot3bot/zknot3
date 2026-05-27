@@ -6,7 +6,7 @@
 .{
     .name = "zknot3",
     .version = "0.1.0",
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.17.0",
 
     // External dependencies (using zig package manager)
     // Note: Most functionality uses std library which is already included

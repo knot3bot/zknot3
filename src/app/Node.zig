@@ -535,7 +535,7 @@ pub const Node = struct {
     pub fn proposeBlock(self: *Self, payload: []const u8) !?*Mysticeti.Block {
         if (self.state != .running) return error.NotRunning;
         const block = try Mysticeti.Block.create(
-            .{0} ** 32,
+            @as([32]u8, @splat(0)),
             Mysticeti.Round{ .value = self.consensus_round },
             payload,
             &.{},
@@ -1228,7 +1228,7 @@ test "Node mainnet extension hooks execute protocol state transitions" {
     const config = try allocator.create(Config);
     config.* = Config.default();
     config.storage.data_dir = test_dir;
-    config.authority.signing_key = [_]u8{0x77} ** 32;
+    config.authority.signing_key = @as([32]u8, @splat(0x77));
     config.authority.stake = 1_000_000_000;
     const deps = NodeDependencies{};
     const node = try Node.init(allocator, config, deps);
@@ -1239,15 +1239,15 @@ test "Node mainnet extension hooks execute protocol state transitions" {
     }
 
     const stake_id = try node.submitStakeOperation(.{
-        .validator = [_]u8{1} ** 32,
-        .delegator = [_]u8{2} ** 32,
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
         .amount = 100,
         .action = .stake,
     });
     try std.testing.expectEqual(@as(u64, 1), stake_id);
 
     const proposal_id = try node.submitGovernanceProposal(.{
-        .proposer = [_]u8{3} ** 32,
+        .proposer = @as([32]u8, @splat(3)),
         .title = "reserve-governance",
         .description = "M4 placeholder",
         .kind = .parameter_change,
@@ -1255,8 +1255,8 @@ test "Node mainnet extension hooks execute protocol state transitions" {
     try std.testing.expectEqual(@as(u64, 1), proposal_id);
 
     const slash_id = try node.submitStakeOperation(.{
-        .validator = [_]u8{1} ** 32,
-        .delegator = [_]u8{2} ** 32,
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
         .amount = 10,
         .action = .slash,
         .metadata = "test-equivocation",
@@ -1265,7 +1265,7 @@ test "Node mainnet extension hooks execute protocol state transitions" {
 
     const proof = try node.buildCheckpointProof(.{
         .sequence = 1,
-        .object_id = [_]u8{4} ** 32,
+        .object_id = @as([32]u8, @splat(4)),
     });
     defer node.freeCheckpointProof(proof);
     try std.testing.expectEqual(@as(u64, 1), proof.sequence);

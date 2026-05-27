@@ -40,8 +40,8 @@ test "E2E: advanceEpoch syncs stake and rotates validator set hash" {
     defer node.stop();
 
     // Seed stake for two validators via mainnet hooks (M4 path)
-    const v1 = [_]u8{0x01} ** 32;
-    const v2 = [_]u8{0x02} ** 32;
+    const v1 = @as([32]u8, @splat(0x01));
+    const v2 = @as([32]u8, @splat(0x02));
     _ = try node.mainnet_hooks.submitStakeOperation(.{
         .validator = v1,
         .delegator = v1,
@@ -88,7 +88,7 @@ test "E2E: advanceEpoch executes approved governance proposals" {
     defer node.stop();
 
     // Seed validator stake so they can vote
-    const v1 = [_]u8{0x01} ** 32;
+    const v1 = @as([32]u8, @splat(0x01));
     _ = try node.mainnet_hooks.submitStakeOperation(.{
         .validator = v1,
         .delegator = v1,

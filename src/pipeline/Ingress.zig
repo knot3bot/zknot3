@@ -435,7 +435,7 @@ test "Ingress basic operations" {
     defer ingress.deinit();
 
     var tx = Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
         .gas_budget = 1000,
@@ -454,7 +454,7 @@ test "Ingress basic operations" {
 
 test "Transaction digest" {
     const tx = Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = "test",
         .gas_budget = 1000,
@@ -479,7 +479,7 @@ test "Transaction signature verification" {
 
     // Create transaction
     var tx = Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
         .gas_budget = 1000,
@@ -510,7 +510,7 @@ test "Transaction without signature fails when signatures required" {
     defer ingress.deinit();
 
     var tx = Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
         .gas_budget = 1000,
@@ -534,7 +534,7 @@ test "Transaction without signature passes when signatures disabled" {
     defer ingress.deinit();
 
     var tx = Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test program"),
         .gas_budget = 1000,

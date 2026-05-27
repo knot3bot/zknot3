@@ -7,7 +7,7 @@ const Quorum = root.form.consensus.Quorum;
 const Mysticeti = root.form.consensus.Mysticeti;
 
 fn makeId(i: u8) [32]u8 {
-    return [_]u8{i} ** 32;
+    return @as([32]u8, @splat(i));
 }
 
 test "Consensus: quorum formation" {

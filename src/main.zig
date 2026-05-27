@@ -25,7 +25,7 @@ fn isLoopbackIPv4(addr: []const u8) bool {
 /// Global shutdown flag with atomic access
 var running = std.atomic.Value(bool).init(true);
 
-/// Global I/O instance for compatibility with Zig 0.16.0 API
+/// Global I/O instance for compatibility with Zig 0.17.0 API
 
 /// Command line options
 const Options = struct {
@@ -301,7 +301,7 @@ pub fn main(init: std.process.Init) !void {
     }
     if (node.getP2PServer()) |p2p| {
         // Derive validator public key from signing_key seed
-        const validator_key = if (config.authority.signing_key) |sk| sk else .{0} ** 32;
+        const validator_key = if (config.authority.signing_key) |sk| sk else @as([32]u8, @splat(0));
         const real_kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(validator_key) catch |err| {
             Log.err("[ERR] Failed to derive validator key: {}", .{err});
             return;

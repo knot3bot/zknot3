@@ -389,7 +389,7 @@ zig build test                       # 358/361 pass
 ## Quick Start
 
 ```bash
-# Prerequisites: Zig 0.16.0
+# Prerequisites: Zig 0.17.0
 git clone https://github.com/knot3bot/zknot3.git
 cd zknot3
 zig build -Doptimize=ReleaseSafe

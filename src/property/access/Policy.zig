@@ -73,8 +73,8 @@ pub const Policy = struct {
 
 test "Policy owned object" {
     const policy = Policy{};
-    const owner = [_]u8{1} ** 32;
-    const non_owner = [_]u8{2} ** 32;
+    const owner = @as([32]u8, @splat(1));
+    const non_owner = @as([32]u8, @splat(2));
 
     const ownership = core.Ownership.ownedBy(owner);
 
@@ -93,7 +93,7 @@ test "Policy owned object" {
 
 test "Policy immutable object" {
     const policy = Policy{};
-    const caller = [_]u8{1} ** 32;
+    const caller = @as([32]u8, @splat(1));
 
     const ownership = core.Ownership.immutable();
 
@@ -108,7 +108,7 @@ test "Policy immutable object" {
 
 test "Policy shared object" {
     const policy = Policy{};
-    const caller = [_]u8{1} ** 32;
+    const caller = @as([32]u8, @splat(1));
 
     const ownership = core.Ownership.shared(123);
 

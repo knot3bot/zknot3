@@ -3,4 +3,4 @@ name: zknot3
 description: zknot3 blockchain validator Helm chart
 type: application
 version: 0.1.0
-appVersion: "0.16.0"
+appVersion: "0.17.0"

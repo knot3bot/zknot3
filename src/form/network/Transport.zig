@@ -294,7 +294,7 @@ test "Transport basic operations" {
     var transport = try Transport.init(allocator, config);
     defer transport.deinit();
 
-    const peer = [_]u8{1} ** 32;
+    const peer = @as([32]u8, @splat(1));
     const conn_id = try transport.connect(peer);
     try std.testing.expect(conn_id == 0);
 
@@ -313,7 +313,7 @@ test "Message serialization" {
 
     const msg = Message{
         .msg_type = .transaction,
-        .sender = [_]u8{0xAB} ** 32,
+        .sender = @as([32]u8, @splat(0xAB)),
         .sequence = 12345,
         .payload = "hello world",
     };
@@ -356,7 +356,7 @@ test "Message.deserialize accepts zero-length payload" {
 
     const msg = Message{
         .msg_type = .ping,
-        .sender = [_]u8{0} ** 32,
+        .sender = @as([32]u8, @splat(0)),
         .sequence = 7,
         .payload = &.{},
     };

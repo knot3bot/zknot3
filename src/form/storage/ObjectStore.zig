@@ -311,8 +311,8 @@ test "Object serialization" {
     const allocator = std.testing.allocator;
 
     const id = core.ObjectID.hash("test object");
-    const version = core.Version{ .seq = 1, .causal = [_]u8{0} ** 16 };
-    const ownership = core.Ownership.ownedBy([_]u8{0x42} ** 32);
+    const version = core.Version{ .seq = 1, .causal = @as([16]u8, @splat(0)) };
+    const ownership = core.Ownership.ownedBy(@as([32]u8, @splat(0x42)));
 
     var object = Object{
         .id = id,

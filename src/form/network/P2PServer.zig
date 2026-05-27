@@ -1193,7 +1193,7 @@ test "HandshakeNonceTracker rejects replay and allows after ttl" {
     var tracker = HandshakeNonceTracker.init(allocator, 2);
     defer tracker.deinit();
 
-    const nonce = [_]u8{7} ** 32;
+    const nonce = @as([32]u8, @splat(7));
     try std.testing.expect(tracker.registerFresh(nonce, 100));
     try std.testing.expect(!tracker.registerFresh(nonce, 100));
     try std.testing.expect(!tracker.registerFresh(nonce, 101));
@@ -1217,7 +1217,7 @@ test "per-peer rate limiter eventually bans noisy peer" {
     });
     defer server.deinit();
 
-    const peer = [_]u8{0xAA} ** 32;
+    const peer = @as([32]u8, @splat(0xAA));
     try std.testing.expect(server.allowIncomingMessage(peer, .consensus));
     try std.testing.expect(server.allowIncomingMessage(peer, .consensus));
     try std.testing.expect(server.allowIncomingMessage(peer, .consensus));
@@ -1227,16 +1227,16 @@ test "per-peer rate limiter eventually bans noisy peer" {
 }
 
 test "handshake payload parser rejects malformed lengths" {
-    const short_req = [_]u8{0} ** 39;
+    const short_req = @as([39]u8, @splat(0));
     try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseRequestPayload(&short_req));
 
-    const long_req = [_]u8{0} ** 41;
+    const long_req = @as([41]u8, @splat(0));
     try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseRequestPayload(&long_req));
 
-    const short_signed = [_]u8{0} ** 135;
+    const short_signed = @as([135]u8, @splat(0));
     try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseSignedPayload(&short_signed));
 
-    const long_signed = [_]u8{0} ** 137;
+    const long_signed = @as([137]u8, @splat(0));
     try std.testing.expectError(error.HandshakeFailed, PeerConnection.parseSignedPayload(&long_signed));
 }
 
@@ -1256,7 +1256,7 @@ test "peerCount sums tcp and quic peers" {
     } };
 
     // Manually inject a TCP peer
-    const tcp_key = [_]u8{0x01} ** 32;
+    const tcp_key = @as([32]u8, @splat(0x01));
     const tcp_peer = try allocator.create(PeerConnection);
     tcp_peer.* = .{
         .allocator = allocator,
@@ -1270,8 +1270,8 @@ test "peerCount sums tcp and quic peers" {
     try server.peers.put(allocator, tcp_key, tcp_peer);
 
     // Manually inject a QUIC peer with a valid QUICConnection
-    const quic_conn = try QUIC.QUICConnection.init(allocator, .{ .bytes = [_]u8{0} ** 16 });
-    const quic_key = [_]u8{0x02} ** 32;
+    const quic_conn = try QUIC.QUICConnection.init(allocator, .{ .bytes = @as([16]u8, @splat(0)) });
+    const quic_key = @as([32]u8, @splat(0x02));
     const quic_peer = try allocator.create(QUICPeerConnection);
     quic_peer.* = .{
         .allocator = allocator,
@@ -1320,7 +1320,7 @@ test "max_connections rejects inbound connection" {
     } };
 
     // Fill the slot with a dummy TCP peer
-    const key = [_]u8{0xAB} ** 32;
+    const key = @as([32]u8, @splat(0xAB));
     const peer = try allocator.create(PeerConnection);
     peer.* = .{
         .allocator = allocator,

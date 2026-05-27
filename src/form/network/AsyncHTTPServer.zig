@@ -127,7 +127,7 @@ pub const AsyncHTTPServer = struct {
             .family = std.posix.AF.INET,
             .port = std.mem.nativeToBig(u16, ip4.port),
             .addr = @bitCast(ip4.bytes),
-            .zero = .{0} ** 8,
+            .zero = @as([8]u8, @splat(0)),
         };
     }
 

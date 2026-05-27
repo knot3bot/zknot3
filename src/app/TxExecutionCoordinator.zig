@@ -77,7 +77,7 @@ test "TxExecutionCoordinator executeOne updates sequence and history" {
         .sender_sequence = &sender_sequence,
     };
 
-    const sender = [_]u8{9} ** 32;
+    const sender = @as([32]u8, @splat(9));
     const tx = pipeline.Transaction{
         .sender = sender,
         .inputs = &.{},
@@ -111,7 +111,7 @@ test "TxExecutionCoordinator rejects replay and invalid sequence" {
         .sender_sequence = &sender_sequence,
     };
 
-    const sender = [_]u8{7} ** 32;
+    const sender = @as([32]u8, @splat(7));
     const tx = pipeline.Transaction{
         .sender = sender,
         .inputs = &.{},
@@ -124,7 +124,7 @@ test "TxExecutionCoordinator rejects replay and invalid sequence" {
     _ = try executeOne(&ctx, tx);
     try std.testing.expectError(error.TransactionAlreadyExecuted, executeOne(&ctx, tx));
 
-    const sender2 = [_]u8{8} ** 32;
+    const sender2 = @as([32]u8, @splat(8));
     try sender_sequence.put(allocator, sender2, 3);
     const bad_seq_tx = pipeline.Transaction{
         .sender = sender2,

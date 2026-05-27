@@ -36,7 +36,7 @@ pub fn main() !void {
     defer validators.deinit(allocator);
 
     inline for (.{ 101, 102, 103, 104 }) |b| {
-        const seed: [32]u8 = .{@intCast(b)} ** 32;
+        const seed: [32]u8 = @as([32]u8, @splat(@intCast(b)));
         const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
         const material = kp.public_key.toBytes();
         const pk48 = core.Bls.derivePublicKey(material);

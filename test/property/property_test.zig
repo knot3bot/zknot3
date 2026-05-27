@@ -33,7 +33,7 @@ test "Property: ObjectID hash differs for different inputs" {
 }
 
 test "Property: Ownership ownedBy roundtrip" {
-    const owner = [_]u8{0xAB} ** 32;
+    const owner = @as([32]u8, @splat(0xAB));
     const ownership = Ownership.ownedBy(owner);
     try std.testing.expect(ownership.tag == .Owned);
     try std.testing.expectEqual(ownership.owner.?, owner);

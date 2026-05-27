@@ -262,8 +262,8 @@ pub const AgentDelegation = struct {
 };
 
 test "AgentId creation" {
-    const owner = [_]u8{0x42} ** 32;
-    const public_key = [_]u8{0xAB} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
+    const public_key = @as([32]u8, @splat(0xAB));
     
     const agent = AgentId.create(owner, .Autonomous, public_key);
     
@@ -273,9 +273,9 @@ test "AgentId creation" {
 }
 
 test "AgentId owner verification" {
-    const owner = [_]u8{0x42} ** 32;
-    const other = [_]u8{0x99} ** 32;
-    const public_key = [_]u8{0xAB} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
+    const other = @as([32]u8, @splat(0x99));
+    const public_key = @as([32]u8, @splat(0xAB));
     
     const agent = AgentId.create(owner, .Autonomous, public_key);
     
@@ -285,10 +285,10 @@ test "AgentId owner verification" {
 
 test "AgentSession validity" {
     const agent_id = ObjectID.hash("agent");
-    const owner = [_]u8{0x42} ** 32;
+    const owner = @as([32]u8, @splat(0x42));
     
     var session = AgentSession{
-        .id = [_]u8{0x01} ** 32,
+        .id = @as([32]u8, @splat(0x01)),
         .agent_id = agent_id,
         .authorized_by = owner,
         .permissions = .{.can_transact = true},
@@ -303,7 +303,7 @@ test "AgentSession validity" {
 
 test "AgentCapability validity" {
     const agent_id = ObjectID.hash("agent");
-    const grantee = [_]u8{0x55} ** 32;
+    const grantee = @as([32]u8, @splat(0x55));
     
     var cap = AgentCapability.create(agent_id, grantee, .{.can_delegate = true});
     

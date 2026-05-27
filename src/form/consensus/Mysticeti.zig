@@ -222,7 +222,7 @@ pub const Vote = struct {
         const block_digest = data[offset..][0..32].*;
         offset += 32;
         const signature_ed = data[offset..][0..64].*;
-        var signature: [96]u8 = [_]u8{0} ** 96;
+        var signature: [96]u8 = @as([96]u8, @splat(0));
         @memcpy(signature[0..64], &signature_ed);
         return Self{
             .voter = voter,
@@ -882,7 +882,7 @@ test "Mysticeti block creation" {
     defer quorum.deinit();
 
     for (0..4) |i| {
-        try quorum.addValidator([_]u8{@intCast(i + 1)} ** 32, 1000);
+        try quorum.addValidator(@as([32]u8, @splat(@intCast(i + 1))), 1000);
     }
 
     var consensus = try Mysticeti.init(allocator, quorum);
@@ -890,7 +890,7 @@ test "Mysticeti block creation" {
 
     const parents = &[_]Round{ .{ .value = 0 }, .{ .value = 1 } };
     var block = try Block.create(
-        [_]u8{1} ** 32,
+        @as([32]u8, @splat(1)),
         .{ .value = 2 },
         "test payload",
         parents,
@@ -908,7 +908,7 @@ test "Mysticeti quorum commit" {
     defer quorum.deinit();
 
     for (0..4) |i| {
-        try quorum.addValidator([_]u8{@intCast(i + 1)} ** 32, 1000);
+        try quorum.addValidator(@as([32]u8, @splat(@intCast(i + 1))), 1000);
     }
 
     var consensus = try Mysticeti.init(allocator, quorum);
@@ -920,18 +920,18 @@ test "Mysticeti quorum commit" {
 
 test "detectEquivocation returns evidence for conflicting votes" {
     const vote_a = Vote{
-        .voter = [_]u8{7} ** 32,
+        .voter = @as([32]u8, @splat(7)),
         .stake = 100,
         .round = .{ .value = 42 },
-        .block_digest = [_]u8{1} ** 32,
-        .signature = [_]u8{2} ** 32 ++ [_]u8{0} ** 64,
+        .block_digest = @as([32]u8, @splat(1)),
+        .signature = @as([32]u8, @splat(2)) ++ @as([64]u8, @splat(0)),
     };
     const vote_b = Vote{
-        .voter = [_]u8{7} ** 32,
+        .voter = @as([32]u8, @splat(7)),
         .stake = 100,
         .round = .{ .value = 42 },
-        .block_digest = [_]u8{3} ** 32,
-        .signature = [_]u8{4} ** 32 ++ [_]u8{0} ** 64,
+        .block_digest = @as([32]u8, @splat(3)),
+        .signature = @as([32]u8, @splat(4)) ++ @as([64]u8, @splat(0)),
     };
     const ev = detectEquivocation(vote_a, vote_b) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 42), ev.round.value);

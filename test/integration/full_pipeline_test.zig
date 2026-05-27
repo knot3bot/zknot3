@@ -13,7 +13,7 @@ const Object = root.form.storage.Object;
 const Checkpoint = root.form.storage.Checkpoint;
 
 fn makeId(i: u8) [32]u8 {
-    return [_]u8{i} ** 32;
+    return @as([32]u8, @splat(i));
 }
 
 test "Pipeline: ingress to egress" {
@@ -55,8 +55,8 @@ test "Pipeline: object store put and get" {
     defer allocator.free(data);
     const obj = Object{
         .id = id,
-        .version = .{ .seq = 1, .causal = [_]u8{0} ** 16 },
-        .ownership = root.core.Ownership.ownedBy([_]u8{0} ** 32),
+        .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
+        .ownership = root.core.Ownership.ownedBy(@as([32]u8, @splat(0))),
         .type_tag = 1,
         .data = data,
     };

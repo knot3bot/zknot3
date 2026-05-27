@@ -159,7 +159,7 @@ test "Egress certificate aggregation" {
     defer egress.deinit();
 
     const execution = Executor.ExecutionResult{
-        .digest = [_]u8{1} ** 32,
+        .digest = @as([32]u8, @splat(1)),
         .status = .success,
         .gas_used = 100,
         .output_objects = &.{},
@@ -167,8 +167,8 @@ test "Egress certificate aggregation" {
     };
 
     const signatures = &[_]SignaturePair{
-        .{ .validator = [_]u8{1} ** 32, .signature = [_]u8{1} ** 64, .stake = 1500 },
-        .{ .validator = [_]u8{2} ** 32, .signature = [_]u8{2} ** 64, .stake = 1000 },
+        .{ .validator = @as([32]u8, @splat(1)), .signature = @as([64]u8, @splat(1)), .stake = 1500 },
+        .{ .validator = @as([32]u8, @splat(2)), .signature = @as([64]u8, @splat(2)), .stake = 1000 },
     };
 
     const cert = try egress.aggregate(execution, signatures);
@@ -182,7 +182,7 @@ test "Egress verifyCertificate rejects below-threshold stake" {
     defer egress.deinit();
 
     const cert = Certificate{
-        .digest = [_]u8{1} ** 32,
+        .digest = @as([32]u8, @splat(1)),
         .signatures = &.{},
         .stake_total = 1500, // Only 50% — below 2/3+1 threshold (2001)
     };
@@ -197,9 +197,9 @@ test "Egress verifyCertificate rejects invalid signatures" {
     defer egress.deinit();
 
     const cert = Certificate{
-        .digest = [_]u8{1} ** 32,
+        .digest = @as([32]u8, @splat(1)),
         .signatures = &[_]SignaturePair{
-            .{ .validator = [_]u8{0} ** 32, .signature = [_]u8{0} ** 64, .stake = 2500 },
+            .{ .validator = @as([32]u8, @splat(0)), .signature = @as([64]u8, @splat(0)), .stake = 2500 },
         },
         .stake_total = 2500, // Above 2001 threshold
     };

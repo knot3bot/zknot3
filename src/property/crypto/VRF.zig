@@ -189,7 +189,7 @@ test "VRF verify" {
 }
 
 test "VRF deterministic" {
-    const seed = [_]u8{0xAB} ** 32;
+    const seed = @as([32]u8, @splat(0xAB));
     const sk = VRFSecretKey.fromSeed(seed);
     const pk = try VRFPublicKey.fromSecretKey(sk);
 

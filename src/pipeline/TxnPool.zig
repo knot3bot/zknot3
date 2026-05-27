@@ -348,7 +348,7 @@ test "TxnPool basic operations" {
     defer pool.deinit();
 
     var tx = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = try allocator.dupe(u8, "test"),
         .gas_budget = 1000,
@@ -375,7 +375,7 @@ test "TxnPool rejects duplicate" {
     defer pool.deinit();
 
     const tx = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = "test",
         .gas_budget = 1000,
@@ -392,7 +392,7 @@ test "TxnPool rejects low gas price" {
     defer pool.deinit();
 
     const tx = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = "test",
         .gas_budget = 1000,
@@ -409,7 +409,7 @@ test "TxnPool priority ordering" {
 
     // Add transactions with different gas prices
     const tx1 = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = "tx1",
         .gas_budget = 1000,
@@ -418,7 +418,7 @@ test "TxnPool priority ordering" {
     try pool.add(tx1, 1000); // Low gas price
 
     const tx2 = Ingress.Transaction{
-        .sender = [_]u8{2} ** 32,
+        .sender = @as([32]u8, @splat(2)),
         .inputs = &.{},
         .program = "tx2",
         .gas_budget = 1000,
@@ -427,7 +427,7 @@ test "TxnPool priority ordering" {
     try pool.add(tx2, 2000); // Medium gas price
 
     const tx3 = Ingress.Transaction{
-        .sender = [_]u8{3} ** 32,
+        .sender = @as([32]u8, @splat(3)),
         .inputs = &.{},
         .program = "tx3",
         .gas_budget = 1000,
@@ -458,7 +458,7 @@ test "TxnPool tracks multiple senders" {
     defer pool.deinit();
 
     const tx1 = Ingress.Transaction{
-        .sender = [_]u8{1} ** 32,
+        .sender = @as([32]u8, @splat(1)),
         .inputs = &.{},
         .program = "test1",
         .gas_budget = 1000,
@@ -466,7 +466,7 @@ test "TxnPool tracks multiple senders" {
     };
 
     const tx2 = Ingress.Transaction{
-        .sender = [_]u8{2} ** 32,
+        .sender = @as([32]u8, @splat(2)),
         .inputs = &.{},
         .program = "test2",
         .gas_budget = 1000,
@@ -477,6 +477,6 @@ test "TxnPool tracks multiple senders" {
     try pool.add(tx2, 1000);
 
     try std.testing.expect(pool.stats().sender_count == 2);
-    try std.testing.expect(pool.hasPendingForSender([_]u8{1} ** 32));
-    try std.testing.expect(pool.hasPendingForSender([_]u8{2} ** 32));
+    try std.testing.expect(pool.hasPendingForSender(@as([32]u8, @splat(1))));
+    try std.testing.expect(pool.hasPendingForSender(@as([32]u8, @splat(2))));
 }

@@ -1050,7 +1050,7 @@ test "GraphQL M4 resolvers call node hooks" {
     const config = try allocator.create(Config);
     defer allocator.destroy(config);
     config.* = Config.default();
-    config.authority.signing_key = [_]u8{0x55} ** 32;
+    config.authority.signing_key = @as([32]u8, @splat(0x55));
 
     const node = try Node.init(allocator, config, NodeDependencies{});
     defer node.deinit();
