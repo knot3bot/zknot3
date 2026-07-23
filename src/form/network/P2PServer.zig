@@ -569,6 +569,34 @@ pub const P2PServer = struct {
         return true;
     }
 
+    /// Exponentially decay penalty scores towards normal 0 baseline across all active rate states
+    pub fn decayPeerScores(self: *Self) void {
+        var it = self.peer_rate_states.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr;
+            if (state.score < 0) {
+                state.score = @min(0, state.score + 5);
+            }
+        }
+    }
+
+    /// Adjust peer reputation score and disconnect if reputation drops below threshold
+    pub fn adjustPeerReputation(self: *Self, peer_key: [32]u8, delta: i32) void {
+        if (self.peers.get(peer_key)) |peer| {
+            peer.reputation = std.math.clamp(peer.reputation + delta, 0, 100);
+            if (peer.reputation < 10) {
+                self.banned_peers_total += 1;
+                peer.state = .closing;
+            }
+        } else if (self.quic_peers.get(peer_key)) |quic_peer| {
+            quic_peer.reputation = std.math.clamp(quic_peer.reputation + delta, 0, 100);
+            if (quic_peer.reputation < 10) {
+                self.banned_peers_total += 1;
+                quic_peer.state = .closing;
+            }
+        }
+    }
+
     pub const RateLimitStats = struct {
         rate_limited_drops_total: u64,
         banned_peers_total: u64,
@@ -768,6 +796,8 @@ pub const PeerConnection = struct {
     last_ping: i64,
     peer_key: [32]u8,
     max_message_size: usize,
+    reputation: i32 = 100,
+    latency_ms: u64 = 0,
 
     pub const State = enum {
         handshaking,
@@ -1070,6 +1100,8 @@ pub const QUICPeerConnection = struct {
     last_ping: i64,
     peer_key: [32]u8,
     max_message_size: usize,
+    reputation: i32 = 100,
+    latency_ms: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, peer_id: u64, quic_conn: *QUIC.QUICConnection) !*Self {
         const self = try allocator.create(Self);

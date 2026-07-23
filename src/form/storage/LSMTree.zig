@@ -770,9 +770,17 @@ pub const CompactionManager = struct {
         self.levels.items[level].clearRetainingCapacity();
     }
 
+    /// Calculate compaction score for a given level (ratio of current SST count to allowed threshold)
+    pub fn getCompactionScore(self: *Self, level: usize) f64 {
+        if (level >= self.levels.items.len) return 0.0;
+        const count = self.levels.items[level].items.len;
+        const max_allowed = if (level == 0) @as(usize, 2) else self.config.level_multiplier;
+        return @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(max_allowed));
+    }
+
     pub fn needsCompaction(self: *Self) bool {
-        for (self.levels.items) |level_ssts| {
-            if (level_ssts.items.len > 2) return true;
+        for (self.levels.items, 0..) |_, level| {
+            if (self.getCompactionScore(level) >= 1.0) return true;
         }
         return false;
     }

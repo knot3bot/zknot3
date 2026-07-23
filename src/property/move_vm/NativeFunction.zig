@@ -96,6 +96,12 @@ pub const Registry = struct {
         try self.register("sui", "coin::join", CoinBalance.nativeCoinJoin);
         try self.register("sui", "pay::split", CoinBalance.nativePaySplit);
         try self.register("sui", "pay::join_vec", CoinBalance.nativePayJoinVec);
+
+        const Crypto = @import("Crypto.zig");
+        try self.register("sui", "crypto::ed25519_verify", Crypto.nativeEd25519Verify);
+        try self.register("sui", "crypto::sha3_256", Crypto.nativeSha3_256);
+        try self.register("sui", "crypto::keccak256", Crypto.nativeKeccak256);
+        try self.register("sui", "crypto::bls12381_verify_g1", Crypto.nativeBls12381Verify);
     }
 };
 

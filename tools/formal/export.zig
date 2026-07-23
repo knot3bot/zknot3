@@ -564,7 +564,7 @@ pub const Exporter = struct {
             \\    honest >= 2 * f + 1
             \\
             \\  /- Quorum threshold: 2/3 of total -/
-            \\  def quorumThreshold (total : Stake) : Stake := 2 * total / 3
+            \\  def quorumThreshold (total : Stake) : Stake := (2 * total / 3) + 1
             \\
             \\  /- Mysticeti DAG block -/
             \\  structure Block where
