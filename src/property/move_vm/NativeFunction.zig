@@ -142,11 +142,13 @@ pub const Registry = struct {
         try self.register("knot3", "ai_framework::quantized_predict", AINatives.nativeQuantizedPredict);
         try self.register("knot3", "ai_framework::zkml_verify_proof", AINatives.nativeZkmlVerifyProof);
         try self.register("knot3", "ai_framework::agent_dispatch", AINatives.nativeAgentDispatch);
+        try self.register("knot3", "ai_framework::emit_inference_event", AINatives.nativeEmitInferenceEvent);
 
         try self.register("knot3", "ai::tensor_matmul", AINatives.nativeTensorMatMul);
         try self.register("knot3", "ai::quantized_predict", AINatives.nativeQuantizedPredict);
         try self.register("knot3", "ai::zkml_verify_proof", AINatives.nativeZkmlVerifyProof);
         try self.register("knot3", "ai::agent_dispatch", AINatives.nativeAgentDispatch);
+        try self.register("knot3", "ai::emit_inference_event", AINatives.nativeEmitInferenceEvent);
     }
 };
 

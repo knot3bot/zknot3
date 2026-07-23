@@ -163,6 +163,28 @@ pub fn nativeAgentDispatch(interpreter: *Interpreter, args: []const Value) Nativ
     return Value{ .tag = .integer, .data = .{ .int = 200 } };
 }
 
+/// Native: knot3::ai_framework::emit_inference_event(model_id: vector<u8>, status: u64) -> ()
+/// Emits AI inference observability event for indexers and tri-source metrics
+pub fn nativeEmitInferenceEvent(interpreter: *Interpreter, args: []const Value) NativeError!Value {
+    if (args.len != 2) return NativeError.InvalidArgumentCount;
+
+    const model_id = try extractBytes(interpreter.allocator, args[0]);
+    defer interpreter.allocator.free(model_id);
+
+    const Event = @import("EventEmitter.zig").Event;
+    const ctx = interpreter.tx_context orelse return NativeError.ResourceNotFound;
+
+    const event = Event{
+        .event_type = "knot3::ai_framework::InferenceEvent",
+        .sender = ctx.sender,
+        .payload = try std.fmt.allocPrint(interpreter.allocator, "{{\"model_id\":\"{s}\",\"status\":{d}}}", .{ model_id, args[1].data.int }),
+        .event_index = @intCast(interpreter.events.items.len),
+    };
+
+    interpreter.events.append(interpreter.allocator, event) catch return NativeError.OutOfMemory;
+    return Value{ .tag = .integer, .data = .{ .int = 0 } };
+}
+
 test "AINatives: tensor_matmul and quantized_predict" {
     const allocator = std.testing.allocator;
     const Gas = @import("Gas.zig");
