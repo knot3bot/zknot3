@@ -102,6 +102,51 @@ pub const Registry = struct {
         try self.register("sui", "crypto::sha3_256", Crypto.nativeSha3_256);
         try self.register("sui", "crypto::keccak256", Crypto.nativeKeccak256);
         try self.register("sui", "crypto::bls12381_verify_g1", Crypto.nativeBls12381Verify);
+
+        try self.registerKnot3Framework();
+    }
+
+    /// Convenience: register all standard knot3 framework natives including AI framework
+    pub fn registerKnot3Framework(self: *Self) !void {
+        const TxContext = @import("TxContext.zig");
+        try self.register("knot3", "tx_context::sender", TxContext.nativeSender);
+        try self.register("knot3", "tx_context::epoch", TxContext.nativeEpoch);
+        try self.register("knot3", "tx_context::epoch_timestamp_ms", TxContext.nativeEpochTimestampMs);
+        try self.register("knot3", "tx_context::fresh_id", TxContext.nativeFreshId);
+
+        const EventEmitter = @import("EventEmitter.zig");
+        try self.register("knot3", "event::emit", EventEmitter.nativeEmit);
+
+        const ObjectTransfer = @import("ObjectTransfer.zig");
+        try self.register("knot3", "object::new", ObjectTransfer.nativeObjectNew);
+        try self.register("knot3", "transfer::public_transfer", ObjectTransfer.nativePublicTransfer);
+        try self.register("knot3", "transfer::share_object", ObjectTransfer.nativeShareObject);
+        try self.register("knot3", "transfer::freeze_object", ObjectTransfer.nativeFreezeObject);
+
+        const CoinBalance = @import("CoinBalance.zig");
+        try self.register("knot3", "balance::value", CoinBalance.nativeBalanceValue);
+        try self.register("knot3", "balance::split", CoinBalance.nativeBalanceSplit);
+        try self.register("knot3", "balance::join", CoinBalance.nativeBalanceJoin);
+        try self.register("knot3", "coin::value", CoinBalance.nativeCoinValue);
+        try self.register("knot3", "coin::split", CoinBalance.nativeCoinSplit);
+        try self.register("knot3", "coin::join", CoinBalance.nativeCoinJoin);
+
+        const Crypto = @import("Crypto.zig");
+        try self.register("knot3", "crypto::ed25519_verify", Crypto.nativeEd25519Verify);
+        try self.register("knot3", "crypto::sha3_256", Crypto.nativeSha3_256);
+        try self.register("knot3", "crypto::keccak256", Crypto.nativeKeccak256);
+        try self.register("knot3", "crypto::bls12381_verify_g1", Crypto.nativeBls12381Verify);
+
+        const AINatives = @import("AINatives.zig");
+        try self.register("knot3", "ai_framework::tensor_matmul", AINatives.nativeTensorMatMul);
+        try self.register("knot3", "ai_framework::quantized_predict", AINatives.nativeQuantizedPredict);
+        try self.register("knot3", "ai_framework::zkml_verify_proof", AINatives.nativeZkmlVerifyProof);
+        try self.register("knot3", "ai_framework::agent_dispatch", AINatives.nativeAgentDispatch);
+
+        try self.register("knot3", "ai::tensor_matmul", AINatives.nativeTensorMatMul);
+        try self.register("knot3", "ai::quantized_predict", AINatives.nativeQuantizedPredict);
+        try self.register("knot3", "ai::zkml_verify_proof", AINatives.nativeZkmlVerifyProof);
+        try self.register("knot3", "ai::agent_dispatch", AINatives.nativeAgentDispatch);
     }
 };
 
@@ -128,4 +173,16 @@ test "Registry resolve missing returns null" {
 
     const resolved = reg.resolve("missing", "func");
     try std.testing.expect(resolved == null);
+}
+
+test "Registry knot3::ai_framework resolution" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+
+    try reg.registerKnot3Framework();
+    try std.testing.expect(reg.resolve("knot3", "ai_framework::tensor_matmul") != null);
+    try std.testing.expect(reg.resolve("knot3", "ai_framework::quantized_predict") != null);
+    try std.testing.expect(reg.resolve("knot3", "ai_framework::zkml_verify_proof") != null);
+    try std.testing.expect(reg.resolve("knot3", "ai_framework::agent_dispatch") != null);
 }
