@@ -222,14 +222,18 @@ pub const BytecodeVerifier = struct {
         if (tag >= 0x60 and tag <= 0x65) return (2 << 16) | 1;
         // Logical and/or: pop 2, push 1
         if (tag == 0x70 or tag == 0x71) return (2 << 16) | 1;
-        // not: pop 1, push 1
-        if (tag == 0x72) return (1 << 16) | 1;
-        // pop, branch_if: pop 1, push 0
-        if (tag == 0x11 or tag == 0x04) return (1 << 16) | 0;
-        // dup: pop 0, push 1
-        if (tag == 0x12) return (0 << 16) | 1;
-        // ld_*, ld_true, ld_false, ld_addr: pop 0, push 1
-        if ((tag >= 0x30 and tag <= 0x38) or tag == 0x14 or tag == 0x15) return (0 << 16) | 1;
+        // not, neg: pop 1, push 1
+        if (tag == 0x72 or tag == 0x45) return (1 << 16) | 1;
+        // pop, st_loc, branch_if: pop 1, push 0
+        if (tag == 0x10 or tag == 0x21 or tag == 0x03) return (1 << 16) | 0;
+        // dup: pop 1, push 2
+        if (tag == 0x11) return (1 << 16) | 2;
+        // swap: pop 2, push 2
+        if (tag == 0x12) return (2 << 16) | 2;
+        // ld_loc: pop 0, push 1
+        if (tag == 0x20) return (0 << 16) | 1;
+        // ld_*, ld_true, ld_false, ld_addr, ld_const: pop 0, push 1
+        if (tag >= 0x30 and tag <= 0x39) return (0 << 16) | 1;
         // Everything else: pop 0, push 0
         return 0;
     }

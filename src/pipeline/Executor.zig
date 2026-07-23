@@ -98,7 +98,7 @@ pub const ExecutionStatus = enum {
 
 /// Executor configuration
 pub const ExecutorConfig = struct {
-    parallelism: usize = 8,
+    parallelism: usize = 4,
     max_gas: u64 = 10_000_000,
     /// Use Block-STM optimistic execution instead of dependency-graph batching
     use_block_stm: bool = true,

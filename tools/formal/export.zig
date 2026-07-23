@@ -170,8 +170,8 @@ pub const Exporter = struct {
             \\    let honest := total - sum (take f validators) in
             \\    honest >= 2 * f + 1.
             \\
-            \\  (* Quorum threshold: 2/3 of total stake *)
-            \\  Definition quorum_threshold (total : stake) : stake := 2 * total / 3.
+            \\  (* Quorum threshold: > 2/3 of total stake *)
+            \\  Definition quorum_threshold (total : stake) : stake := (2 * total / 3) + 1.
             \\
             \\  Axiom quorum_formation : forall (votes : list stake) (total : stake),
             \\    sum votes >= quorum_threshold total ->

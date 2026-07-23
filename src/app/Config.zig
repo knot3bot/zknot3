@@ -252,6 +252,8 @@ pub const Config = struct {
         if (self.network.rpc_port == self.network.p2p_port) return error.PortConflict;
         // Data directory must be non-empty for non-dev configurations
         if (!self.is_dev and self.storage.data_dir.len == 0) return error.MissingDataDir;
+        // Unauthenticated P2P is forbidden in production environment
+        if (!self.is_dev and self.allow_unauthenticated_p2p) return error.UnauthenticatedP2PForbiddenInProduction;
     }
 
     /// Builder pattern: chainable config construction.
@@ -462,4 +464,11 @@ test "Config default passes validation" {
     var cfg = Config.default();
     cfg.is_dev = true;
     try cfg.validate();
+}
+
+test "Config.validate rejects unauthenticated P2P in non-dev" {
+    var cfg = Config.default();
+    cfg.is_dev = false;
+    cfg.allow_unauthenticated_p2p = true;
+    try std.testing.expectError(error.UnauthenticatedP2PForbiddenInProduction, cfg.validate());
 }

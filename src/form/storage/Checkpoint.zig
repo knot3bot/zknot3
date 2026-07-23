@@ -135,13 +135,13 @@ pub const Checkpoint = struct {
             const sig = self.bls_signature orelse return false;
             const bitmap = self.bls_signer_bitmap orelse return false;
             if (bvset.validators.len == 0) return false;
-            var total_power: u64 = 0;
+            var total_power: u128 = 0;
             for (bvset.validators) |v| total_power += v.voting_power;
             if (total_power == 0) return false;
-            const quorum_threshold = (total_power * 2) / 3 + 1;
+            const quorum_threshold: u128 = (total_power * 2) / 3 + 1;
             var selected = std.ArrayList(Bls.PublicKey).empty;
             defer selected.deinit(allocator);
-            var power: u64 = 0;
+            var power: u128 = 0;
             const n = @min(bitmap.len, bvset.validators.len);
             var i: usize = 0;
             while (i < n) : (i += 1) {
@@ -179,11 +179,11 @@ pub const Checkpoint = struct {
             if (self.signatures.count() == 0) return false;
 
             const msg = try self.signingCommitment(allocator);
-            const total_stake = vset.totalStake();
+            const total_stake: u128 = vset.totalStake();
             if (total_stake == 0) return false;
-            // Quorum threshold is 2/3+ of total stake
-            const quorum_threshold = (total_stake * 2) / 3 + 1;
-            var stake_sum: u64 = 0;
+            // Quorum threshold is 2/3+ of total stake computed in u128
+            const quorum_threshold: u128 = (total_stake * 2) / 3 + 1;
+            var stake_sum: u128 = 0;
             var it = self.signatures.iterator();
             while (it.next()) |entry| {
                 if (vset.get(entry.key_ptr.*)) |validator| {

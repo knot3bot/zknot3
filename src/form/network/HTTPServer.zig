@@ -737,7 +737,12 @@ pub const HTTPServer = struct {
                 const info = node.getNodeInfo();
                 const peers = if (node.getP2PServer()) |p2p| p2p.peerCount() else 0;
                 const pool_stats = node.getTxnPoolStats();
-                var metrics_buf: [4096]u8 = undefined;
+                const tri = node.getTriSourceMetrics();
+                const wu_feng = tri.wu_feng;
+                const xiang_da = tri.xiang_da;
+                const zi_zai = tri.zi_zai;
+
+                var metrics_buf: [8192]u8 = undefined;
                 const text = std.fmt.bufPrint(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
@@ -774,7 +779,19 @@ pub const HTTPServer = struct {
                     "\n" ++
                     "# HELP zknot3_txn_pool_executed_total Total transactions executed\n" ++
                     "# TYPE zknot3_txn_pool_executed_total counter\n" ++
-                    "zknot3_txn_pool_executed_total {}\n",
+                    "zknot3_txn_pool_executed_total {}\n" ++
+                    "\n" ++
+                    "# HELP zknot3_tri_source_wu_feng Resource efficiency metric (WuFeng / 物丰)\n" ++
+                    "# TYPE zknot3_tri_source_wu_feng gauge\n" ++
+                    "zknot3_tri_source_wu_feng {d:.6}\n" ++
+                    "\n" ++
+                    "# HELP zknot3_tri_source_xiang_da Knowledge coverage metric (XiangDa / 象大)\n" ++
+                    "# TYPE zknot3_tri_source_xiang_da gauge\n" ++
+                    "zknot3_tri_source_xiang_da {d:.6}\n" ++
+                    "\n" ++
+                    "# HELP zknot3_tri_source_zi_zai User satisfaction metric (ZiZai / 性自在)\n" ++
+                    "# TYPE zknot3_tri_source_zi_zai gauge\n" ++
+                    "zknot3_tri_source_zi_zai {d:.6}\n",
                     .{
                         info.consensus_round,
                         peers,
@@ -785,6 +802,9 @@ pub const HTTPServer = struct {
                         pool_stats.pending,
                         pool_stats.received_total,
                         pool_stats.executed_total,
+                        wu_feng,
+                        xiang_da,
+                        zi_zai,
                     },
                 ) catch |err| {
                     Log.warn("[WARN] Failed to format metrics response: {}", .{err});

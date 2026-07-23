@@ -160,13 +160,10 @@ pub const WAL = struct {
         errdefer allocator.free(wal_path);
 
         // Open or create WAL file
-        const inner_file = std.Io.Dir.cwd().createFile(io, wal_path, .{
+        const inner_file = try std.Io.Dir.cwd().createFile(io, wal_path, .{
             .read = true,
             .truncate = false,
-        }) catch |err| {
-            allocator.free(wal_path);
-            return err;
-        };
+        });
         const file = IoFile{ .io = io, .file = inner_file };
         errdefer file.close();
 

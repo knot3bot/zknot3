@@ -847,6 +847,51 @@ pub const Mysticeti = struct {
         }
     }
 
+    /// Prune rounds older than (current_round - retain_horizon) from DAG memory and index.
+    /// This prevents unbounded memory growth during long-running consensus operation.
+    pub fn pruneHistory(self: *Self, retain_horizon: u64) usize {
+        if (self.current_round.value <= retain_horizon) return 0;
+        const cutoff_round = self.current_round.value - retain_horizon;
+        var pruned_rounds: usize = 0;
+
+        var dag_it = self.dag.iterator();
+        var rounds_to_remove = std.ArrayList(Round).empty;
+        defer rounds_to_remove.deinit(self.allocator);
+
+        while (dag_it.next()) |entry| {
+            const r = entry.key_ptr.*;
+            if (r.value < cutoff_round) {
+                var block_it = entry.value_ptr.iterator();
+                while (block_it.next()) |block_entry| {
+                    _ = self.block_index.swapRemove(block_entry.value_ptr.digest);
+                    block_entry.value_ptr.deinit(self.allocator);
+                }
+                entry.value_ptr.deinit(self.allocator);
+                rounds_to_remove.append(self.allocator, r) catch break;
+                pruned_rounds += 1;
+            }
+        }
+
+        for (rounds_to_remove.items) |r| {
+            _ = self.dag.swapRemove(r);
+        }
+
+        var commit_it = self.committed_rounds.iterator();
+        var committed_to_remove = std.ArrayList(Round).empty;
+        defer committed_to_remove.deinit(self.allocator);
+        while (commit_it.next()) |entry| {
+            const cr = entry.key_ptr.*;
+            if (cr.value < cutoff_round) {
+                committed_to_remove.append(self.allocator, cr) catch break;
+            }
+        }
+        for (committed_to_remove.items) |cr| {
+            _ = self.committed_rounds.swapRemove(cr);
+        }
+
+        return pruned_rounds;
+    }
+
     /// Return the current DAG size in rounds (for monitoring).
     pub fn dagRoundCount(self: *const Self) usize {
         return self.dag.count();
@@ -937,6 +982,36 @@ test "detectEquivocation returns evidence for conflicting votes" {
     try std.testing.expectEqual(@as(u64, 42), ev.round.value);
     try std.testing.expectEqual(vote_a.block_digest, ev.first_block_digest);
     try std.testing.expectEqual(vote_b.block_digest, ev.conflicting_block_digest);
+}
+
+test "Mysticeti pruneHistory removes old rounds" {
+    const allocator = std.testing.allocator;
+    var quorum = try Quorum.Quorum.init(allocator);
+    defer quorum.deinit();
+
+    var consensus = try Mysticeti.init(allocator, quorum);
+    defer consensus.deinit();
+
+    // Add blocks across rounds 1 to 10
+    for (1..11) |r| {
+        const parents = &[_]Round{.{ .value = r - 1 }};
+        var block = try Block.create(
+            @as([32]u8, @splat(1)),
+            .{ .value = r },
+            "payload",
+            parents,
+            allocator,
+        );
+        defer block.deinit(allocator);
+        try consensus.addBlock(block);
+    }
+    consensus.current_round = .{ .value = 10 };
+
+    // Prune with retain_horizon = 5 (keep rounds 5..10, prune 1..4)
+    const pruned = consensus.pruneHistory(5);
+    try std.testing.expectEqual(@as(usize, 4), pruned);
+    try std.testing.expect(!consensus.dag.contains(.{ .value = 1 }));
+    try std.testing.expect(consensus.dag.contains(.{ .value = 5 }));
 }
 
 comptime {

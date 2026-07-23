@@ -400,6 +400,21 @@ pub const Node = struct {
         try NodeLifecycleCoordinator.recoverFromDisk(self.object_store);
         // Phase 2+: replay M4 WAL to restore stake/governance/epoch state
         try self.replayMainnetM4Wal();
+
+        // Phase 3: recover checkpoint sequence state from disk if exists
+        const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
+        if (cp_path) |p| {
+            defer self.allocator.free(p);
+            if (CheckpointSequence.load(p)) |recovered_cs| {
+                self.checkpoint_store.deinit();
+                self.checkpoint_store = recovered_cs;
+                Log.info("Loaded checkpoint sequence state from disk (seq: {})", .{self.checkpoint_store.getLatestSequence()});
+            } else |err| {
+                if (err != error.FileNotFound) {
+                    Log.warn("Failed to recover checkpoint sequence from {s}: {s}", .{ p, @errorName(err) });
+                }
+            }
+        }
     }
 
     /// Replay M4 extension WAL into `mainnet_hooks` after object-store recovery.
