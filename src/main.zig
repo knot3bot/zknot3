@@ -64,6 +64,31 @@ const HttpServer = union(enum) {
         }
     }
 };
+
+fn initHttpServer(
+    allocator: std.mem.Allocator,
+    rpc_addr: std.Io.net.IpAddress,
+    node: *@import("app/Node.zig").Node,
+    max_requests_per_second: u32,
+    max_connections: usize,
+) anyerror!HttpServer {
+    if (builtin.os.tag == .linux) {
+        if (AsyncHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second, max_connections)) |async_srv| {
+            return .{ .async_impl = async_srv };
+        } else |async_err| switch (async_err) {
+            // io_uring unavailable (containers with restrictive seccomp,
+            // older kernels, exhausted resources): fall back to the
+            // portable server instead of dying.
+            error.PermissionDenied, error.OperationNotSupported, error.SystemResources => {
+                Log.warn("io_uring HTTP unavailable ({s}); using portable HTTP server", .{@errorName(async_err)});
+                return .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
+            },
+            else => return async_err,
+        }
+    }
+    return .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
+}
+
 const ConsensusIntegration = @import("form/consensus/ConsensusIntegration.zig").ConsensusIntegration;
 const Log = @import("app/Log.zig");
 
@@ -323,23 +348,10 @@ pub fn main(init: std.process.Init) !void {
         Log.err("Invalid RPC address", .{});
         return;
     };
-    var http_server: HttpServer = undefined;
-    if (builtin.os.tag == .linux) {
-        if (AsyncHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second, config.network.max_connections)) |async_srv| {
-            http_server = .{ .async_impl = async_srv };
-        } else |async_err| switch (async_err) {
-            // io_uring unavailable (containers with restrictive seccomp,
-            // older kernels, exhausted resources): fall back to the
-            // portable server instead of dying.
-            error.PermissionDenied, error.OperationNotSupported, error.SystemResources => {
-                Log.warn("io_uring HTTP unavailable ({s}); using portable HTTP server", .{@errorName(async_err)});
-                http_server = .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second) };
-            },
-            else => return async_err,
-        }
-    } else {
-        http_server = .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second) };
-    }
+    var http_server = initHttpServer(allocator, rpc_addr, node, config.network.max_requests_per_second, config.network.max_connections) catch |http_err| {
+        Log.err("Failed to create HTTP server: {s}", .{@errorName(http_err)});
+        return;
+    };
     http_server.start() catch |http_err| {
         Log.err("Failed to start HTTP server: {s}", .{@errorName(http_err)});
         return;
