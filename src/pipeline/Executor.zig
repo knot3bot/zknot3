@@ -645,8 +645,8 @@ pub const Executor = struct {
                 // std.os.linux.CPU.set, whose location moved across
                 // 0.17-dev nightlies.
                 var cpu_mask: [16]u8 = @splat(0);
-                const core = tid % @as(u32, @intCast(exec.config.parallelism));
-                cpu_mask[core / 8] |= @as(u8, 1) << @intCast(core % 8);
+                const target_core = tid % @as(u32, @intCast(exec.config.parallelism));
+                cpu_mask[target_core / 8] |= @as(u8, 1) << @intCast(target_core % 8);
                 _ = std.os.linux.sched_setaffinity(0, cpu_mask.len, &cpu_mask);
             }
         }
