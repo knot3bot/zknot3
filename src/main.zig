@@ -138,7 +138,7 @@ fn printUsage() void {
         \\Options:
         \\  -h, --help           Show this help message
         \\  -v, --version        Show version information
-        \\  -d, --dev            Start in development mode (validator enabled)
+        \\  -d, --dev            Start in development mode (relaxed peer auth)
         \\  --validator          Enable validator mode
         \\  -c, --config <file>  Load configuration from file
         \\  --rpc-port <port>    Set RPC server port (default: 9003)
@@ -212,10 +212,11 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Options {
 /// Apply parsed options to configuration
 fn applyOptions(opts: Options, config: *Config) void {
     if (opts.dev) {
-        // Only set dev-specific defaults if not already configured
-        if (config.consensus.validator_enabled == false) {
-            config.*.consensus.validator_enabled = true;
-        }
+        // Dev mode relaxes peer authentication; it must NOT imply validator
+        // identity — a fullnode started with --dev was silently promoted to
+        // validator and then failed validation for the missing signing key.
+        // Being a validator comes from config or the explicit --validator
+        // flag (the documented pairing is `--dev --validator`).
         if (config.network.p2p_enabled == false) {
             config.*.network.p2p_enabled = true;
         }
