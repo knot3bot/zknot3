@@ -21,6 +21,8 @@ VALIDATORS=(zknot3-validator-1 zknot3-validator-2 zknot3-validator-3 zknot3-vali
 RUNNER=zknot3-test-runner
 DELAY_ARGS=(delay 80ms 10ms loss 2%)
 
+trap 'echo "::error title=wan_gate::script failed at line $LINENO (see job log)"; exit 1' ERR
+
 fail() {
   # Surface the failure as a check-run annotation with the last container
   # log lines: job logs need admin rights to download, annotations are
@@ -91,7 +93,10 @@ restarts() { docker inspect -f '{{.RestartCount}} {{.State.Status}}' "$1"; }
 
 # ---------------------------------------------------------------- setup
 [ -f .env ] || echo "ZKNOT3_ADMIN_TOKEN=wan-gate-test-token" > .env
-docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml up -d >/dev/null
+if ! docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml up -d 2>/tmp/compose_up.log; then
+  echo "::error title=wan_gate::compose up failed|$(tr '\n' ' ' < /tmp/compose_up.log | tr -cd '[:print:]' | cut -c1-500)"
+  exit 1
+fi
 trap 'docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml down -v >/dev/null 2>&1 || true' EXIT
 
 wait_healthy 240 || fail "cluster did not become healthy within 240s"
