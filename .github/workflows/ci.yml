@@ -100,3 +100,20 @@ jobs:
         run: |
           VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
           docker build -t zknot3:${VERSION} -t zknot3:latest -f deploy/docker/Dockerfile .
+
+  wan:
+    # Multi-container devnet under kernel-level WAN impairment (tc netem):
+    # 80ms ± 10ms latency + 2% loss, a full partition of one validator, and
+    # healing. Asserts BFT liveness of the 3-validator majority during the
+    # partition, catch-up after healing, and zero restarts throughout.
+    runs-on: ubuntu-latest
+    needs: docker
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t zknot3:latest -f deploy/docker/Dockerfile .
+
+      - name: WAN emulation gate (latency / loss / partition / healing)
+        run: bash tools/wan_emulation_gate.sh

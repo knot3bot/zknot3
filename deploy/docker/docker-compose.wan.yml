@@ -1,0 +1,12 @@
+# WAN-emulation overlay for docker-compose-testnet.yml:
+# grants the validators NET_ADMIN so `tc netem` can inject inter-region
+# latency, jitter, loss, and partitions from the host.
+services:
+  zknot3-validator-1:
+    cap_add: [NET_ADMIN]
+  zknot3-validator-2:
+    cap_add: [NET_ADMIN]
+  zknot3-validator-3:
+    cap_add: [NET_ADMIN]
+  zknot3-validator-4:
+    cap_add: [NET_ADMIN]

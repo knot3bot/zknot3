@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     gettext-base \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from build stage

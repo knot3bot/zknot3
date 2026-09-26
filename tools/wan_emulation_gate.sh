@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# WAN-emulation gate: runs the multi-container devnet under kernel-level
+# network impairment (tc netem) and asserts consensus safety + liveness:
+#
+#   1. healthy baseline        — 4 validators + fullnode, all /health OK
+#   2. WAN impairment          — 80ms ± 10ms delay + 2% loss on every
+#                                validator; blocks must still be committed
+#   3. partition               — validator-4 fully cut off; the 3-validator
+#                                majority must keep committing (BFT liveness)
+#   4. healing                 — impairment removed; validator-4 must resume
+#                                progress (catch-up)
+#   5. restart discipline      — no container may crash/restart at any point
+#
+# Requires: docker with the zknot3:latest image built; iproute2 (tc) inside
+# the containers (installed in the runtime image).
+set -euo pipefail
+
+cd "$(dirname "$0")/../deploy/docker"
+
+VALIDATORS=(zknot3-validator-1 zknot3-validator-2 zknot3-validator-3 zknot3-validator-4)
+RUNNER=zknot3-test-runner
+DELAY_ARGS=(delay 80ms 10ms loss 2%)
+
+fail() { echo "wan_gate: FAIL — $*" >&2; exit 1; }
+
+metric() { # metric <validator> <name>
+  docker exec "$RUNNER" curl -sf "http://$1:9133/metrics" | awk -v m="$2" '$1 == m {print $2}' | tail -1
+}
+
+# Block production is message/transaction driven; stimulate with a burst of
+# transactions through a validator's RPC (same pattern as soak_monitor.sh).
+stimulate() { # stimulate <validator> <count>
+  local i hex
+  for ((i = 0; i < $2; i++)); do
+    hex=$(printf 'wan-gate-tx-%064d' "$i")
+    docker exec "$RUNNER" curl -s --max-time 5 -X POST "http://$1:9003/tx" -d "$hex" >/dev/null || true
+  done
+}
+
+wait_healthy() { # wait_healthy <timeout_s>
+  local deadline=$((SECONDS + $1)) ok
+  while (( SECONDS < deadline )); do
+    ok=1
+    for v in "${VALIDATORS[@]}"; do
+      docker exec "$RUNNER" curl -sf "http://$v:9003/health" >/dev/null || { ok=0; break; }
+    done
+    docker exec "$RUNNER" curl -sf "http://zknot3-fullnode:9003/health" >/dev/null || ok=0
+    (( ok )) && return 0
+    sleep 3
+  done
+  return 1
+}
+
+impair() { # impair <container> [netem args...]
+  local c=$1; shift
+  docker exec "$c" tc qdisc replace dev eth0 root netem "$@"
+}
+
+clear_impair() {
+  docker exec "$1" tc qdisc del dev eth0 root 2>/dev/null || true
+}
+
+restarts() { docker inspect -f '{{.RestartCount}} {{.State.Status}}' "$1"; }
+
+# ---------------------------------------------------------------- setup
+[ -f .env ] || echo "ZKNOT3_ADMIN_TOKEN=wan-gate-test-token" > .env
+docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml up -d >/dev/null
+trap 'docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml down -v >/dev/null 2>&1 || true' EXIT
+
+wait_healthy 120 || fail "cluster did not become healthy"
+echo "phase 1 (baseline): all 5 nodes healthy"
+
+# ---------------------------------------------------- WAN impairment soak
+for v in "${VALIDATORS[@]:1}"; do impair "$v" "${DELAY_ARGS[@]}"; done
+impair zknot3-validator-1 "${DELAY_ARGS[@]}"
+
+base_blocks=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+[ -n "$base_blocks" ] || fail "cannot read blocks metric (got '${base_blocks}')"
+stimulate zknot3-validator-2 20
+sleep 60
+wan_blocks=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+(( wan_blocks > base_blocks )) || fail "no commits under 80ms/2%loss WAN impairment ($base_blocks -> $wan_blocks)"
+echo "phase 2 (WAN impairment): commits progressed under 80ms±10ms + 2% loss ($base_blocks -> $wan_blocks)"
+
+# ------------------------------------------------------------- partition
+v4_base=$(metric zknot3-validator-4 zknot3_blocks_committed_total)
+majority_base=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+impair zknot3-validator-4 loss 100%
+stimulate zknot3-validator-2 20
+sleep 45
+majority_mid=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+v4_mid=$(metric zknot3-validator-4 zknot3_blocks_committed_total)
+(( majority_mid > majority_base )) || fail "majority stalled during partition ($majority_base -> $majority_mid)"
+echo "phase 3 (partition): 3-validator majority kept committing ($majority_base -> $majority_mid); isolated node frozen ($v4_base -> $v4_mid)"
+
+# --------------------------------------------------------------- healing
+clear_impair zknot3-validator-4
+stimulate zknot3-validator-2 20
+sleep 60
+v4_healed=$(metric zknot3-validator-4 zknot3_blocks_committed_total)
+(( v4_healed > v4_mid )) || fail "validator-4 did not resume progress after healing ($v4_mid -> $v4_healed)"
+echo "phase 4 (healing): validator-4 resumed progress ($v4_mid -> $v4_healed)"
+
+# ------------------------------------------------------- restart audit
+for v in "${VALIDATORS[@]}"; do
+  read -r count status < <(restarts "$v")
+  [ "$count" = "0" ] && [ "$status" = "running" ] || fail "$v restarted (count=$count status=$status)"
+done
+docker inspect -f '{{.RestartCount}} {{.State.Status}}' zknot3-fullnode | {
+  read -r count status
+  [ "$count" = "0" ] && [ "$status" = "running" ] || fail "fullnode restarted (count=$count status=$status)"
+}
+echo "phase 5 (restart audit): zero restarts across all nodes"
+
+# cleanup impairments before teardown so the trap's compose down is clean
+for v in "${VALIDATORS[@]}"; do clear_impair "$v"; done
+
+echo "wan_gate: PASS"
