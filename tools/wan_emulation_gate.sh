@@ -27,9 +27,13 @@ fail() {
   # publicly readable.
   local logs=""
   if docker inspect zknot3-validator-1 >/dev/null 2>&1; then
-    logs=$(docker logs --tail 15 zknot3-validator-1 2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-600)
+    logs=$(docker logs --tail 15 zknot3-validator-1 2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-400)
+    local flogs=""
+    if docker inspect zknot3-fullnode >/dev/null 2>&1; then
+      flogs=$(docker logs --tail 10 zknot3-fullnode 2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-400)
+    fi
   fi
-  echo "::error title=wan_gate::$* | v1-log: ${logs}"
+  echo "::error title=wan_gate::$* | v1-log: ${logs} | fullnode-log: ${flogs}"
   echo "wan_gate: FAIL — $*" >&2
   exit 1
 }
@@ -65,7 +69,9 @@ wait_healthy() { # wait_healthy <timeout_s>
         docker exec "$RUNNER" curl -sf -o /dev/null "http://$v:9003/health" 2>/dev/null || rc=$?
         diag="$diag $v(health_rc=$rc,restarts=$(docker inspect -f '{{.RestartCount}}' "$v"),status=$(docker inspect -f '{{.State.Status}}' "$v"))"
       done
-      echo "::notice title=wan_gate-wait::t=${SECONDS}s$diag"
+      local fn_rc=0
+      docker exec "$RUNNER" curl -sf -o /dev/null "http://zknot3-fullnode:9003/health" 2>/dev/null || fn_rc=$?
+      echo "::notice title=wan_gate-wait::t=${SECONDS}s$diag fullnode(health_rc=${fn_rc},restarts=$(docker inspect -f '{{.RestartCount}}' zknot3-fullnode 2>/dev/null || echo n/a),status=$(docker inspect -f '{{.State.Status}}' zknot3-fullnode 2>/dev/null || echo n/a))"
     fi
     sleep 3
   done
