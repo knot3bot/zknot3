@@ -641,9 +641,13 @@ pub const Executor = struct {
         if (comptime builtin.os.tag == .linux) {
             if (exec.config.parallelism > 1) {
                 const tid = @atomicRmw(u32, &exec._thread_counter, .Add, 1, .monotonic);
-                var cpu_set: std.os.linux.CPU.set = std.os.linux.CPU.set{};
-                cpu_set.set(tid % exec.config.parallelism);
-                _ = std.os.linux.sched_setaffinity(0, @sizeOf(std.os.linux.CPU.set), &cpu_set);
+                // Raw affinity mask (cpu_set_t layout, 1024 CPUs): avoids
+                // std.os.linux.CPU.set, whose location moved across
+                // 0.17-dev nightlies.
+                var cpu_mask: [16]u8 = @splat(0);
+                const core = tid % @as(u32, @intCast(exec.config.parallelism));
+                cpu_mask[core / 8] |= @as(u8, 1) << @intCast(core % 8);
+                _ = std.os.linux.sched_setaffinity(0, cpu_mask.len, &cpu_mask);
             }
         }
         for (indices) |idx| {

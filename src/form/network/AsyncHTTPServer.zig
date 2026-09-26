@@ -373,8 +373,8 @@ pub const AsyncHTTPServer = struct {
                 .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
                 .body = "{\"error\":\"Request body too large\"}",
             };
-            _ = try response.withJSONContentType();
-            _ = response.withTraceId(&trace_id) catch {};
+            response = try response.withJSONContentType(self.allocator);
+            response.withTraceId(&trace_id);
             return try response.toString(self.allocator);
         }
 
@@ -394,8 +394,8 @@ pub const AsyncHTTPServer = struct {
                 .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
-            _ = try response.withJSONContentType();
-            _ = response.withTraceId(&trace_id) catch {};
+            response = try response.withJSONContentType(self.allocator);
+            response.withTraceId(&trace_id);
             return try response.toString(self.allocator);
         }
         self.request_count += 1;
@@ -409,8 +409,8 @@ pub const AsyncHTTPServer = struct {
                 .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
                 .body = "{\"error\":\"Unauthorized\"}",
             };
-            _ = try response.withJSONContentType();
-            _ = response.withTraceId(&trace_id) catch {};
+            response = try response.withJSONContentType(self.allocator);
+            response.withTraceId(&trace_id);
             return try response.toString(self.allocator);
         }
 
