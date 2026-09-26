@@ -157,7 +157,7 @@ fn isWriteMethod(method: []const u8) bool {
         std.ascii.eqlIgnoreCase(method, "PATCH");
 }
 
-fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) bool {
+pub fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) bool {
     const n = node orelse return false;
     if (n.config.network.admin_token.len == 0) {
         // No admin token configured — all write endpoints require auth by default.

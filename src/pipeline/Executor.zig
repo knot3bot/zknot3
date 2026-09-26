@@ -647,7 +647,7 @@ pub const Executor = struct {
                 var cpu_mask: [16]u8 = @splat(0);
                 const target_core = tid % @as(u32, @intCast(exec.config.parallelism));
                 cpu_mask[target_core / 8] |= @as(u8, 1) << @intCast(target_core % 8);
-                _ = std.os.linux.sched_setaffinity(0, cpu_mask.len, &cpu_mask);
+                _ = std.os.linux.syscall3(.sched_setaffinity, 0, cpu_mask.len, @intFromPtr(&cpu_mask));
             }
         }
         for (indices) |idx| {
