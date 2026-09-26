@@ -29,7 +29,9 @@ jobs:
         run: zig fmt --check src tools test
 
       - name: Compile everything
-        run: zig build
+        run: |
+          echo "::add-matcher::.github/matchers/zig.json"
+          zig build
 
       - name: Run unit tests
         run: zig build test-unit -Doptimize=Debug
