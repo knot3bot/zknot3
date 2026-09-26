@@ -27,7 +27,7 @@ fail() {
   # publicly readable.
   local logs=""
   if docker inspect zknot3-validator-1 >/dev/null 2>&1; then
-    logs=$(docker logs --tail 12 zknot3-validator-2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-600)
+    logs=$(docker logs --tail 15 zknot3-validator-1 2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-600)
   fi
   echo "::error title=wan_gate::$* | v1-log: ${logs}"
   echo "wan_gate: FAIL — $*" >&2
