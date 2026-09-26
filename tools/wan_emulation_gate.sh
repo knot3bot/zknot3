@@ -22,9 +22,14 @@ RUNNER=zknot3-test-runner
 DELAY_ARGS=(delay 80ms 10ms loss 2%)
 
 fail() {
-  # Surface the failure as a check-run annotation: Actions job logs need
-  # admin rights to download, annotations are publicly readable.
-  echo "::error title=wan_gate::$*"
+  # Surface the failure as a check-run annotation with the last container
+  # log lines: job logs need admin rights to download, annotations are
+  # publicly readable.
+  local logs=""
+  if docker inspect zknot3-validator-1 >/dev/null 2>&1; then
+    logs=$(docker logs --tail 12 zknot3-validator-2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-600)
+  fi
+  echo "::error title=wan_gate::$* | v1-log: ${logs}"
   echo "wan_gate: FAIL — $*" >&2
   exit 1
 }
