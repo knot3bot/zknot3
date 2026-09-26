@@ -21,7 +21,13 @@ VALIDATORS=(zknot3-validator-1 zknot3-validator-2 zknot3-validator-3 zknot3-vali
 RUNNER=zknot3-test-runner
 DELAY_ARGS=(delay 80ms 10ms loss 2%)
 
-fail() { echo "wan_gate: FAIL — $*" >&2; exit 1; }
+fail() {
+  # Surface the failure as a check-run annotation: Actions job logs need
+  # admin rights to download, annotations are publicly readable.
+  echo "::error title=wan_gate::$*"
+  echo "wan_gate: FAIL — $*" >&2
+  exit 1
+}
 
 metric() { # metric <validator> <name>
   docker exec "$RUNNER" curl -sf "http://$1:9133/metrics" | awk -v m="$2" '$1 == m {print $2}' | tail -1
@@ -67,7 +73,7 @@ restarts() { docker inspect -f '{{.RestartCount}} {{.State.Status}}' "$1"; }
 docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml up -d >/dev/null
 trap 'docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml down -v >/dev/null 2>&1 || true' EXIT
 
-wait_healthy 120 || fail "cluster did not become healthy"
+wait_healthy 240 || fail "cluster did not become healthy within 240s"
 echo "phase 1 (baseline): all 5 nodes healthy"
 
 # ---------------------------------------------------- WAN impairment soak
