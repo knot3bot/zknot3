@@ -34,8 +34,8 @@ fail() {
   exit 1
 }
 
-metric() { # metric <validator> <name>
-  docker exec "$RUNNER" curl -sf "http://$1:9133/metrics" | awk -v m="$2" '$1 == m {print $2}' | tail -1
+metric() { # metric <validator> <name> — read from /health JSON
+  docker exec "$RUNNER" curl -sf "http://$1:9003/health" | grep -o "\"$2\":[0-9]*" | cut -d: -f2 | tail -1
 }
 
 # Block production is message/transaction driven; stimulate with a burst of

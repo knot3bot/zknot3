@@ -8,16 +8,34 @@ const Log = @import("../../app/Log.zig");
 const MainnetExtensionHooks = app.MainnetExtensionHooks;
 const M4RpcParams = @import("M4RpcParams.zig");
 
+// Raw posix socket I/O (the same runtime-proven path P2PServer uses).
+// The std.Io streaming helpers require the ambient Io context to be
+// pumped (drained) by the caller; nothing in the node's event loop does
+// that, so under the real process io every request stalled with an empty
+// reply (the test suites never saw this because std.testing.io pumps
+// itself). Sockets here are timeout-bounded (see handleConnection), so
+// blocking reads cannot wedge the loop.
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
-    var writer = stream.writer(@import("io_instance").io, &.{});
-    try writer.interface.writeAll(bytes);
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const rc = std.c.write(stream.socket.handle, bytes[off..].ptr, bytes.len - off);
+        if (rc < 0) {
+            const errno: std.c.E = @fromBackingInt(@intCast(-rc));
+            switch (errno) {
+                .AGAIN => {
+                    std.Thread.yield() catch {};
+                    continue;
+                },
+                else => return error.WriteFailed,
+            }
+        }
+        if (rc == 0) return error.BrokenPipe;
+        off += @intCast(rc);
+    }
 }
 
 fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
-    var reader = stream.reader(@import("io_instance").io, &.{});
-    return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
-    };
+    return std.posix.read(stream.socket.handle, buf);
 }
 
 /// Read until buf is full, EOF, or an error occurs. Returns total bytes read.
