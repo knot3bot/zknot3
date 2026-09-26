@@ -15,4 +15,3 @@ services:
     cap_add: [NET_ADMIN]
   zknot3-validator-4:
     cap_add: [NET_ADMIN]
-  zknot3-fullnode:
