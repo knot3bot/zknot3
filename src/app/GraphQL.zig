@@ -41,17 +41,17 @@ pub const TypeKind = enum {
 pub const Schema = struct {
     const Self = @This();
 
-        allocator: std.mem.Allocator,
-        query_type: ?*ObjectType = null,
-        mutation_type: ?*ObjectType = null,
-        types: std.StringArrayHashMapUnmanaged(*const TypeDefinition),
-        object_types: std.ArrayList(*ObjectType),
+    allocator: std.mem.Allocator,
+    query_type: ?*ObjectType = null,
+    mutation_type: ?*ObjectType = null,
+    types: std.StringArrayHashMapUnmanaged(*const TypeDefinition),
+    object_types: std.ArrayList(*ObjectType),
 
     /// Type definition
     pub const TypeDefinition = struct {
         name: []const u8,
         kind: TypeKind,
-    fields: []const FieldDefinition,
+        fields: []const FieldDefinition,
         enum_values: ?[]const []const u8,
         implements: ?[]const []const u8,
     };
@@ -91,7 +91,7 @@ pub const Schema = struct {
     /// Object type with fields
     pub const ObjectType = struct {
         name: []const u8,
-    fields: std.StringArrayHashMapUnmanaged(FieldDefinition),
+        fields: std.StringArrayHashMapUnmanaged(FieldDefinition),
         interfaces: []const []const u8,
     };
 
@@ -181,7 +181,9 @@ pub const Schema = struct {
             }, .resolve = resolveGetCheckpoint },
             .{ .name = "knot3_getCoins", .type = .{ .kind = .List, .named_type = "Coin", .of_type = null }, .args = &.{
                 .{
-                    .name = "owner", .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null }, .default_value = null,
+                    .name = "owner",
+                    .type = .{ .kind = .Scalar, .named_type = "Address", .of_type = null },
+                    .default_value = null,
                 },
                 .{ .name = "coinType", .type = .{ .kind = .Scalar, .named_type = "String", .of_type = null }, .default_value = null },
             }, .resolve = resolveGetCoins },
@@ -442,7 +444,11 @@ fn resolveCheckpointDigest(ctx: *const ResolverContext, args: []const ArgValue) 
 fn resolveCheckpointTimestamp(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {
     _ = ctx;
     _ = args;
-    return intValue(blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); });
+    return intValue(blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.sec);
+    });
 }
 
 fn resolveCheckpointTxs(ctx: *const ResolverContext, args: []const ArgValue) anyerror!Value {

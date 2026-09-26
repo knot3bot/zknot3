@@ -52,7 +52,6 @@ pub const Egress = struct {
         self.allocator.destroy(self);
     }
 
-
     /// Aggregate signatures into certificate (overflow-safe)
     pub fn aggregate(self: *Self, execution: Executor.ExecutionResult, signatures: []const SignaturePair) !Certificate {
         var total_stake: u128 = 0;
@@ -94,7 +93,11 @@ pub const Egress = struct {
             .checkpoint_sequence = checkpoint_seq,
             .certificate = cert,
             .state_root = state_root,
-            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .timestamp = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
     }
 

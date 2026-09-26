@@ -532,7 +532,7 @@ pub const Manager = struct {
         var buf: [13]u8 = undefined;
         @memcpy(buf[0..4], "m4t1");
         std.mem.writeInt(u64, buf[4..12], proposal_id, .big);
-        buf[12] = @intFromEnum(status);
+        buf[12] = @backingInt(status);
         try w.logExtensionRecord(.m4_governance_status, &buf);
     }
 
@@ -569,7 +569,7 @@ pub const Manager = struct {
         try list.appendSlice(self.allocator, &op.delegator);
         std.mem.writeInt(u64, &b8, op.amount, .big);
         try list.appendSlice(self.allocator, &b8);
-        try list.append(self.allocator, @intFromEnum(op.action));
+        try list.append(self.allocator, @backingInt(op.action));
         var b4: [4]u8 = undefined;
         std.mem.writeInt(u32, &b4, @intCast(op.metadata.len), .big);
         try list.appendSlice(self.allocator, &b4);
@@ -592,7 +592,7 @@ pub const Manager = struct {
         std.mem.writeInt(u32, &b4, @intCast(p.description.len), .big);
         try list.appendSlice(self.allocator, &b4);
         try list.appendSlice(self.allocator, p.description);
-        try list.append(self.allocator, @intFromEnum(p.kind));
+        try list.append(self.allocator, @backingInt(p.kind));
         if (p.activation_epoch) |ae| {
             try list.append(self.allocator, 1);
             std.mem.writeInt(u64, &b8, ae, .big);
@@ -602,7 +602,7 @@ pub const Manager = struct {
         }
         std.mem.writeInt(i64, &b8, p.created_at, .big);
         try list.appendSlice(self.allocator, &b8);
-        try list.append(self.allocator, @intFromEnum(p.status));
+        try list.append(self.allocator, @backingInt(p.status));
         return try list.toOwnedSlice(self.allocator);
     }
 
@@ -857,7 +857,7 @@ pub const Manager = struct {
                     ctx.update(&op.delegator);
                     std.mem.writeInt(u64, &buf8, op.amount, .big);
                     ctx.update(&buf8);
-                    ctx.update(&.{@intFromEnum(op.action)});
+                    ctx.update(&.{@backingInt(op.action)});
                     std.mem.writeInt(u32, &buf4, @intCast(op.metadata.len), .big);
                     ctx.update(&buf4);
                     ctx.update(op.metadata);
@@ -885,7 +885,7 @@ pub const Manager = struct {
                     std.mem.writeInt(u32, &buf4, @intCast(p.description.len), .big);
                     ctx.update(&buf4);
                     ctx.update(p.description);
-                    ctx.update(&.{@intFromEnum(p.kind)});
+                    ctx.update(&.{@backingInt(p.kind)});
                     if (p.activation_epoch) |ae| {
                         ctx.update(&.{1});
                         std.mem.writeInt(u64, &buf8, ae, .big);
@@ -895,7 +895,7 @@ pub const Manager = struct {
                     }
                     std.mem.writeInt(i64, &buf8, p.created_at, .big);
                     ctx.update(&buf8);
-                    ctx.update(&.{@intFromEnum(p.status)});
+                    ctx.update(&.{@backingInt(p.status)});
                     break;
                 }
             }
@@ -1004,7 +1004,11 @@ pub const Manager = struct {
             const ids = try self.allocator.alloc(u64, n);
             defer self.allocator.free(ids);
             for (self.stake_ops.items, 0..) |op, j| ids[j] = op.id;
-            std.mem.sort(u64, ids, {}, struct { fn less(_: void, a: u64, b: u64) bool { return a < b; } }.less);
+            std.mem.sort(u64, ids, {}, struct {
+                fn less(_: void, a: u64, b: u64) bool {
+                    return a < b;
+                }
+            }.less);
             for (ids) |id| {
                 for (self.stake_ops.items) |op| {
                     if (op.id != id) continue;
@@ -1013,7 +1017,7 @@ pub const Manager = struct {
                     try buf.appendSlice(self.allocator, &op.validator);
                     try buf.appendSlice(self.allocator, &op.delegator);
                     try W.appendU64(&buf, self.allocator, op.amount);
-                    try buf.append(self.allocator, @intFromEnum(op.action));
+                    try buf.append(self.allocator, @backingInt(op.action));
                     try W.appendU32(&buf, self.allocator, @intCast(op.metadata.len));
                     try buf.appendSlice(self.allocator, op.metadata);
                     break;
@@ -1028,7 +1032,11 @@ pub const Manager = struct {
             const ids = try self.allocator.alloc(u64, n);
             defer self.allocator.free(ids);
             for (self.proposals.items, 0..) |p, j| ids[j] = p.id;
-            std.mem.sort(u64, ids, {}, struct { fn less(_: void, a: u64, b: u64) bool { return a < b; } }.less);
+            std.mem.sort(u64, ids, {}, struct {
+                fn less(_: void, a: u64, b: u64) bool {
+                    return a < b;
+                }
+            }.less);
             for (ids) |id| {
                 for (self.proposals.items) |p| {
                     if (p.id != id) continue;
@@ -1038,7 +1046,7 @@ pub const Manager = struct {
                     try buf.appendSlice(self.allocator, p.title);
                     try W.appendU32(&buf, self.allocator, @intCast(p.description.len));
                     try buf.appendSlice(self.allocator, p.description);
-                    try buf.append(self.allocator, @intFromEnum(p.kind));
+                    try buf.append(self.allocator, @backingInt(p.kind));
                     if (p.activation_epoch) |ae| {
                         try buf.append(self.allocator, 1);
                         try W.appendU64(&buf, self.allocator, ae);
@@ -1046,7 +1054,7 @@ pub const Manager = struct {
                         try buf.append(self.allocator, 0);
                     }
                     try W.appendI64(&buf, self.allocator, p.created_at);
-                    try buf.append(self.allocator, @intFromEnum(p.status));
+                    try buf.append(self.allocator, @backingInt(p.status));
                     break;
                 }
             }
@@ -1073,7 +1081,11 @@ pub const Manager = struct {
             var it = self.validator_stake.iterator();
             var i: usize = 0;
             while (it.next()) |e| : (i += 1) keys[i] = e.key_ptr.*;
-            std.mem.sort([32]u8, keys, {}, struct { fn less(_: void, a: [32]u8, b: [32]u8) bool { return std.mem.order(u8, &a, &b) == .lt; } }.less);
+            std.mem.sort([32]u8, keys, {}, struct {
+                fn less(_: void, a: [32]u8, b: [32]u8) bool {
+                    return std.mem.order(u8, &a, &b) == .lt;
+                }
+            }.less);
             for (keys) |k| {
                 const st = self.validator_stake.get(k) orelse continue;
                 try buf.appendSlice(self.allocator, &k);
@@ -1114,7 +1126,11 @@ pub const Manager = struct {
             var eit = self.processed_evidence.iterator();
             var k: usize = 0;
             while (eit.next()) |e| : (k += 1) ev[k] = e.key_ptr.*;
-            std.mem.sort([32]u8, ev, {}, struct { fn less(_: void, a: [32]u8, b: [32]u8) bool { return std.mem.order(u8, &a, &b) == .lt; } }.less);
+            std.mem.sort([32]u8, ev, {}, struct {
+                fn less(_: void, a: [32]u8, b: [32]u8) bool {
+                    return std.mem.order(u8, &a, &b) == .lt;
+                }
+            }.less);
             for (ev) |h| try buf.appendSlice(self.allocator, &h);
         }
 
@@ -1193,8 +1209,13 @@ pub const Manager = struct {
                 const meta_len = try R.readU32(data, &off);
                 const metadata = try self.allocator.dupe(u8, try R.readBytes(data, &off, meta_len));
                 try self.stake_ops.append(self.allocator, .{
-                    .id = id, .submitted_at = submitted_at, .validator = validator,
-                    .delegator = delegator, .amount = amount, .action = action, .metadata = metadata,
+                    .id = id,
+                    .submitted_at = submitted_at,
+                    .validator = validator,
+                    .delegator = delegator,
+                    .amount = amount,
+                    .action = action,
+                    .metadata = metadata,
                 });
             }
         }
@@ -1223,8 +1244,14 @@ pub const Manager = struct {
                 const status = std.enums.fromInt(GovernanceStatus, data[off]) orelse return error.InvalidWalPayload;
                 off += 1;
                 try self.proposals.append(self.allocator, .{
-                    .id = id, .proposer = proposer, .title = title, .description = description,
-                    .kind = kind, .activation_epoch = activation_epoch, .created_at = created_at, .status = status,
+                    .id = id,
+                    .proposer = proposer,
+                    .title = title,
+                    .description = description,
+                    .kind = kind,
+                    .activation_epoch = activation_epoch,
+                    .created_at = created_at,
+                    .status = status,
                 });
             }
         }
@@ -1240,8 +1267,11 @@ pub const Manager = struct {
                 off += 1;
                 const voted_at = try R.readI64(data, &off);
                 try self.votes.append(self.allocator, .{
-                    .proposal_id = proposal_id, .validator = validator, .stake_weight = stake_weight,
-                    .approve = approve, .voted_at = voted_at,
+                    .proposal_id = proposal_id,
+                    .validator = validator,
+                    .stake_weight = stake_weight,
+                    .approve = approve,
+                    .voted_at = voted_at,
                 });
             }
         }
@@ -1458,10 +1488,18 @@ test "M4 state snapshot roundtrip" {
     try mgr.validator_stake.put(allocator, validator, 1000);
     try mgr.delegations.put(allocator, .{ .validator = validator, .delegator = delegator }, 500);
     _ = try mgr.submitStakeOperation(.{
-        .validator = validator, .delegator = delegator, .amount = 500, .action = .stake, .metadata = "test",
+        .validator = validator,
+        .delegator = delegator,
+        .amount = 500,
+        .action = .stake,
+        .metadata = "test",
     });
     _ = try mgr.submitGovernanceProposal(.{
-        .proposer = validator, .title = "p1", .description = "d1", .kind = .parameter_change, .activation_epoch = 3,
+        .proposer = validator,
+        .title = "p1",
+        .description = "d1",
+        .kind = .parameter_change,
+        .activation_epoch = 3,
     });
     try mgr.voteOnProposal(1, validator, true);
     try mgr.processed_evidence.put(allocator, @as([32]u8, @splat(0xEE)), {});

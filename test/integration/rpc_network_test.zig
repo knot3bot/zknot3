@@ -22,8 +22,8 @@ test "RPC: response builders" {
 }
 
 test "P2P: node state" {
-    try std.testing.expect(@intFromEnum(P2P.NodeState.initializing) >= 0);
-    try std.testing.expect(@intFromEnum(P2P.NodeState.bootstrapping) >= 0);
+    try std.testing.expect(@backingInt(P2P.NodeState.initializing) >= 0);
+    try std.testing.expect(@backingInt(P2P.NodeState.bootstrapping) >= 0);
 }
 
 test "RPC: register handler" {

@@ -49,7 +49,7 @@ test "Consensus: hasQuorum edge cases" {
     try quorum.addValidator(makeId(3), 1000);
 
     try std.testing.expect(quorum.isQuorum(&.{ makeId(1), makeId(2) }));
-    try std.testing.expect(!quorum.isQuorum(&.{ makeId(1) }));
+    try std.testing.expect(!quorum.isQuorum(&.{makeId(1)}));
 }
 
 test "Consensus: byzantine thresholds" {

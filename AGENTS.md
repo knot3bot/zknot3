@@ -98,10 +98,11 @@ This repo contains a **production-ready implementation** of the zknot3 node with
 ### Completed Milestones
 1. **Core node bootstrap** — `Node.zig`, `Config.zig`, `ObjectStore.zig`, `LSMTree.zig`, `WAL.zig`
 2. **Network layer** — `P2PServer.zig`, `HTTPServer.zig`, `QUIC.zig`, `Kademlia.zig`
-3. **Consensus** — `Mysticeti.zig` DAG-based BFT with voting and certificate aggregation
-4. **Move VM** — `Interpreter.zig`, `Gas.zig`, `Resource.zig`
-5. **Pipeline** — `Ingress.zig`, `Executor.zig`, `Egress.zig`
+3. **Consensus** — `Mysticeti.zig` DAG-based BFT: 2-chain/3-chain auto-selecting commit with elected-leader verification, BLS aggregate QuorumCertificate (signature + signer bitmap), view change via f+1 TimeoutVotes/TimeoutCertificate, equivocation evidence
+4. **Move-style VM** — `Interpreter.zig`, `Gas.zig`, `Resource.zig` (zknot3-native bytecode; NOT Move-binary compatible) + `ModuleRegistry.zig` publish/upgrade lifecycle with immutable/compatible policies
+5. **Pipeline** — `Ingress.zig`, `Executor.zig` (incl. PTB Publish handling), `Egress.zig`
 6. **Production hardening** — socket timeouts, memory safety fixes, Docker deployment, soak testing
+7. **Verification** — 385-test zig suite (unit+integration+e2e+Byzantine simulation, `zig build test-integration`), 10-test TypeScript SDK suite (`cd sdk/typescript && npm test`), executable formal proofs (`zig build test-formal`), machine-checked Coq (`tools/formal/coq_gate.sh`) and Lean 4 (`tools/formal/lean_gate.sh`) specifications
 
 
 ## Notes for Agents
@@ -121,8 +122,10 @@ This repo contains a **production-ready implementation** of the zknot3 node with
 ## Learned Workspace Facts
 
 - `package.zig.zon` 声明 `minimum_zig_version` 为 `0.15.0`；讨论异步能力时仍会对照较新 Zig 版本的语言级 async/await 与当前代码路径的差异。
-- 存储层 `Checkpoint.verify` 在简化路径下可按 stake 对签名者计数，但不校验 BLS 签名字节；`digest()` 与 `serialize()` 的承诺范围不一致，接入真实共识签名前需统一 canonical commitment。
-- M4 `MainnetExtensionHooks` 的 slash、governance、evidence 等状态主要在内存；`Node.recoverFromDisk` 仅走 `ObjectStore.recover()`，`checkpoint_store` 与 `Config.checkpoint_store_path` 尚未形成 M4 状态的 WAL+checkpoint 恢复闭环。
+- 存储层 `Checkpoint.digest()` 与 `signingCommitment()` 已统一为 Blake3(serialize())；Ed25519 验证路径逐签名者校验签名字节并按 stake 加权（2026-09-26 核实）。
+- M4 状态恢复闭环已实现：`Node.recoverFromDisk → replayMainnetM4Wal` 重放 m4_* WAL 记录，`test/integration/m4_wal_recovery_test.zig` 覆盖重启重放、幂等、证据去重、截断 fail-closed、epoch 轮换。
+- `Mysticeti.Block.computeDigest` 是唯一的块摘要公式（create 与 addBlock 共用）；digest 覆盖 author+round+payload+parents。
+- TS SDK 依赖 `@noble/hashes`（纯 JS Blake3），测试用 node:test（`npm test`），不需要 jest。
 - P2P 未认证握手由 `Config.allow_unauthenticated_p2p` 与 `P2PServerConfig.allow_unauthenticated_handshake` 控制，默认关闭；`Config.development()` 与 CLI `--dev` 会打开以便本地或旧 peer 兼容。
 - 面向公网负载时，主循环与共识侧倾向于：限制每轮 `accept` 批量、对多 peer 合并 `poll`、对每轮消息处理设全局限额并做轮转扫描，以降低单连接饥饿与突发连接对共识处理的挤占。
 

@@ -68,4 +68,3 @@ test "ObjectStoreCoordinator put/get/delete roundtrip" {
 
     try deleteObject(store, object.id);
 }
-

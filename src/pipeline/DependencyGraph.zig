@@ -200,7 +200,7 @@ test "DependencyGraph chain of overlaps" {
 
     const txs = &[_]Ingress.Transaction{
         .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{id_a}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{id_a, id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{ id_a, id_b }, .program = &.{}, .gas_budget = 100, .sequence = 0 },
         .{ .sender = @as([32]u8, @splat(3)), .inputs = &.{id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
     };
 

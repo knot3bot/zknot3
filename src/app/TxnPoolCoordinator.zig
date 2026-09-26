@@ -133,4 +133,3 @@ test "TxnPoolCoordinator cleanupExpiredTransactions removes expired txs" {
     try std.testing.expect(removed >= 1);
     try std.testing.expectEqual(@as(usize, 0), getPendingTxnCount(pool));
 }
-

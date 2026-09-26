@@ -35,12 +35,12 @@ pub const LightClientState = struct {
 
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const self = try allocator.create(Self);
-                self.* = .{
-                        .allocator = allocator,
-                        .trusted_checkpoint = null,
-                        .latest_verified_sequence = 0,
-                        .validator_set_hash = @as([32]u8, @splat(0)),
-                };
+        self.* = .{
+            .allocator = allocator,
+            .trusted_checkpoint = null,
+            .latest_verified_sequence = 0,
+            .validator_set_hash = @as([32]u8, @splat(0)),
+        };
         return self;
     }
 

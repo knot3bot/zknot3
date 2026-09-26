@@ -51,4 +51,3 @@ test "mysticeti_property: same voter+round with different digest always yields e
         try std.testing.expect(std.mem.eql(u8, &voter, &ev.?.voter));
     }
 }
-

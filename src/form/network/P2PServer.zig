@@ -54,7 +54,6 @@ const HandshakeNonceTracker = struct {
     }
 };
 
-
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
     var writer = stream.writer(@import("io_instance").io, &.{});
     try writer.interface.writeAll(bytes);
@@ -304,7 +303,7 @@ pub const P2PServer = struct {
                     return error.WouldBlock;
                 }
                 const conn = try self.listener.?.accept(@import("io_instance").io);
-            Log.debug("Accepted incoming connection", .{});
+                Log.debug("Accepted incoming connection", .{});
                 try self.handleConnection(conn);
             }
         }
@@ -477,7 +476,6 @@ pub const P2PServer = struct {
     pub fn disconnectPeer(self: *Self, peer_id: [32]u8) void {
         self.removePeer(peer_id);
     }
-
 
     fn removePeer(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |peer| {
@@ -688,7 +686,7 @@ pub const P2PServer = struct {
 
     fn setPeerTimeout(stream: std.Io.net.Stream) void {
         const timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
-            .{ .tv_sec = 0, .tv_usec = 100000 }  // 100ms
+            .{ .tv_sec = 0, .tv_usec = 100000 } // 100ms
         else
             .{ .sec = 0, .usec = 100000 };
         std.posix.setsockopt(
@@ -708,7 +706,6 @@ pub const P2PServer = struct {
             Log.warn("[WARN] P2PServer failed to set send timeout: {}", .{err});
         };
     }
-
 
     fn isPeerConnectedByAddress(self: *Self, address: []const u8) bool {
         const peer_key = derivePeerKeyFromAddress(address);
@@ -743,7 +740,11 @@ pub const P2PServer = struct {
     pub fn maintainBootstrapConnections(self: *Self) void {
         if (!self.config.dial_bootstrap or self.config.bootstrap_peers.len == 0) return;
 
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         if (now - self.last_bootstrap_retry < 60) return;
         self.last_bootstrap_retry = now;
 
@@ -784,7 +785,11 @@ pub const PeerConnection = struct {
             .peer_id = peer_id,
             .conn = conn,
             .state = .handshaking,
-            .last_ping = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .last_ping = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .peer_key = undefined,
             .max_message_size = Message.MAX_MESSAGE_SIZE,
         };
@@ -1045,7 +1050,11 @@ pub const PeerConnection = struct {
             .payload = &.{},
         };
         try self.sendMessage(msg);
-        self.last_ping = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        self.last_ping = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
     }
 
     pub fn sendPong(self: *Self) !void {
@@ -1078,7 +1087,11 @@ pub const QUICPeerConnection = struct {
             .peer_id = peer_id,
             .quic_conn = quic_conn,
             .state = .handshaking,
-            .last_ping = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .last_ping = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .peer_key = undefined,
             .max_message_size = Message.MAX_MESSAGE_SIZE,
         };
@@ -1134,7 +1147,11 @@ pub const QUICPeerConnection = struct {
         const stream = self.quic_conn.getStream(stream_id) orelse return error.StreamNotFound;
         const ping_data = "ping";
         try stream.write(ping_data);
-        self.last_ping = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        self.last_ping = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
     }
 
     pub fn sendPong(self: *Self) !void {
@@ -1252,7 +1269,7 @@ test "peerCount sums tcp and quic peers" {
     defer _ = std.c.close(fds[1]);
     const stream = std.Io.net.Stream{ .socket = .{
         .handle = fds[0],
-        .address = .{ .ip4 = .{ .bytes = .{0, 0, 0, 0}, .port = 0 } },
+        .address = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } },
     } };
 
     // Manually inject a TCP peer
@@ -1316,7 +1333,7 @@ test "max_connections rejects inbound connection" {
     defer _ = std.c.close(fds[1]);
     const stream = std.Io.net.Stream{ .socket = .{
         .handle = fds[0],
-        .address = .{ .ip4 = .{ .bytes = .{0, 0, 0, 0}, .port = 0 } },
+        .address = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } },
     } };
 
     // Fill the slot with a dummy TCP peer

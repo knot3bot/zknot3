@@ -30,6 +30,40 @@ jobs:
       - name: Run integration tests
         run: zig build test-integration -Doptimize=Debug
 
+  formal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: "0.17.0"
+          cache: true
+      - name: Executable proofs (exhaustive)
+        run: zig build test-formal
+      - name: Coq specification
+        run: |
+          sudo apt-get update && sudo apt-get install -y coq
+          bash tools/formal/coq_gate.sh
+      - name: Lean 4 specification
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain stable
+          export PATH="$HOME/.elan/bin:$PATH"
+          bash tools/formal/lean_gate.sh
+
+  sdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+
   build-release:
     runs-on: ubuntu-latest
     needs: test

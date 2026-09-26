@@ -144,7 +144,7 @@ pub const BytecodeVerifier = struct {
 
         var offset: usize = 0;
         while (offset < bytecode.len) {
-            const opcode: Instruction.OpCode = @enumFromInt(bytecode[offset]);
+            const opcode: Instruction.OpCode = @fromBackingInt(@intCast(bytecode[offset]));
             offset += 1;
 
             // Parse instruction-specific payload with bounds checks
@@ -215,7 +215,7 @@ pub const BytecodeVerifier = struct {
 
     /// Returns the net stack delta for a single instruction encoded as (pop << 16) | push.
     fn stackDelta(opcode: Instruction.OpCode) u32 {
-        const tag = @intFromEnum(opcode);
+        const tag = @backingInt(opcode);
         // Arithmetic / bitwise: pop 2, push 1
         if (tag >= 0x40 and tag <= 0x54) return (2 << 16) | 1;
         // Comparison: pop 2, push 1
@@ -247,7 +247,7 @@ pub const BytecodeVerifier = struct {
         var worklist = std.ArrayList(usize).empty;
         defer worklist.deinit(self.allocator);
 
-        try worklist.append(self.allocator,0);
+        try worklist.append(self.allocator, 0);
         depths[0] = 0;
 
         while (worklist.items.len > 0) {
@@ -278,7 +278,7 @@ pub const BytecodeVerifier = struct {
                         if (inst.payload.len >= 2) {
                             const target = std.mem.readInt(u16, inst.payload[0..2], .big);
                             if (depths[target] == null) {
-                                try worklist.append(self.allocator,target);
+                                try worklist.append(self.allocator, target);
                             }
                         }
                         break;
@@ -286,13 +286,13 @@ pub const BytecodeVerifier = struct {
                     .branch_if => {
                         // Fall-through path
                         if (ip + 1 < instructions.len and depths[ip + 1] == null) {
-                            try worklist.append(self.allocator,ip + 1);
+                            try worklist.append(self.allocator, ip + 1);
                         }
                         // Branch target path
                         if (inst.payload.len >= 2) {
                             const target = std.mem.readInt(u16, inst.payload[0..2], .big);
                             if (depths[target] == null) {
-                                try worklist.append(self.allocator,target);
+                                try worklist.append(self.allocator, target);
                             }
                         }
                         break;

@@ -159,8 +159,8 @@ test "NodeKey generation" {
     @import("io_instance").io = std.testing.io;
     const allocator = std.testing.allocator;
 
-        // Use temp directory
-        const tmp_dir = "/tmp/zknot3_test_keys";
+    // Use temp directory
+    const tmp_dir = "/tmp/zknot3_test_keys";
     // Create temp dir if not exists
     std.Io.Dir.cwd().createDir(std.testing.io, tmp_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;
@@ -184,8 +184,8 @@ test "NodeKey generation" {
 
 test "Peer ID derivation" {
     @import("io_instance").io = std.testing.io;
-        const allocator = std.testing.allocator;
-        const tmp_dir = "/tmp/zknot3_test_keys2";
+    const allocator = std.testing.allocator;
+    const tmp_dir = "/tmp/zknot3_test_keys2";
     // Create temp dir if not exists
     std.Io.Dir.cwd().createDir(std.testing.io, tmp_dir, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) return err;

@@ -55,7 +55,7 @@ pub const Frame = struct {
     pub const HEADER_SIZE: usize = 12;
 
     pub fn encode(self: Self, buf: []u8) void {
-        std.mem.writeInt(u32, buf[0..4], @intFromEnum(self.frame_type), .big);
+        std.mem.writeInt(u32, buf[0..4], @backingInt(self.frame_type), .big);
         std.mem.writeInt(u16, buf[4..6], self.flags, .big);
         std.mem.writeInt(u32, buf[6..10], self.stream_id, .big);
         std.mem.writeInt(u32, buf[10..14], self.length, .big);
@@ -64,7 +64,7 @@ pub const Frame = struct {
     pub fn decode(buf: []const u8) !Self {
         if (buf.len < HEADER_SIZE) return error.FrameTooShort;
 
-        const frame_type = @as(FrameType, @enumFromInt(std.mem.readInt(u32, buf[0..4], .big)));
+        const frame_type = @as(FrameType, @fromBackingInt(@intCast(std.mem.readInt(u32, buf[0..4], .big))));
         const flags = std.mem.readInt(u16, buf[4..6], .big);
         const stream_id = std.mem.readInt(u32, buf[6..10], .big);
         const length = std.mem.readInt(u32, buf[10..14], .big);
@@ -307,7 +307,7 @@ pub const YamuxSession = struct {
             },
             .go_away => {
                 self.go_away = true;
-                self.go_away_reason = @as(GO_AWAY_REASON, @enumFromInt(frame.length));
+                self.go_away_reason = @as(GO_AWAY_REASON, @fromBackingInt(@intCast(frame.length)));
             },
             else => {},
         }
@@ -319,7 +319,7 @@ pub const YamuxSession = struct {
             .frame_type = .go_away,
             .flags = 0,
             .stream_id = 0,
-            .length = @intFromEnum(reason),
+            .length = @backingInt(reason),
         };
     }
 

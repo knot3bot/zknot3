@@ -73,7 +73,11 @@ pub const ConsensusIntegration = struct {
             .validator_id = validator_id,
             .validator_key = validator_key,
             .validator_index = validator_index,
-            .last_round_advance = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .last_round_advance = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .last_proposed_round = 0,
             .peer_scan_cursor = 0,
             .max_messages_per_tick = cc.max_messages_per_tick,
@@ -248,9 +252,13 @@ pub const ConsensusIntegration = struct {
     pub fn checkAndPropose(self: *Self) !void {
         if (!self.node.isRunning()) return;
 
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
 
-            if (now - self.last_round_advance >= self.node.config.consensus.round_interval_secs) {
+        if (now - self.last_round_advance >= self.node.config.consensus.round_interval_secs) {
             self.node.advanceRound();
             self.last_round_advance = now;
             Log.info("Advanced to round {}", .{self.node.consensus_round});

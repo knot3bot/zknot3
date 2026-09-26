@@ -262,14 +262,30 @@ pub const Value = struct {
         return .{ .impl = impl };
     }
 
-    pub fn makeU8(x: u8) Value { return .{ .impl = .{ .U8 = x } }; }
-    pub fn makeU16(x: u16) Value { return .{ .impl = .{ .U16 = x } }; }
-    pub fn makeU32(x: u32) Value { return .{ .impl = .{ .U32 = x } }; }
-    pub fn makeU64(x: u64) Value { return .{ .impl = .{ .U64 = x } }; }
-    pub fn makeU128(x: u128) Value { return .{ .impl = .{ .U128 = x } }; }
-    pub fn makeU256(x: u256) Value { return .{ .impl = .{ .U256 = x } }; }
-    pub fn makeBool(x: bool) Value { return .{ .impl = .{ .Bool = x } }; }
-    pub fn address(x: [32]u8) Value { return .{ .impl = .{ .Address = x } }; }
+    pub fn makeU8(x: u8) Value {
+        return .{ .impl = .{ .U8 = x } };
+    }
+    pub fn makeU16(x: u16) Value {
+        return .{ .impl = .{ .U16 = x } };
+    }
+    pub fn makeU32(x: u32) Value {
+        return .{ .impl = .{ .U32 = x } };
+    }
+    pub fn makeU64(x: u64) Value {
+        return .{ .impl = .{ .U64 = x } };
+    }
+    pub fn makeU128(x: u128) Value {
+        return .{ .impl = .{ .U128 = x } };
+    }
+    pub fn makeU256(x: u256) Value {
+        return .{ .impl = .{ .U256 = x } };
+    }
+    pub fn makeBool(x: bool) Value {
+        return .{ .impl = .{ .Bool = x } };
+    }
+    pub fn address(x: [32]u8) Value {
+        return .{ .impl = .{ .Address = x } };
+    }
 
     pub fn copyValue(self: Value, allocator: std.mem.Allocator) !Value {
         return .{ .impl = try self.impl.copyValue(allocator) };

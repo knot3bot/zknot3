@@ -28,7 +28,7 @@ test "Transaction: executor handles empty batch" {
     var executor = try Executor.init(allocator, .{});
     defer executor.deinit();
 
-    try std.testing.expect(executor.getParallelism() == 4);
+    try std.testing.expect(executor.getParallelism() == (root.pipeline.ExecutorConfig{}).parallelism);
 }
 
 test "Transaction: object store basic operations" {

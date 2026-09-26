@@ -5,7 +5,7 @@
 
 .{
     .name = "zknot3",
-    .version = "0.1.0",
+    .version = "0.16.0",
     .minimum_zig_version = "0.17.0",
 
     // External dependencies (using zig package manager)
@@ -13,7 +13,7 @@
 
     .dependencies = .{
         .blst = .{
-            .url = "git+https://github.com/supranational/blst",
+            .url = "https://github.com/supranational/blst/archive/refs/tags/v0.3.16.tar.gz",
             .hash = "blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts",
         },
     },

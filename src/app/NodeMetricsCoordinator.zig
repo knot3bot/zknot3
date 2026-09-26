@@ -68,4 +68,3 @@ test "NodeMetricsCoordinator computes rates and uptime" {
     try std.testing.expect(computeStorageUtil(5000) > 0.4);
     try std.testing.expectEqual(@as(f64, 0.0), computeTps(0, 10));
 }
-

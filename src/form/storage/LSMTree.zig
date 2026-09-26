@@ -12,7 +12,6 @@ const WAL_module = @import("WAL.zig");
 const WAL = WAL_module.WAL;
 const WalRecordType = WAL_module.WalRecordType;
 
-
 /// LSM-Tree configuration
 pub const LSMTreeConfig = struct {
     /// Base memory budget for memtable
@@ -194,7 +193,7 @@ pub const MemTable = struct {
             const mid = (low + high) / 2;
             const entry = self.entries.items[mid];
             const cmp = std.mem.lessThan(u8, entry.key, key);
-            
+
             if (cmp) {
                 low = mid + 1;
             } else {
@@ -209,7 +208,7 @@ pub const MemTable = struct {
             if (latest.deleted) return null;
             return latest.value;
         }
-        
+
         return null;
     }
 
@@ -277,7 +276,7 @@ pub const SSTableIndex = struct {
         while (low < high) {
             const mid = (low + high) / 2;
             const entry = self.entries[mid];
-            
+
             if (std.mem.lessThan(u8, entry.key, key)) {
                 low = mid + 1;
             } else {
@@ -538,7 +537,7 @@ pub const SSTable = struct {
 
         if (index.binarySearch(key)) |idx| {
             const idx_entry = self.index.items[idx];
-            
+
             // Seek and read value
             try self.file.seekTo(idx_entry.offset);
 
@@ -556,7 +555,7 @@ pub const SSTable = struct {
             _ = try self.file.readAll(value_buf);
             return value_buf;
         }
-        
+
         return null;
     }
 
@@ -844,15 +843,14 @@ pub const LSMTree = struct {
     wal: ?WAL,
     wal_path: []const u8,
 
-
-/// Helper to init WAL, returning null on failure
-fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
-    return WAL.init(allocator, path) catch null;
-}
+    /// Helper to init WAL, returning null on failure
+    fn initWALOrNull(allocator: std.mem.Allocator, path: []const u8) ?WAL {
+        return WAL.init(allocator, path) catch null;
+    }
 
     pub fn init(allocator: std.mem.Allocator, config: LSMTreeConfig) !*Self {
         const self = try allocator.create(Self);
-        // Initialize WAL for durability  
+        // Initialize WAL for durability
         const wal_path = try std.fmt.allocPrint(allocator, "{s}/wal.log", .{config.sst_dir});
         const wal: ?WAL = initWALOrNull(allocator, wal_path);
         self.* = .{
@@ -1198,4 +1196,3 @@ test "LSMTree WAL delete replay" {
     // Cleanup
     std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
 }
-

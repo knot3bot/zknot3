@@ -32,7 +32,7 @@ pub const Object = struct {
         // Write version (24 bytes)
         try buf.appendSlice(allocator, &self.version.encode());
         // Write ownership tag
-        try buf.append(allocator, @intFromEnum(self.ownership.tag));
+        try buf.append(allocator, @backingInt(self.ownership.tag));
         // Write context if shared
         if (self.ownership.getContext()) |ctx| {
             var ctx_buf: [8]u8 = undefined;
@@ -68,7 +68,7 @@ pub const Object = struct {
         offset += 24;
 
         // Read ownership tag
-        const tag: core.OwnershipTag = @enumFromInt(bytes[offset]);
+        const tag: core.OwnershipTag = @fromBackingInt(@intCast(bytes[offset]));
         offset += 1;
 
         var ownership: core.Ownership = undefined;
@@ -259,14 +259,18 @@ pub const ObjectStore = struct {
             defer self.allocator.free(child_ref_key);
             @memcpy(child_ref_key[0..32], child_id.asBytes());
             std.mem.writeInt(u32, child_ref_key[32..36], @intCast(pid.asBytes().len), .little);
-            child_ref_key[36] = 'p'; child_ref_key[37] = 'a'; child_ref_key[38] = 'r';
+            child_ref_key[36] = 'p';
+            child_ref_key[37] = 'a';
+            child_ref_key[38] = 'r';
             try self.lsm.put(child_ref_key, pid.asBytes());
 
             // Store parent→child link
             var parent_ref_key = try self.allocator.alloc(u8, 33 + 5);
             defer self.allocator.free(parent_ref_key);
             @memcpy(parent_ref_key[0..32], pid.asBytes());
-            parent_ref_key[36] = 'c'; parent_ref_key[37] = 'h'; parent_ref_key[38] = 'd';
+            parent_ref_key[36] = 'c';
+            parent_ref_key[37] = 'h';
+            parent_ref_key[38] = 'd';
             try self.lsm.put(parent_ref_key, child_id.asBytes());
         }
     }

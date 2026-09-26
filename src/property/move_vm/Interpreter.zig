@@ -78,6 +78,12 @@ pub const Value = struct {
     pub const ResourceLoc = struct {
         id: [32]u8,
         type_tag: u8,
+        /// Padding to 40 bytes (multiple of the union's 8-byte alignment).
+        /// Without it the 33-byte field leaves odd padding inside `Data`
+        /// and this Zig 0.17.0-dev toolchain miscompiles ReleaseFast
+        /// copies of `Value` (tag reads as a different variant; verified
+        /// with a standalone repro). Zero-cost at every other optimize level.
+        _pad: [7]u8 = @as([7]u8, @splat(0)),
     };
 
     pub fn asInt(self: Self) i64 {
@@ -333,9 +339,9 @@ pub const Interpreter = struct {
     }
 
     /// Type ability bitmask for runtime enforcement.
-    const AbilityKey   = 0x01; // can be stored in global state (move_to)
-    const AbilityCopy  = 0x02; // can be duplicated (copy_resource)
-    const AbilityDrop  = 0x04; // can be deleted (delete_resource)
+    const AbilityKey = 0x01; // can be stored in global state (move_to)
+    const AbilityCopy = 0x02; // can be duplicated (copy_resource)
+    const AbilityDrop = 0x04; // can be deleted (delete_resource)
     const AbilityStore = 0x08; // can be stored inside other structs
 
     /// Look up abilities for a resource type_tag. Resources default to
@@ -439,36 +445,57 @@ pub const Interpreter = struct {
             .add => {
                 const ints = try self.popTwoInts();
                 const result, const overflow = @addWithOverflow(ints.a.data.int, ints.b.data.int);
-                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (overflow != 0) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .sub => {
                 const ints = try self.popTwoInts();
                 const result, const overflow = @subWithOverflow(ints.a.data.int, ints.b.data.int);
-                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (overflow != 0) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .mul => {
                 const ints = try self.popTwoInts();
                 const result, const overflow = @mulWithOverflow(ints.a.data.int, ints.b.data.int);
-                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (overflow != 0) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .div => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int == 0) { @branchHint(.cold); return error.DivisionByZero; }
-                if (ints.a.data.int == std.math.minInt(i64) and ints.b.data.int == -1) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (ints.b.data.int == 0) {
+                    @branchHint(.cold);
+                    return error.DivisionByZero;
+                }
+                if (ints.a.data.int == std.math.minInt(i64) and ints.b.data.int == -1) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @divTrunc(ints.a.data.int, ints.b.data.int) } });
             },
             .mod => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int == 0) { @branchHint(.cold); return error.DivisionByZero; }
+                if (ints.b.data.int == 0) {
+                    @branchHint(.cold);
+                    return error.DivisionByZero;
+                }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = @rem(ints.a.data.int, ints.b.data.int) } });
             },
             .neg => {
                 const a = try self.popOneInt();
                 const result, const overflow = @subWithOverflow(@as(i64, 0), a.data.int);
-                if (overflow != 0) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (overflow != 0) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = result } });
             },
             .bit_and => {
@@ -485,13 +512,19 @@ pub const Interpreter = struct {
             },
             .shl => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int < 0 or ints.b.data.int >= 64) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (ints.b.data.int < 0 or ints.b.data.int >= 64) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 const shift = @as(u6, @intCast(ints.b.data.int));
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = ints.a.data.int << shift } });
             },
             .shr => {
                 const ints = try self.popTwoInts();
-                if (ints.b.data.int < 0 or ints.b.data.int >= 64) { @branchHint(.cold); return error.ArithmeticOverflow; }
+                if (ints.b.data.int < 0 or ints.b.data.int >= 64) {
+                    @branchHint(.cold);
+                    return error.ArithmeticOverflow;
+                }
                 const shift = @as(u6, @intCast(ints.b.data.int));
                 try self.stack.append(self.allocator, Value{ .tag = .integer, .data = .{ .int = ints.a.data.int >> shift } });
             },

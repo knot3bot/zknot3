@@ -86,7 +86,7 @@ zknot3 不是 Sui 的克隆。它是基于"三源合恰"（物象性三源）框
 ### Phase 3：基础设施磨平（后续）
 
 ```
-[ ] 模块发布系统 (ModuleRegistry + on-chain storage)
+[x] 模块发布系统 (ModuleRegistry + Executor Publish 接线 + ObjectStore 落盘, 2026-09-26)
 [ ] Narwhal 传播评估（评估后决定是否采用）
 [ ] 轻客户端验证 (BLS 聚合签名 → 跨链桥)
 ```
@@ -119,4 +119,4 @@ zknot3 不是 Sui 的克隆。它是基于"三源合恰"（物象性三源）框
 
 ---
 
-*最后更新：2026-05-11 · 346 tests · ~9.1/10 · Sui覆盖率 ~95%*
+*最后更新：2026-09-26 · 385 zig tests + 10 SDK tests + 5 executable proofs + Coq/Lean 机器验证 · 共识含 BLS QC/视图切换/3-chain 领导者提交 + Byzantine 模拟框架*

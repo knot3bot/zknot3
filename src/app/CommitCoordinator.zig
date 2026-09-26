@@ -363,4 +363,3 @@ test "tryCommitBatch drains up to max_batch, then stops on empty sweep" {
         if (committed.getPtr(d)) |b| b.deinit(allocator);
     }
 }
-

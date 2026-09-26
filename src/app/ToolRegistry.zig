@@ -33,9 +33,9 @@ pub const ParameterType = enum(u8) {
 
 /// Tool visibility
 pub const ToolVisibility = enum(u8) {
-    Private = 0,    // Only owner can call
-    Restricted = 1,  // Whitelist allowed callers
-    Public = 2,      // Anyone can call
+    Private = 0, // Only owner can call
+    Restricted = 1, // Whitelist allowed callers
+    Public = 2, // Anyone can call
 };
 
 /// Tool category for organization
@@ -95,7 +95,11 @@ pub const Tool = struct {
         category: ToolCategory,
         owner: [32]u8,
     ) Self {
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         return .{
             .id = ObjectID.hash(name),
             .name = name,
@@ -147,7 +151,7 @@ pub const Tool = struct {
     /// Check if caller can invoke
     pub fn canInvoke(self: Self, caller: [32]u8) bool {
         if (self.is_deprecated) return false;
-        
+
         return switch (self.visibility) {
             .Public => true,
             .Private => std.mem.eql(u8, &self.owner, &caller),
@@ -210,7 +214,7 @@ pub const ToolResult = struct {
     }
 
     /// Create error result
-    pub fn error(message: []const u8, gas_used: u64) Self {
+    pub fn err(message: []const u8, gas_used: u64) Self {
         return .{
             .success = false,
             .return_value = "",
@@ -264,7 +268,11 @@ pub const ToolPermission = struct {
     /// Check if valid
     pub fn isValid(self: Self) bool {
         if (self.is_revoked) return false;
-        if (self.expires_at > 0 and blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } > self.expires_at) {
+        if (self.expires_at > 0 and blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        } > self.expires_at) {
             return false;
         }
         return true;
@@ -349,7 +357,7 @@ test "Tool registration" {
     const allocator = std.testing.allocator;
     var registry = ToolRegistry.init(allocator);
     defer _ = registry.deinit();
-    
+
     const owner = @as([32]u8, @splat(0x42));
     var tool = Tool.register(
         "transfer",
@@ -358,9 +366,9 @@ test "Tool registration" {
         .Financial,
         owner,
     );
-    
+
     try registry.registerTool(tool);
-    
+
     const found = registry.findTool("knot3", "transfer");
     try std.testing.expect(found != null);
     try std.testing.expect(found.?.category == .Financial);
@@ -368,7 +376,7 @@ test "Tool registration" {
 
 test "Tool invocation validity" {
     const tool_id = ObjectID.hash("tool");
-    
+
     var invocation = ToolInvocation{
         .id = ObjectID.hash("inv"),
         .tool_id = tool_id,
@@ -376,10 +384,14 @@ test "Tool invocation validity" {
         .session_id = null,
         .parameters = "{\"amount\": 100}",
         .gas_offered = 1000,
-        .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .timestamp = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
         .result = null,
     };
-    
+
     try std.testing.expect(invocation.isValid());
 }
 
@@ -393,10 +405,10 @@ test "ToolPermission validity" {
     const tool_id = ObjectID.hash("tool");
     const grantee = @as([32]u8, @splat(0x55));
     const granted_by = @as([32]u8, @splat(0x42));
-    
+
     var perm = ToolPermission.grant(tool_id, grantee, granted_by, 5000);
     try std.testing.expect(perm.isValid());
-    
+
     perm.is_revoked = true;
     try std.testing.expect(!perm.isValid());
 }

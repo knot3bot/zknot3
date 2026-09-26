@@ -75,6 +75,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_all_tests.step);
 
+    // Executable proofs — exhaustive machine verification of core safety
+    // properties (quorum intersection, BFT bound, lattice order, leader
+    // election). See tools/formal/proofs.zig.
+    const formal_proofs_module = b.createModule(.{
+        .root_source_file = b.path("tools/formal/proofs.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    WireImports.attach(formal_proofs_module, b, blst_mod);
+    const formal_proofs = b.addTest(.{ .root_module = formal_proofs_module });
+    const run_formal_proofs = b.addRunArtifact(formal_proofs);
+    const formal_step = b.step("test-formal", "Run executable formal proofs");
+    formal_step.dependOn(&run_formal_proofs.step);
+    test_step.dependOn(&run_formal_proofs.step);
+
     // ========================================================================
     // Formal Specification Export
     // ========================================================================
@@ -82,7 +98,7 @@ pub fn build(b: *std.Build) void {
     const formal_module = b.createModule(.{
         .root_source_file = b.path("tools/formal/export.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .ReleaseSafe,
         .link_libc = true,
     });
     WireImports.attach(formal_module, b, blst_mod);
@@ -115,7 +131,10 @@ pub fn build(b: *std.Build) void {
     // Executables
     // ========================================================================
 
-    // Benchmark step — unit tests in ReleaseFast for throughput measurement
+    // Benchmark step — unit tests in ReleaseFast for throughput measurement.
+    // (A 0.17.0-dev toolchain miscompile of odd-padded union fields required
+    // a brief ReleaseSafe detour; fixed by padding Value.ResourceLoc to 40
+    // bytes — see the comment there.)
     const bench_module = b.createModule(.{
         .root_source_file = b.path("tests_unit.zig"),
         .target = target,
@@ -132,7 +151,7 @@ pub fn build(b: *std.Build) void {
     const profiler_module = b.createModule(.{
         .root_source_file = b.path("tools/profiler/main.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .ReleaseSafe,
         .link_libc = true,
     });
     WireImports.attach(profiler_module, b, blst_mod);
@@ -146,7 +165,7 @@ pub fn build(b: *std.Build) void {
     const fast_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .ReleaseSafe,
         .link_libc = true,
     });
     WireImports.attach(fast_module, b, blst_mod);

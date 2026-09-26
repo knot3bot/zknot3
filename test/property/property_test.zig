@@ -68,7 +68,7 @@ test "Property: Resource lifecycle" {
     const allocator = std.testing.allocator;
 
     const id = ObjectID.hash("resource");
-    var res = try Resource.init(id, .Coin, &.{1, 2, 3}, null, allocator);
+    var res = try Resource.init(id, .Coin, &.{ 1, 2, 3 }, null, allocator);
     defer {
         res.deinit(allocator);
         allocator.destroy(res);

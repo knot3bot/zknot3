@@ -442,7 +442,7 @@ pub const Node = struct {
     pub fn getNodeInfo(self: *Self) NodeInfo {
         const epoch_info = self.getEpochInfo();
         return .{
-            .version = "0.1.0",
+            .version = "0.16.0",
             .state = @tagName(self.state),
             .uptime_seconds = NodeMetricsCoordinator.computeUptimeSeconds(self.started_at),
             .object_store_count = self.execution_results.count(),
@@ -722,7 +722,9 @@ pub const Node = struct {
         if (!self.committed_blocks.contains(block.digest)) return error.BlockNotFound;
         const results = try self.executeBlockTransactions(block);
         defer {
-            for (results) |res| { res.deinit(self.allocator); }
+            for (results) |res| {
+                res.deinit(self.allocator);
+            }
             self.allocator.free(results);
         }
         var total_gas: u64 = 0;
@@ -811,7 +813,11 @@ pub const Node = struct {
 
     fn indexExecutionResult(self: *Self, tx_digest: [32]u8, result: ExecutionResult) void {
         const idx = self.indexer orelse return;
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk ts.sec; };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk ts.sec;
+        };
         // Phase 2: index VM-emitted events
         for (result.events) |evt| {
             idx.indexEvent(.{

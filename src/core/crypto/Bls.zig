@@ -63,7 +63,6 @@ pub fn verifyAggregated(message: []const u8, aggregated_pk: PublicKey, aggregate
     return sig.core_verify(&pk, true, message, Dst, null) == .SUCCESS;
 }
 
-
 test "BLS sign and verify single" {
     const sk = @as([32]u8, @splat(0x31));
     const pk = derivePublicKey(sk);
@@ -80,8 +79,8 @@ test "BLS aggregate sign and verify" {
     const msg = "hello";
     const sig1 = sign(sk1, msg);
     const sig2 = sign(sk2, msg);
-    const agg_sig = aggregateSig(&[_]Signature{sig1, sig2});
-    const agg_pk = aggregatePk(&[_]PublicKey{pk1, pk2});
+    const agg_sig = aggregateSig(&[_]Signature{ sig1, sig2 });
+    const agg_pk = aggregatePk(&[_]PublicKey{ pk1, pk2 });
     try std.testing.expect(verifyAggregated(msg, agg_pk, agg_sig));
 }
 
@@ -96,8 +95,8 @@ test "BLS aggregate 3 signers" {
     const sig1 = sign(sk1, &msg);
     const sig2 = sign(sk2, &msg);
     const sig3 = sign(sk3, &msg);
-    const agg_sig = aggregateSig(&[_]Signature{sig1, sig2, sig3});
-    const agg_pk = aggregatePk(&[_]PublicKey{pk1, pk2, pk3});
+    const agg_sig = aggregateSig(&[_]Signature{ sig1, sig2, sig3 });
+    const agg_pk = aggregatePk(&[_]PublicKey{ pk1, pk2, pk3 });
     try std.testing.expect(verifyAggregated(&msg, agg_pk, agg_sig));
 }
 
@@ -109,4 +108,3 @@ pub fn aggregateSigners(pubkeys: []const PublicKey, message: []const u8) Signatu
     _ = message;
     return @as([96]u8, @splat(0));
 }
-

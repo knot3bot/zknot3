@@ -43,7 +43,11 @@ pub const TokenBalance = struct {
             .token_type = token_type,
             .balance = 0,
             .locked_balance = 0,
-            .updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .updated_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
     }
 };
@@ -69,8 +73,12 @@ pub const SpendingLimit = struct {
 
     /// Check if amount is within limit
     pub fn allows(self: *Self, amount: u64) bool {
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
-        
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
+
         // Reset counters if needed
         if (now >= self.hour_reset) {
             self.hour_spent = 0;
@@ -80,10 +88,10 @@ pub const SpendingLimit = struct {
             self.day_spent = 0;
             self.day_reset = now + 86400;
         }
-        
+
         return amount <= self.per_transaction and
-               (self.hour_spent + amount) <= self.per_hour and
-               (self.day_spent + amount) <= self.per_day;
+            (self.hour_spent + amount) <= self.per_hour and
+            (self.day_spent + amount) <= self.per_day;
     }
 
     /// Record spending
@@ -125,18 +133,31 @@ pub const AgentWallet = struct {
                 .per_day = 100_000_000,
                 .hour_spent = 0,
                 .day_spent = 0,
-                .hour_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,
-                .day_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 86400,
+                .hour_reset = blk: {
+                    var ts: std.c.timespec = undefined;
+                    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                    break :blk (ts.sec);
+                } + 3600,
+                .day_reset = blk: {
+                    var ts: std.c.timespec = undefined;
+                    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                    break :blk (ts.sec);
+                } + 86400,
             },
             .is_frozen = false,
-            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .created_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
-	    /// Deinitialize wallet and free resources
-	    pub fn deinit(self: *Self) void {
-	        self.balances.deinit();
-	    }
+    }
 
-	    /// Check if can transact
+    /// Deinitialize wallet and free resources
+    pub fn deinit(self: *Self) void {
+        self.balances.deinit();
+    }
+
     /// Get balance for token type
     pub fn getBalance(self: *Self, token_type: TokenType) ?u64 {
         for (self.balances.items) |balance| {
@@ -150,15 +171,19 @@ pub const AgentWallet = struct {
     /// Add balance
     pub fn deposit(self: *Self, token_type: TokenType, amount: u64) !void {
         if (self.is_frozen) return error.WalletFrozen;
-        
+
         for (self.balances.items) |*balance| {
             if (balance.token_type == token_type) {
                 balance.balance += amount;
-                balance.updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+                balance.updated_at = blk: {
+                    var ts: std.c.timespec = undefined;
+                    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                    break :blk (ts.sec);
+                };
                 return;
             }
         }
-        
+
         // New token type
         var new_balance = TokenBalance.zero(token_type);
         new_balance.balance = amount;
@@ -168,7 +193,7 @@ pub const AgentWallet = struct {
     /// Withdraw balance
     pub fn withdraw(self: *Self, token_type: TokenType, amount: u64) !void {
         if (self.is_frozen) return error.WalletFrozen;
-        
+
         for (self.balances.items) |*balance| {
             if (balance.token_type == token_type) {
                 if (balance.available() < amount) {
@@ -178,12 +203,16 @@ pub const AgentWallet = struct {
                     return error.SpendingLimitExceeded;
                 }
                 balance.balance -= amount;
-                balance.updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+                balance.updated_at = blk: {
+                    var ts: std.c.timespec = undefined;
+                    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                    break :blk (ts.sec);
+                };
                 self.spending_limit.recordSpend(amount);
                 return;
             }
         }
-        
+
         return error.TokenNotFound;
     }
 
@@ -228,7 +257,11 @@ pub const AgentTreasury = struct {
             .members = std.ArrayList(ObjectID).init(std.heap.page_allocator),
             .required_signatures = required_signatures,
             .total_balance = 0,
-            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .created_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .is_active = true,
         };
     }
@@ -246,14 +279,14 @@ pub const AgentTreasury = struct {
                 return;
             }
         }
-	    }
-	
-	    /// Deinitialize treasury and free resources
-	    pub fn deinit(self: *Self) void {
-	        self.members.deinit();
-	    }
-	
-	    /// Check if quorum reached
+    }
+
+    /// Deinitialize treasury and free resources
+    pub fn deinit(self: *Self) void {
+        self.members.deinit();
+    }
+
+    /// Check if quorum reached
     pub fn hasQuorum(self: Self, signatures: u32) bool {
         return signatures >= self.required_signatures;
     }
@@ -282,7 +315,11 @@ pub const AuthRequest = struct {
 
     /// Check if valid
     pub fn isValid(self: Self) bool {
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         return !self.is_approved and now < self.expires_at;
     }
 
@@ -296,7 +333,7 @@ test "TokenBalance available" {
     var balance = TokenBalance.zero(.Native);
     balance.balance = 1000;
     balance.locked_balance = 300;
-    
+
     try std.testing.expect(balance.available() == 700);
     try std.testing.expect(balance.canSpend(500));
     try std.testing.expect(!balance.canSpend(800));
@@ -305,9 +342,9 @@ test "TokenBalance available" {
 test "AgentWallet create" {
     const agent_id = ObjectID.hash("agent");
     const owner = @as([32]u8, @splat(0x42));
-    
+
     var wallet = AgentWallet.create(agent_id, owner);
-    
+
     try std.testing.expect(!wallet.is_frozen);
     try std.testing.expect(wallet.canTransact());
 }
@@ -315,12 +352,12 @@ test "AgentWallet create" {
 test "AgentWallet deposit and withdraw" {
     const agent_id = ObjectID.hash("agent");
     const owner = @as([32]u8, @splat(0x42));
-    
+
     var wallet = AgentWallet.create(agent_id, owner);
-    
+
     try wallet.deposit(.KNOT3, 1000);
     try std.testing.expect((try wallet.getBalance(.KNOT3)) == 1000);
-    
+
     try wallet.withdraw(.KNOT3, 500);
     try std.testing.expect((try wallet.getBalance(.KNOT3)) == 500);
 }
@@ -328,12 +365,12 @@ test "AgentWallet deposit and withdraw" {
 test "AgentWallet freeze" {
     const agent_id = ObjectID.hash("agent");
     const owner = @as([32]u8, @splat(0x42));
-    
+
     var wallet = AgentWallet.create(agent_id, owner);
-    
+
     try wallet.deposit(.KNOT3, 1000);
     wallet.freeze();
-    
+
     try std.testing.expect(!wallet.canTransact());
 }
 
@@ -344,25 +381,33 @@ test "SpendingLimit" {
         .per_day = 1000,
         .hour_spent = 0,
         .day_spent = 0,
-        .hour_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,
-        .day_reset = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 86400,
+        .hour_reset = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        } + 3600,
+        .day_reset = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        } + 86400,
     };
-    
+
     try std.testing.expect(limit.allows(50));
     try std.testing.expect(limit.allows(100));
     try std.testing.expect(!limit.allows(200)); // per transaction
-    
+
     limit.recordSpend(100);
     try std.testing.expect(!limit.allows(500)); // would exceed hourly
 }
 
 test "AgentTreasury quorum" {
     var treasury = AgentTreasury.create("Test Treasury", 2);
-    
+
     try treasury.addMember(ObjectID.hash("agent1"));
     try treasury.addMember(ObjectID.hash("agent2"));
     try treasury.addMember(ObjectID.hash("agent3"));
-    
+
     try std.testing.expect(!treasury.hasQuorum(1)); // need 2
     try std.testing.expect(treasury.hasQuorum(2));
     try std.testing.expect(treasury.hasQuorum(3));
@@ -376,9 +421,17 @@ test "AuthRequest validity" {
         .recipient = @as([32]u8, @splat(0x55)),
         .owner = @as([32]u8, @splat(0x42)),
         .is_approved = false,
-        .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
-        .expires_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600,
+        .created_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
+        .expires_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        } + 3600,
     };
-    
+
     try std.testing.expect(req.isValid());
 }

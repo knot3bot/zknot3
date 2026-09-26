@@ -4,7 +4,7 @@
 //! for integration testing and development.
 
 const std = @import("std");
-ZP|const root = @import("../src/root.zig");
+const root = @import("../src/root.zig");
 
 const Node = root.app.Node;
 const Config = root.app.Config.Config;

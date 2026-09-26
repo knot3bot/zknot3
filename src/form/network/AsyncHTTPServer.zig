@@ -44,13 +44,13 @@ const Op = enum(u32) {
 };
 
 fn makeUserData(conn_idx: u32, op: Op) u64 {
-    return (@as(u64, @intFromEnum(op)) << 32) | conn_idx;
+    return (@as(u64, @backingInt(op)) << 32) | conn_idx;
 }
 
 fn parseUserData(ud: u64) struct { idx: u32, op: Op } {
     return .{
         .idx = @truncate(ud),
-        .op = @enumFromInt(@as(u32, @truncate(ud >> 32))),
+        .op = @fromBackingInt(@intCast(@as(u32, @truncate(ud >> 32)))),
     };
 }
 
@@ -214,7 +214,7 @@ pub const AsyncHTTPServer = struct {
             const cqe = cqes[i];
             const parsed = parseUserData(cqe.user_data);
             self.handleCqe(parsed.idx, parsed.op, cqe.res) catch |err| {
-                Log.warn("[HTTP] CQE handler error for conn {} op {}: {s}", .{ parsed.idx, @intFromEnum(parsed.op), @errorName(err) });
+                Log.warn("[HTTP] CQE handler error for conn {} op {}: {s}", .{ parsed.idx, @backingInt(parsed.op), @errorName(err) });
                 // Force connection close on error
                 if (parsed.idx < MAX_CONNS) {
                     self.closeConn(@intCast(parsed.idx));
@@ -374,11 +374,16 @@ pub const AsyncHTTPServer = struct {
                 .body = "{\"error\":\"Request body too large\"}",
             };
             _ = try response.withJSONContentType();
-            _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {};
+            return try response.toString(self.allocator);
         }
 
         // Rate limiting: global max requests per second
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         if (now != self.last_request_second) {
             self.last_request_second = now;
             self.request_count = 0;
@@ -390,7 +395,8 @@ pub const AsyncHTTPServer = struct {
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
             _ = try response.withJSONContentType();
-            _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
+            _ = response.withTraceId(&trace_id) catch {};
+            return try response.toString(self.allocator);
         }
         self.request_count += 1;
 
@@ -421,7 +427,8 @@ pub const AsyncHTTPServer = struct {
                     response.status = .internal_server_error;
                     response.body = "Failed to load dashboard";
                     _ = try response.withHeader("Content-Type", "text/html");
-                    _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
+                    _ = response.withTraceId(&trace_id) catch {};
+                    return try response.toString(self.allocator);
                 };
                 response.body = html;
                 _ = try response.withHeader("Content-Type", "text/html");
@@ -465,52 +472,52 @@ pub const AsyncHTTPServer = struct {
                 const text = std.fmt.bufPrint(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
-                    "# TYPE zknot3_consensus_round gauge\n" ++
-                    "zknot3_consensus_round {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_peers_connected Number of connected peers\n" ++
-                    "# TYPE zknot3_peers_connected gauge\n" ++
-                    "zknot3_peers_connected {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_uptime_seconds Node uptime in seconds\n" ++
-                    "# TYPE zknot3_uptime_seconds gauge\n" ++
-                    "zknot3_uptime_seconds {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_pending_transactions Number of pending transactions\n" ++
-                    "# TYPE zknot3_pending_transactions gauge\n" ++
-                    "zknot3_pending_transactions {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_committed_blocks_total Total committed blocks in memory\n" ++
-                    "# TYPE zknot3_committed_blocks_total gauge\n" ++
-                    "zknot3_committed_blocks_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_blocks_committed_total Total blocks committed since startup\n" ++
-                    "# TYPE zknot3_blocks_committed_total counter\n" ++
-                    "zknot3_blocks_committed_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_txn_pool_size Current transaction pool size\n" ++
-                    "# TYPE zknot3_txn_pool_size gauge\n" ++
-                    "zknot3_txn_pool_size {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_txn_pool_received_total Total transactions received\n" ++
-                    "# TYPE zknot3_txn_pool_received_total counter\n" ++
-                    "zknot3_txn_pool_received_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_txn_pool_executed_total Total transactions executed\n" ++
-                    "# TYPE zknot3_txn_pool_executed_total counter\n" ++
-                    "zknot3_txn_pool_executed_total {}\n" ++
-                    "\n" ++
-                    "# HELP p2p_uring_sq_depth Current io_uring submission queue depth\n" ++
-                    "# TYPE p2p_uring_sq_depth gauge\n" ++
-                    "p2p_uring_sq_depth {}\n" ++
-                    "\n" ++
-                    "# HELP p2p_uring_cq_lat_ms io_uring completion queue latency ms\n" ++
-                    "# TYPE p2p_uring_cq_lat_ms gauge\n" ++
-                    "p2p_uring_cq_lat_ms {}\n" ++
-                    "\n" ++
-                    "# HELP p2p_fallback_count Number of fallback-path activations\n" ++
-                    "# TYPE p2p_fallback_count counter\n" ++
-                    "p2p_fallback_count {}\n",
+                        "# TYPE zknot3_consensus_round gauge\n" ++
+                        "zknot3_consensus_round {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_peers_connected Number of connected peers\n" ++
+                        "# TYPE zknot3_peers_connected gauge\n" ++
+                        "zknot3_peers_connected {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_uptime_seconds Node uptime in seconds\n" ++
+                        "# TYPE zknot3_uptime_seconds gauge\n" ++
+                        "zknot3_uptime_seconds {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_pending_transactions Number of pending transactions\n" ++
+                        "# TYPE zknot3_pending_transactions gauge\n" ++
+                        "zknot3_pending_transactions {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_committed_blocks_total Total committed blocks in memory\n" ++
+                        "# TYPE zknot3_committed_blocks_total gauge\n" ++
+                        "zknot3_committed_blocks_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_blocks_committed_total Total blocks committed since startup\n" ++
+                        "# TYPE zknot3_blocks_committed_total counter\n" ++
+                        "zknot3_blocks_committed_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_txn_pool_size Current transaction pool size\n" ++
+                        "# TYPE zknot3_txn_pool_size gauge\n" ++
+                        "zknot3_txn_pool_size {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_txn_pool_received_total Total transactions received\n" ++
+                        "# TYPE zknot3_txn_pool_received_total counter\n" ++
+                        "zknot3_txn_pool_received_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_txn_pool_executed_total Total transactions executed\n" ++
+                        "# TYPE zknot3_txn_pool_executed_total counter\n" ++
+                        "zknot3_txn_pool_executed_total {}\n" ++
+                        "\n" ++
+                        "# HELP p2p_uring_sq_depth Current io_uring submission queue depth\n" ++
+                        "# TYPE p2p_uring_sq_depth gauge\n" ++
+                        "p2p_uring_sq_depth {}\n" ++
+                        "\n" ++
+                        "# HELP p2p_uring_cq_lat_ms io_uring completion queue latency ms\n" ++
+                        "# TYPE p2p_uring_cq_lat_ms gauge\n" ++
+                        "p2p_uring_cq_lat_ms {}\n" ++
+                        "\n" ++
+                        "# HELP p2p_fallback_count Number of fallback-path activations\n" ++
+                        "# TYPE p2p_fallback_count counter\n" ++
+                        "p2p_fallback_count {}\n",
                     .{
                         info.consensus_round,
                         peers,
@@ -622,7 +629,8 @@ pub const AsyncHTTPServer = struct {
                     response.status = .not_found;
                     response.body = "{\"error\":\"API not found\"}";
                     _ = try response.withJSONContentType();
-                    _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
+                    _ = response.withTraceId(&trace_id) catch {};
+                    return try response.toString(self.allocator);
                 };
                 // Allocate a copy with self.allocator so it stays valid until response is sent
                 const json_copy = try self.allocator.dupe(u8, json);
@@ -645,12 +653,12 @@ pub const AsyncHTTPServer = struct {
                     return try Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}").toString(self.allocator);
                 };
 
-const id_val = parsed.value.object.get("id") orelse null;
-const id_str: []const u8 = if (id_val != null and id_val.? == .integer) blk: {
-const v = id_val.?.integer;
-break :blk std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch "null";
-} else "null";
-defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
+                const id_val = parsed.value.object.get("id") orelse null;
+                const id_str: []const u8 = if (id_val != null and id_val.? == .integer) blk: {
+                    const v = id_val.?.integer;
+                    break :blk std.fmt.allocPrint(self.allocator, "{d}", .{v}) catch "null";
+                } else "null";
+                defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
 
                 // Route to method handler
                 const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_getObject"))
@@ -770,9 +778,7 @@ defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
                         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
                         .{ proof.sequence, proof.state_root, proof_hex, sig_hex },
                     );
-                }
-                else
-                    null;
+                } else null;
 
                 if (result_json) |r| {
                     // r is a JSON string literal like "{\"objectId\":\"0x123\"}"
@@ -801,6 +807,7 @@ defer if (id_val != null and id_val.? == .integer) self.allocator.free(id_str);
             _ = try response.withJSONContentType();
         }
 
-        _ = response.withTraceId(&trace_id) catch {}; return try response.toString(self.allocator);
+        _ = response.withTraceId(&trace_id) catch {};
+        return try response.toString(self.allocator);
     }
 };

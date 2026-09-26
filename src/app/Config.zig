@@ -17,7 +17,6 @@ pub const ProtocolVersion = struct {
     pub fn toString(self: Self, allocator: std.mem.Allocator) ![]u8 {
         return std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
     }
-
 };
 
 /// Network configuration
@@ -255,11 +254,30 @@ pub const Config = struct {
     }
 
     /// Builder pattern: chainable config construction.
-    pub fn builder() Self { return Self{}; }
-    pub fn withValidator(self: Self, enabled: bool) Self { var s = self; s.is_validator = enabled; return s; }
-    pub fn withDataDir(self: Self, dir: []const u8) Self { var s = self; s.storage.data_dir = dir; return s; }
-    pub fn withRpcPort(self: Self, port: u16) Self { var s = self; s.network.rpc_port = port; return s; }
-    pub fn withDev(self: Self) Self { var s = self; s.is_dev = true; s.verbose = true; return s; }
+    pub fn builder() Self {
+        return Self{};
+    }
+    pub fn withValidator(self: Self, enabled: bool) Self {
+        var s = self;
+        s.is_validator = enabled;
+        return s;
+    }
+    pub fn withDataDir(self: Self, dir: []const u8) Self {
+        var s = self;
+        s.storage.data_dir = dir;
+        return s;
+    }
+    pub fn withRpcPort(self: Self, port: u16) Self {
+        var s = self;
+        s.network.rpc_port = port;
+        return s;
+    }
+    pub fn withDev(self: Self) Self {
+        var s = self;
+        s.is_dev = true;
+        s.verbose = true;
+        return s;
+    }
 
     /// Create default configuration
     pub fn default() Self {
@@ -295,21 +313,20 @@ pub const Config = struct {
         };
     }
 
+    /// Load node config from JSON file
+    pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
+        const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
+        // NOTE: `Self.loadFromJSON` returns a config that borrows from `contents`.
+        // Keep `contents` alive for the lifetime of the returned config.
+        return try Self.loadFromJSON(allocator, contents);
+    }
 
-/// Load node config from JSON file
-pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !Self {
-    const contents = try std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, path, allocator, std.Io.Limit.limited(1024 * 1024));
-    // NOTE: `Self.loadFromJSON` returns a config that borrows from `contents`.
-    // Keep `contents` alive for the lifetime of the returned config.
-    return try Self.loadFromJSON(allocator, contents);
-}
-
-/// Parse node config from JSON string
-/// NOTE: The returned config borrows from json_slice - caller must keep
-/// json_slice alive for the lifetime of the returned config!
-pub fn loadFromJSON(allocator: std.mem.Allocator, json_slice: []const u8) !Self {
-    return try json.parseFromSlice(Self, allocator, json_slice, .{ .ignore_unknown_fields = true });
-}
+    /// Parse node config from JSON string
+    /// NOTE: The returned config borrows from json_slice - caller must keep
+    /// json_slice alive for the lifetime of the returned config!
+    pub fn loadFromJSON(allocator: std.mem.Allocator, json_slice: []const u8) !Self {
+        return try json.parseFromSlice(Self, allocator, json_slice, .{ .ignore_unknown_fields = true });
+    }
 
     /// Save node config to JSON string
     pub fn toJSON(self: Self, allocator: std.mem.Allocator) ![]u8 {

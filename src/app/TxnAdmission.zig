@@ -105,4 +105,3 @@ test "TxnAdmission classify duplicate transaction as duplicate decision" {
     });
     try std.testing.expectEqual(SubmitDecision.duplicate, try validateForSubmit(&ctx, tx));
 }
-

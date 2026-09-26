@@ -822,8 +822,8 @@ Test Suite: 49 tests, 0 failures, 0 skipped
 
 | Artifact | Location | Description |
 |----------|----------|-------------|
-| Coq Spec | `specs/consensus.v` | 381 lines with 10 proof templates |
-| Lean Spec | `specs/consensus.lean` | 127 lines with 5 theorems |
+| Coq Spec | `specs/consensus.v` | Specification skeleton (proofs pending prover integration) |
+| Lean Spec | `specs/consensus.lean` | Specification skeleton with lattice-order theorems |
 | Static Library | `zig-out/lib/libzknot3.a` | Full node library |
 | Node Binary | `zig-out/bin/zknot3-node-fast` | Fast build executable |
 
@@ -846,12 +846,13 @@ zig build export-coq
 ./zig-out/bin/zknot3-node-fast --dev --validator
 ```
 
-### 6.5 Project Completeness: ~99%
+### 6.5 Project Completeness: ~85% (production-readiness standard)
 
-Remaining items for 100%:
-- Actual Coq/Lean proof verification (requires Coq 8.18+ / Lean 4 installation)
-- Network integration tests with real multi-node cluster
-- Benchmark module (deferred due to module path complexity)
+Remaining items:
+- Full Coq/Lean proof verification (executable proofs in tools/formal/proofs.zig
+  cover quorum intersection, BFT bound, lattice order, leader election via
+  `zig build test-formal`; prover toolchain not bundled)
+- Real multi-node WAN cluster validation (Docker devnet covers LAN topology)
 
 ---
 

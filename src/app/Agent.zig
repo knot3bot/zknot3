@@ -77,7 +77,11 @@ pub const AgentId = struct {
             .owner = owner,
             .public_key = public_key,
             .permissions = .{},
-            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .created_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .is_active = true,
         };
     }
@@ -132,7 +136,11 @@ pub const AgentSession = struct {
     /// Check if session is valid
     pub fn isValid(self: Self) bool {
         if (!self.is_active) return false;
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         return now < self.expires_at;
     }
 
@@ -182,7 +190,7 @@ pub const AgentTransaction = struct {
         mint_nft,
         stake,
         delegate,
-    },
+    };
 };
 
 /// Agent capability certificate
@@ -225,7 +233,11 @@ pub const AgentCapability = struct {
     pub fn isValid(self: Self) bool {
         if (self.is_revoked) return false;
         if (self.expires_at > 0) {
-            return blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } < self.expires_at;
+            return blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            } < self.expires_at;
         }
         return true;
     }
@@ -256,7 +268,11 @@ pub const AgentDelegation = struct {
             .to_agent = to,
             .permissions = permissions,
             .is_active = true,
-            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .created_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
     }
 };
@@ -264,9 +280,9 @@ pub const AgentDelegation = struct {
 test "AgentId creation" {
     const owner = @as([32]u8, @splat(0x42));
     const public_key = @as([32]u8, @splat(0xAB));
-    
+
     const agent = AgentId.create(owner, .Autonomous, public_key);
-    
+
     try std.testing.expect(agent.is_active);
     try std.testing.expect(agent.agent_type == .Autonomous);
     try std.testing.expect(agent.canPerform(.transact));
@@ -276,9 +292,9 @@ test "AgentId owner verification" {
     const owner = @as([32]u8, @splat(0x42));
     const other = @as([32]u8, @splat(0x99));
     const public_key = @as([32]u8, @splat(0xAB));
-    
+
     const agent = AgentId.create(owner, .Autonomous, public_key);
-    
+
     try std.testing.expect(agent.isOwner(owner));
     try std.testing.expect(!agent.isOwner(other));
 }
@@ -286,17 +302,25 @@ test "AgentId owner verification" {
 test "AgentSession validity" {
     const agent_id = ObjectID.hash("agent");
     const owner = @as([32]u8, @splat(0x42));
-    
+
     var session = AgentSession{
         .id = @as([32]u8, @splat(0x01)),
         .agent_id = agent_id,
         .authorized_by = owner,
-        .permissions = .{.can_transact = true},
-        .started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
-        .expires_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); } + 3600, // 1 hour
+        .permissions = .{ .can_transact = true },
+        .started_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
+        .expires_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        } + 3600, // 1 hour
         .is_active = true,
     };
-    
+
     try std.testing.expect(session.isValid());
     try std.testing.expect(session.allows(.transact));
 }
@@ -304,11 +328,11 @@ test "AgentSession validity" {
 test "AgentCapability validity" {
     const agent_id = ObjectID.hash("agent");
     const grantee = @as([32]u8, @splat(0x55));
-    
-    var cap = AgentCapability.create(agent_id, grantee, .{.can_delegate = true});
-    
+
+    var cap = AgentCapability.create(agent_id, grantee, .{ .can_delegate = true });
+
     try std.testing.expect(cap.isValid());
-    
+
     cap.is_revoked = true;
     try std.testing.expect(!cap.isValid());
 }

@@ -274,7 +274,10 @@ pub const Ingress = struct {
     pub fn submit(self: *Self, transaction: Transaction) !void {
         if (self.pending.items.len >= self.config.max_pending) return error.TooManyPending;
         const tx_digest = transaction.digest();
-        if (self.seen_digests.contains(tx_digest)) { self.dedup_hits += 1; return; }
+        if (self.seen_digests.contains(tx_digest)) {
+            self.dedup_hits += 1;
+            return;
+        }
         if (self.seen_digests.count() > self.config.max_pending * 2) self.seen_digests.clearRetainingCapacity();
         try self.seen_digests.put(self.allocator, tx_digest, {});
         var tx_copy = transaction;

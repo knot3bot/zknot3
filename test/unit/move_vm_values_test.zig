@@ -44,7 +44,7 @@ test "values: struct pack" {
 
 test "values: ref counting" {
     const allocator = std.testing.allocator;
-    const fields = [_]Value{ Value.makeU64(1) };
+    const fields = [_]Value{Value.makeU64(1)};
     var s = try StructValue.pack(allocator, &fields, AbilitySet.default());
     defer s.deinit(allocator);
     try std.testing.expectEqual(@as(u32, 0), s.impl.Container.ref_count);

@@ -50,7 +50,7 @@ pub const Message = struct {
         var buf = try std.ArrayList(u8).initCapacity(allocator, Self.HEADER_SIZE + self.payload.len);
         errdefer buf.deinit(allocator);
 
-        try buf.append(allocator, @intFromEnum(self.msg_type));
+        try buf.append(allocator, @backingInt(self.msg_type));
         try buf.appendSlice(allocator, &self.sender);
 
         var seq_buf: [8]u8 = undefined;
@@ -73,7 +73,7 @@ pub const Message = struct {
 
         var offset: usize = 0;
 
-        const msg_type = @as(MessageType, @enumFromInt(buf[offset]));
+        const msg_type = @as(MessageType, @fromBackingInt(@intCast(buf[offset])));
         offset += 1;
 
         const sender = buf[offset..][0..32].*;
@@ -129,7 +129,11 @@ pub const Connection = struct {
     }
 
     pub fn updateActivity(self: *Self) void {
-        self.last_activity = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        self.last_activity = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
     }
 };
 
@@ -185,7 +189,11 @@ pub const Transport = struct {
             .id = conn_id,
             .state = .connecting,
             .peer = peer,
-            .last_activity = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .last_activity = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .bytes_sent = 0,
             .bytes_received = 0,
         });
@@ -248,7 +256,11 @@ pub const Transport = struct {
     }
 
     pub fn removeTimeouts(self: *Self) usize {
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         var removed: usize = 0;
 
         // Collect keys to remove (cannot remove during iteration)
@@ -344,7 +356,7 @@ test "Message.deserialize rejects length mismatch" {
 
     var header: [Message.HEADER_SIZE]u8 = undefined;
     @memset(&header, 0);
-    header[0] = @intFromEnum(MessageType.transaction);
+    header[0] = @backingInt(MessageType.transaction);
     // Advertise 128 bytes of payload but provide none.
     std.mem.writeInt(u32, header[41..45], 128, .big);
 

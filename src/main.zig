@@ -26,7 +26,6 @@ fn isLoopbackIPv4(addr: []const u8) bool {
 var running = std.atomic.Value(bool).init(true);
 
 /// Global I/O instance for compatibility with Zig 0.17.0 API
-
 /// Command line options
 const Options = struct {
     help: bool = false,
@@ -64,7 +63,7 @@ fn printUsage() void {
         \\  zknot3-node --rpc-port 9001          Use custom RPC port
         \\  zknot3-node --log-level debug         Enable debug logging
         \\
-    , .{"0.1.0"});
+    , .{"0.16.0"});
 }
 
 /// Print version information
@@ -188,7 +187,6 @@ fn registerSignalHandlers() void {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     @import("io_instance").io = init.io;
-
 
     // Parse command line arguments
     const opts = parseArgs(allocator, init.minimal.args) catch |err| {

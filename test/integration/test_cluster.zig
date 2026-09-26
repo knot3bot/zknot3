@@ -210,7 +210,6 @@ pub const TestTransaction = struct {
 };
 
 /// Assert helpers for integration tests
-
 /// Assert helpers for integration tests
 pub fn assertConsensusProgress(cluster: *TestCluster) !void {
     // Verify that the cluster has advanced beyond the genesis checkpoint

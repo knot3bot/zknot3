@@ -55,4 +55,3 @@ pub fn main() !void {
         .{ verified.quorum_stake, verified.total_stake },
     );
 }
-
