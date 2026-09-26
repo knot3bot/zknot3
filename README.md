@@ -333,6 +333,11 @@ verify Merkle proof, then replay only blocks from N+1 onward.
       partition safety + healing liveness, view-change liveness under
       withholding leaders, seed-determinism, randomized gossip soak with
       drops/delays — caught and fixed three real consensus bugs)
+- [x] WAN emulation gate in CI (tools/wan_emulation_gate.sh): multi-container
+      devnet under kernel-level netem — 80ms±10ms + 2% loss soak, full
+      partition of one validator (3/4 majority keeps committing), healing
+      catch-up, zero-restart audit; revived the devnet itself (nine bugs,
+      including configs that could never pass current validation)
 
 ### Planned
 - [ ] Validator slashing (automatic penalty for equivocation)
