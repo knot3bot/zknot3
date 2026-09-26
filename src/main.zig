@@ -274,7 +274,13 @@ pub fn main(init: std.process.Init) !void {
         Log.err("Invalid RPC address", .{});
         return;
     };
-    var http_server = HTTPServer.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second) catch |init_err| {
+    // Linux uses AsyncHTTPServer (io_uring) whose initWithDashboard takes an
+    // extra max_connections bound; the portable HTTPServer does not.
+    const http_server_init = switch (builtin.os.tag) {
+        .linux => HTTPServer.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second, config.network.max_connections),
+        else => HTTPServer.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second),
+    };
+    var http_server = http_server_init catch |init_err| {
         Log.err("Failed to create HTTP server: {s}", .{@errorName(init_err)});
         return;
     };
