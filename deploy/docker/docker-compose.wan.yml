@@ -1,12 +1,22 @@
 # WAN-emulation overlay for docker-compose-testnet.yml:
-# grants the validators NET_ADMIN so `tc netem` can inject inter-region
-# latency, jitter, loss, and partitions from the host.
+# - NET_ADMIN so `tc netem` can inject inter-region latency, jitter, loss,
+#   and partitions from the host.
+# - seccomp:unconfined because Docker's default seccomp profile denies
+#   io_uring syscalls, which the async HTTP server requires. This overlay
+#   is a test harness; production hosts without io_uring fall back to the
+#   portable HTTP server (see initHttpServer/startWithFallback in main.zig).
 services:
   zknot3-validator-1:
     cap_add: [NET_ADMIN]
+    security_opt: ["seccomp:unconfined"]
   zknot3-validator-2:
     cap_add: [NET_ADMIN]
+    security_opt: ["seccomp:unconfined"]
   zknot3-validator-3:
     cap_add: [NET_ADMIN]
+    security_opt: ["seccomp:unconfined"]
   zknot3-validator-4:
     cap_add: [NET_ADMIN]
+    security_opt: ["seccomp:unconfined"]
+  zknot3-fullnode:
+    security_opt: ["seccomp:unconfined"]
