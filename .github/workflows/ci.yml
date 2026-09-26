@@ -6,23 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Zig 0.17.0 stable does not exist yet; the codebase tracks the 0.17.0-dev
+  # nightly line. Pinned to an exact build so CI is reproducible.
+  ZIG_VERSION: "0.17.0-dev.2307+392b17125"
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        zig-version: ["0.17.0"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: ${{ matrix.zig-version }}
-          cache: true
+      - name: Setup Zig (pinned nightly)
+        run: |
+          curl -sL "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig"
+          tar xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+          "$HOME/zig/zig" version
 
       - name: Check formatting
-        run: zig fmt --check .
+        run: zig fmt --check src tools test
+
+      - name: Compile everything
+        run: zig build
 
       - name: Run unit tests
         run: zig build test-unit -Doptimize=Debug
@@ -34,11 +41,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: "0.17.0"
-          cache: true
+      - name: Setup Zig (pinned nightly)
+        run: |
+          curl -sL "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig"
+          tar xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
       - name: Executable proofs (exhaustive)
         run: zig build test-formal
       - name: Coq specification
@@ -70,11 +78,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version:  0.17.0
-          cache: true
+      - name: Setup Zig (pinned nightly)
+        run: |
+          curl -sL "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/zig"
+          tar xJf /tmp/zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
 
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe
