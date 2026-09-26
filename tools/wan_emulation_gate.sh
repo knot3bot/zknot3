@@ -44,7 +44,7 @@ stimulate() { # stimulate <validator> <count>
 }
 
 wait_healthy() { # wait_healthy <timeout_s>
-  local deadline=$((SECONDS + $1)) ok
+  local deadline=$((SECONDS + $1)) ok next_note=0
   while (( SECONDS < deadline )); do
     ok=1
     for v in "${VALIDATORS[@]}"; do
@@ -52,6 +52,16 @@ wait_healthy() { # wait_healthy <timeout_s>
     done
     docker exec "$RUNNER" curl -sf "http://zknot3-fullnode:9003/health" >/dev/null || ok=0
     (( ok )) && return 0
+    if (( SECONDS >= next_note )); then
+      next_note=$((SECONDS + 30))
+      local diag=""
+      for v in "${VALIDATORS[@]}"; do
+        local rc=0
+        docker exec "$RUNNER" curl -sf -o /dev/null "http://$v:9003/health" 2>/dev/null || rc=$?
+        diag="$diag $v(health_rc=$rc,restarts=$(docker inspect -f '{{.RestartCount}}' "$v"),status=$(docker inspect -f '{{.State.Status}}' "$v"))"
+      done
+      echo "::notice title=wan_gate-wait::t=${SECONDS}s$diag"
+    fi
     sleep 3
   done
   return 1
