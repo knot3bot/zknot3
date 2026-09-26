@@ -34,6 +34,32 @@ const HttpServer = union(enum) {
         }
     }
 
+    /// Start with graceful degradation: the io_uring server initializes its
+    /// ring in start(), and containers with restrictive seccomp profiles
+    /// (Docker 24+ default) deny it. Any async-start failure falls back to
+    /// the portable server; a genuine bind failure then fails for both.
+    fn startWithFallback(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        rpc_addr: std.Io.net.IpAddress,
+        node: *@import("app/Node.zig").Node,
+        max_requests_per_second: u32,
+    ) !void {
+        self.start() catch |first_err| {
+            if (builtin.os.tag == .linux) {
+                switch (self.*) {
+                    .async_impl => {
+                        Log.warn("async HTTP start failed ({s}); falling back to the portable server", .{@errorName(first_err)});
+                        self.* = .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
+                        return self.start();
+                    },
+                    else => {},
+                }
+            }
+            return first_err;
+        };
+    }
+
     fn deinit(self: *@This()) void {
         switch (self.*) {
             .portable_impl => |*impl| impl.deinit(),
@@ -73,18 +99,7 @@ fn initHttpServer(
     max_connections: usize,
 ) anyerror!HttpServer {
     if (builtin.os.tag == .linux) {
-        if (AsyncHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second, max_connections)) |async_srv| {
-            return .{ .async_impl = async_srv };
-        } else |async_err| switch (async_err) {
-            // io_uring unavailable (containers with restrictive seccomp,
-            // older kernels, exhausted resources): fall back to the
-            // portable server instead of dying.
-            error.PermissionDenied, error.OperationNotSupported, error.SystemResources => {
-                Log.warn("io_uring HTTP unavailable ({s}); using portable HTTP server", .{@errorName(async_err)});
-                return .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
-            },
-            else => return async_err,
-        }
+        return .{ .async_impl = try AsyncHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second, max_connections) };
     }
     return .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
 }
@@ -352,7 +367,7 @@ pub fn main(init: std.process.Init) !void {
         Log.err("Failed to create HTTP server: {s}", .{@errorName(http_err)});
         return;
     };
-    http_server.start() catch |http_err| {
+    http_server.startWithFallback(allocator, rpc_addr, node, config.network.max_requests_per_second) catch |http_err| {
         Log.err("Failed to start HTTP server: {s}", .{@errorName(http_err)});
         return;
     };
