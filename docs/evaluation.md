@@ -15,6 +15,7 @@
 | Lean 4 规格机器验证 | `bash tools/formal/lean_gate.sh` | ✅ Lean 4.34.1 编译通过，10 定理零 sorry，公理审计仅 propext/Quot.sound |
 | Lean 4 规格机器验证 | `bash tools/formal/lean_gate.sh` | ✅ Lean 4.34.1 编译通过，10 定理零 sorry，公理审计仅 propext/Quot.sound |
 | TS SDK | `cd sdk/typescript && npm test` | ✅ 10/10 |
+| 官方工具链本机验证（macOS arm64） | `ZIG_GLOBAL_CACHE_DIR=… /tmp/zig-official/…/zig build test` | ✅ **385/385** + ReleaseFast benchmark 0 失败（官方 0.17.0-dev.2307，隔离缓存，依赖从固定 tarball 拉取） |
 | **官方工具链 CI（GitHub Actions 全绿）** | https://github.com/knot3bot/zknot3/actions/runs/36247023070 | ✅ test（编译+全量测试）/ formal（证明+Coq+Lean）/ sdk / build-release / docker 五作业全部 success（官方 Zig 0.17.0-dev.2307 + Linux x86_64） |
 | Byzantine/property 模拟 | `zig build test-integration --summary all` | ✅ 5 场景（等价安全×300 种子、分区安全+愈合、扣留领导者视图切换、种子确定性、丢包/延迟 gossip soak×25 种子） |
 | 基准 | `zig build benchmark`（ReleaseFast） | ✅ 通过（UB 已修复） |
