@@ -177,7 +177,7 @@ pub fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u
     return false;
 }
 
-fn isAuthorizedAdmin(node: ?*Node, request: []const u8) bool {
+pub fn isAuthorizedAdmin(node: ?*Node, request: []const u8) bool {
     const n = node orelse return true;
     if (n.config.network.admin_token.len == 0) return false; // No token set = writes denied
     const token = findHeaderValue(request, "X-Zknot3-Admin-Token") orelse return false;
