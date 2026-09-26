@@ -29,8 +29,10 @@ ENV PATH="/opt:$PATH"
 WORKDIR /src
 COPY . .
 
-# Cross-compile for ARM64 Linux
-RUN /opt/zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux-gnu
+# Build for the build host's native arch (the image was historically
+# hard-coded to aarch64, which made it unrunnable on x86_64 hosts — the
+# binary died instantly with exec format error, no logs).
+RUN /opt/zig build -Doptimize=ReleaseSafe
 
 # Final stage - runtime image
 FROM ubuntu:22.04
