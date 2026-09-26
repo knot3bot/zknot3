@@ -426,16 +426,16 @@ pub const AsyncHTTPServer = struct {
                 const html = handler.getHTML() catch {
                     response.status = .internal_server_error;
                     response.body = "Failed to load dashboard";
-                    _ = try response.withHeader("Content-Type", "text/html");
-                    _ = response.withTraceId(&trace_id) catch {};
+                    response = try response.withHeader(self.allocator, "Content-Type", "text/html");
+                    response.withTraceId(&trace_id);
                     return try response.toString(self.allocator);
                 };
                 response.body = html;
-                _ = try response.withHeader("Content-Type", "text/html");
+                response = try response.withHeader(self.allocator, "Content-Type", "text/html");
             } else {
                 response.status = .not_found;
                 response.body = "{\"error\":\"Dashboard not configured\"}";
-                _ = try response.withJSONContentType();
+                response = try response.withJSONContentType(self.allocator);
             }
         } else if (std.mem.eql(u8, path, "/health")) {
             const health_body = if (self.node) |node| blk: {
@@ -453,7 +453,7 @@ pub const AsyncHTTPServer = struct {
                 break :blk json;
             } else "{\"healthy\":true}";
             response.body = health_body;
-            _ = try response.withJSONContentType();
+            response = try response.withJSONContentType(self.allocator);
         } else if (std.mem.eql(u8, path, "/metrics")) {
             const metrics_body = if (self.node) |node| blk: {
                 const info = node.getNodeInfo();
@@ -539,12 +539,12 @@ pub const AsyncHTTPServer = struct {
                 break :blk text;
             } else "# No metrics available\n";
             response.body = metrics_body;
-            _ = try response.withHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+            response = try response.withHeader(self.allocator, "Content-Type", "text/plain; version=0.0.4; charset=utf-8");
         } else if (std.mem.eql(u8, path, "/ready")) {
             const is_ready = if (self.node) |node| node.state == .running else false;
             response.body = if (is_ready) "{\"ready\":true}" else "{\"ready\":false}";
             response.status = if (is_ready) .ok else .service_unavailable;
-            _ = try response.withJSONContentType();
+            response = try response.withJSONContentType(self.allocator);
         } else if (std.mem.eql(u8, path, "/peers")) {
             const peers_body = if (self.node) |node| blk: {
                 if (node.getP2PServer()) |p2p| {
@@ -573,7 +573,7 @@ pub const AsyncHTTPServer = struct {
                 break :blk "{\"count\":0,\"peers\":[]}";
             } else "{\"error\":\"Node not configured\"}";
             response.body = peers_body;
-            _ = try response.withJSONContentType();
+            response = try response.withJSONContentType(self.allocator);
         } else if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) {
             // POST /tx -> Submit transaction
             if (self.node) |node| {
@@ -616,11 +616,11 @@ pub const AsyncHTTPServer = struct {
                     "{\"success\":true,\"duplicate\":true}"
                 else
                     "{\"success\":true,\"duplicate\":false}";
-                _ = try response.withJSONContentType();
+                response = try response.withJSONContentType(self.allocator);
             } else {
                 response.status = .not_found;
                 response.body = "{\"error\":\"Node not configured\"}";
-                _ = try response.withJSONContentType();
+                response = try response.withJSONContentType(self.allocator);
             }
         } else if (std.mem.startsWith(u8, path, "/api/")) {
             // GET /api/* -> Dashboard API
@@ -628,18 +628,18 @@ pub const AsyncHTTPServer = struct {
                 const json = handler.handleAPI(path) catch {
                     response.status = .not_found;
                     response.body = "{\"error\":\"API not found\"}";
-                    _ = try response.withJSONContentType();
+                    response = try response.withJSONContentType(self.allocator);
                     _ = response.withTraceId(&trace_id) catch {};
                     return try response.toString(self.allocator);
                 };
                 // Allocate a copy with self.allocator so it stays valid until response is sent
                 const json_copy = try self.allocator.dupe(u8, json);
                 response.body = json_copy;
-                _ = try response.withJSONContentType();
+                response = try response.withJSONContentType(self.allocator);
             } else {
                 response.status = .not_found;
                 response.body = "{\"error\":\"Dashboard not configured\"}";
-                _ = try response.withJSONContentType();
+                response = try response.withJSONContentType(self.allocator);
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (body) |b| {
@@ -799,12 +799,12 @@ pub const AsyncHTTPServer = struct {
             } else {
                 response.status = .bad_request;
                 response.body = "{\"error\":\"Missing body\"}";
-                _ = try response.withJSONContentType();
+                response = try response.withJSONContentType(self.allocator);
             }
         } else {
             response.status = .not_found;
             response.body = "{\"error\":\"Not found\"}";
-            _ = try response.withJSONContentType();
+            response = try response.withJSONContentType(self.allocator);
         }
 
         _ = response.withTraceId(&trace_id) catch {};
