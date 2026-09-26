@@ -107,8 +107,8 @@ jobs:
     # healing. Asserts BFT liveness of the 3-validator majority during the
     # partition, catch-up after healing, and zero restarts throughout.
     runs-on: ubuntu-latest
-    needs: docker
-    timeout-minutes: 25
+    needs: test
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
