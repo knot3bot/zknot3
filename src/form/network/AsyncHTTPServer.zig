@@ -629,7 +629,7 @@ pub const AsyncHTTPServer = struct {
                     response.status = .not_found;
                     response.body = "{\"error\":\"API not found\"}";
                     response = try response.withJSONContentType(self.allocator);
-                    _ = response.withTraceId(&trace_id) catch {};
+                    response.withTraceId(&trace_id);
                     return try response.toString(self.allocator);
                 };
                 // Allocate a copy with self.allocator so it stays valid until response is sent
@@ -807,7 +807,7 @@ pub const AsyncHTTPServer = struct {
             response = try response.withJSONContentType(self.allocator);
         }
 
-        _ = response.withTraceId(&trace_id) catch {};
+        response.withTraceId(&trace_id);
         return try response.toString(self.allocator);
     }
 };
