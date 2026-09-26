@@ -579,17 +579,17 @@ pub const AsyncHTTPServer = struct {
             if (self.node) |node| {
                 const b = body orelse {
                     var bad_resp = Response.badRequest("{\"error\":\"Missing body\"}");
-                    _ = try bad_resp.withJSONContentType();
+                    bad_resp = try bad_resp.withJSONContentType(self.allocator);
                     return try bad_resp.toString(self.allocator);
                 };
                 if (b.len < 256) {
                     var bad_resp = Response.badRequest("{\"error\":\"Body must contain sender+public_key+signature hex\"}");
-                    _ = try bad_resp.withJSONContentType();
+                    bad_resp = try bad_resp.withJSONContentType(self.allocator);
                     return try bad_resp.toString(self.allocator);
                 }
                 const parsed = HTTPServerBase.parseSubmitTransactionBody(b) orelse {
                     var bad_resp = Response.badRequest("{\"error\":\"Invalid sender/public_key/signature hex\"}");
-                    _ = try bad_resp.withJSONContentType();
+                    bad_resp = try bad_resp.withJSONContentType(self.allocator);
                     return try bad_resp.toString(self.allocator);
                 };
                 const tx = pipeline.Transaction{
@@ -609,7 +609,7 @@ pub const AsyncHTTPServer = struct {
                         error.GasPriceTooLow => Response.badRequest("{\"error\":\"Gas price too low\"}"),
                         else => Response.internalError("{\"error\":\"Failed to submit transaction\"}"),
                     };
-                    _ = try err_response.withJSONContentType();
+                    err_response = try err_response.withJSONContentType(self.allocator);
                     return try err_response.toString(self.allocator);
                 };
                 response.body = if (submit == .duplicate)
@@ -680,21 +680,21 @@ pub const AsyncHTTPServer = struct {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.internalError(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const params_val = parsed.value.object.get("params") orelse {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.badRequest(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const input = M4RpcParams.parseStakeOperationInput(params_val) catch {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_submitStakeOperation params\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.badRequest(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const op_id = node.submitStakeOperation(input) catch |err| {
@@ -702,7 +702,7 @@ pub const AsyncHTTPServer = struct {
                         const err_suffix = "\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
                         var http_resp = Response.internalError(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     break :blk try std.fmt.allocPrint(self.allocator, "{{\"status\":\"accepted\",\"operationId\":{d}}}", .{op_id});
@@ -711,21 +711,21 @@ pub const AsyncHTTPServer = struct {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.internalError(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const params_val = parsed.value.object.get("params") orelse {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.badRequest(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const input = M4RpcParams.parseGovernanceProposalInput(params_val) catch {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_submitGovernanceProposal params\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.badRequest(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const proposal_id = node.submitGovernanceProposal(input) catch |err| {
@@ -733,7 +733,7 @@ pub const AsyncHTTPServer = struct {
                         const err_suffix = "\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
                         var http_resp = Response.internalError(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     break :blk try std.fmt.allocPrint(self.allocator, "{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
@@ -742,21 +742,21 @@ pub const AsyncHTTPServer = struct {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.internalError(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const params_val = parsed.value.object.get("params") orelse {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.badRequest(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const req = M4RpcParams.parseCheckpointProofRequest(params_val) catch {
                         const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getCheckpointProof params\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                         var http_resp = Response.badRequest(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     const proof = node.buildCheckpointProof(req) catch |err| {
@@ -764,7 +764,7 @@ pub const AsyncHTTPServer = struct {
                         const err_suffix = "\"},\"id\":";
                         const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
                         var http_resp = Response.internalError(response_body);
-                        _ = try http_resp.withJSONContentType();
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
                         return try http_resp.toString(self.allocator);
                     };
                     defer node.freeCheckpointProof(proof);
@@ -787,13 +787,13 @@ pub const AsyncHTTPServer = struct {
                     const footer = ",\"id\":";
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ header, r, footer, id_str, "}" });
                     var http_resp = Response.ok(response_body);
-                    _ = try http_resp.withJSONContentType();
+                    http_resp = try http_resp.withJSONContentType(self.allocator);
                     return try http_resp.toString(self.allocator);
                 } else {
                     const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":";
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
                     var http_resp = Response.ok(response_body);
-                    _ = try http_resp.withJSONContentType();
+                    http_resp = try http_resp.withJSONContentType(self.allocator);
                     return try http_resp.toString(self.allocator);
                 }
             } else {
