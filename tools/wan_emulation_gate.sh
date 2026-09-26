@@ -41,7 +41,7 @@ fail() {
 }
 
 metric() { # metric <validator> <name> — read from /health JSON
-  docker exec "$RUNNER" curl -sf "http://$1:9003/health" | grep -o "\"$2\":[0-9]*" | cut -d: -f2 | tail -1
+  { docker exec "$RUNNER" curl -sf "http://$1:9003/health" | grep -o "\"$2\":[0-9]*" | cut -d: -f2 | tail -1; } || true
 }
 
 # Block production is message/transaction driven; stimulate with a burst of
@@ -106,22 +106,22 @@ echo "phase 1 (baseline): all 5 nodes healthy"
 for v in "${VALIDATORS[@]:1}"; do impair "$v" "${DELAY_ARGS[@]}"; done
 impair zknot3-validator-1 "${DELAY_ARGS[@]}"
 
-base_blocks=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+base_blocks=$(metric zknot3-validator-1 blocks_committed_total)
 [ -n "$base_blocks" ] || fail "cannot read blocks metric (got '${base_blocks}')"
 stimulate zknot3-validator-2 20
 sleep 60
-wan_blocks=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+wan_blocks=$(metric zknot3-validator-1 blocks_committed_total)
 (( wan_blocks > base_blocks )) || fail "no commits under 80ms/2%loss WAN impairment ($base_blocks -> $wan_blocks)"
 echo "phase 2 (WAN impairment): commits progressed under 80ms±10ms + 2% loss ($base_blocks -> $wan_blocks)"
 
 # ------------------------------------------------------------- partition
-v4_base=$(metric zknot3-validator-4 zknot3_blocks_committed_total)
-majority_base=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
+v4_base=$(metric zknot3-validator-4 blocks_committed_total)
+majority_base=$(metric zknot3-validator-1 blocks_committed_total)
 impair zknot3-validator-4 loss 100%
 stimulate zknot3-validator-2 20
 sleep 45
-majority_mid=$(metric zknot3-validator-1 zknot3_blocks_committed_total)
-v4_mid=$(metric zknot3-validator-4 zknot3_blocks_committed_total)
+majority_mid=$(metric zknot3-validator-1 blocks_committed_total)
+v4_mid=$(metric zknot3-validator-4 blocks_committed_total)
 (( majority_mid > majority_base )) || fail "majority stalled during partition ($majority_base -> $majority_mid)"
 echo "phase 3 (partition): 3-validator majority kept committing ($majority_base -> $majority_mid); isolated node frozen ($v4_base -> $v4_mid)"
 
@@ -129,7 +129,7 @@ echo "phase 3 (partition): 3-validator majority kept committing ($majority_base 
 clear_impair zknot3-validator-4
 stimulate zknot3-validator-2 20
 sleep 60
-v4_healed=$(metric zknot3-validator-4 zknot3_blocks_committed_total)
+v4_healed=$(metric zknot3-validator-4 blocks_committed_total)
 (( v4_healed > v4_mid )) || fail "validator-4 did not resume progress after healing ($v4_mid -> $v4_healed)"
 echo "phase 4 (healing): validator-4 resumed progress ($v4_mid -> $v4_healed)"
 
