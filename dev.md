@@ -751,7 +751,7 @@ pub const TriSourceTest = struct {
 ## 五、启动命令与开发指南
 
 ```bash
-# 1. 环境准备（Zig 0.15+）
+# 1. 环境准备（Zig 0.17.0-dev nightly，CI 固定版本）
 $ zig version  # 要求 >= 0.15.0
 
 # 2. 编译时验证构建
@@ -810,12 +810,16 @@ KB|> Last updated: 2026-04-11
 ### 6.2 Test Coverage
 
 ```
-Test Suite: 49 tests, 0 failures, 0 skipped
-- Core tests: ObjectID hash/equality/group operations
-- Version tests: comparison, encoding
-- Ownership tests: Owned/Shared/Immutable invariants
-- Pipeline tests: Ingress/Executor/Egress integration
-- Formal spec tests: Coq/Lean generation
+Zig suites (zig build test): 385/385
+- Unit: core/Version/Ownership/serialization/GraphQL/BLS/native VM/golden vectors
+- Integration: cluster/consensus/pipeline/rpc-network/move-contract/e2e/
+  M4 WAL recovery/multi-validator checkpoint/module publish
+- Property: randomized invariants + Byzantine simulation
+  (equivocation, partition+healing, view-change liveness, determinism, soak)
+- Formal: 5 executable exhaustive proofs (test-formal)
+SDK (npm test): 10/10 — wallet/Blake3 vectors/Ed25519/PTB/translator/dryrun
+Prover gates: coq_gate (8 Qed), lean_gate (10 theorems, no sorry)
+Release gates: zig build benchmark (ReleaseFast) 全绿；WAN netem gate（CI wan 作业）
 ```
 
 ### 6.3 Generated Artifacts

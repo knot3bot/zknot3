@@ -766,7 +766,11 @@ pub const HTTPServer = struct {
                 const info = node.getNodeInfo();
                 const peers = if (node.getP2PServer()) |p2p| p2p.peerCount() else 0;
                 const pool_stats = node.getTxnPoolStats();
-                var metrics_buf: [4096]u8 = undefined;
+                var metrics_buf: [6144]u8 = undefined;
+                // P2P abuse-defense counters (docs/observability_baseline.md).
+                const P2PServerMod = @import("P2PServer.zig").P2PServer;
+                const rl: P2PServerMod.RateLimitStats = if (node.getP2PServer()) |p2p| p2p.getRateLimitStats() else .{ .rate_limited_drops_total = 0, .banned_peers_total = 0 };
+                const am: P2PServerMod.AsyncMetrics = if (node.getP2PServer()) |p2p| p2p.asyncMetricsSnapshot() else .{ .sq_depth = 0, .cq_lat_ms = 0, .fallback_count = 0 };
                 const text = std.fmt.bufPrint(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
@@ -803,7 +807,19 @@ pub const HTTPServer = struct {
                         "\n" ++
                         "# HELP zknot3_txn_pool_executed_total Total transactions executed\n" ++
                         "# TYPE zknot3_txn_pool_executed_total counter\n" ++
-                        "zknot3_txn_pool_executed_total {}\n",
+                        "zknot3_txn_pool_executed_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_rate_limited_drops_total Inbound messages dropped by per-peer/per-type caps\n" ++
+                        "# TYPE zknot3_p2p_rate_limited_drops_total counter\n" ++
+                        "zknot3_p2p_rate_limited_drops_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_banned_peers_total Peers banned by score threshold\n" ++
+                        "# TYPE zknot3_p2p_banned_peers_total counter\n" ++
+                        "zknot3_p2p_banned_peers_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_io_fallback_total Async-transport fallbacks to blocking I/O\n" ++
+                        "# TYPE zknot3_p2p_io_fallback_total counter\n" ++
+                        "zknot3_p2p_io_fallback_total {}\n",
                     .{
                         info.consensus_round,
                         peers,
@@ -811,6 +827,9 @@ pub const HTTPServer = struct {
                         info.pending_transactions,
                         info.committed_blocks,
                         info.blocks_committed_total,
+                        rl.rate_limited_drops_total,
+                        rl.banned_peers_total,
+                        am.fallback_count,
                         pool_stats.pending,
                         pool_stats.received_total,
                         pool_stats.executed_total,

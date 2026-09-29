@@ -317,9 +317,6 @@ verify Merkle proof, then replay only blocks from N+1 onward.
 - [x] Production hardening (graceful shutdown draining, error logging, Docker HEALTHCHECK)
 - [x] Protocol documentation suite (invariants, ADRs, consensus/state/network specs)
 
-### In Progress
-- [ ] Real QUIC/UDP transport (see Planned below)
-
 ### Completed (v0.16.0, consensus & module lifecycle)
 - [x] Compact BLS QuorumCertificate (aggregate signature + signer bitmap, rogue-key safe)
 - [x] View change with f+1 TimeoutVotes and re-verifiable TimeoutCertificate
@@ -340,14 +337,18 @@ verify Merkle proof, then replay only blocks from N+1 onward.
       including configs that could never pass current validation)
 
 ### Planned
-- [ ] Validator slashing (automatic penalty for equivocation)
+- [ ] Automatic slashing on equivocation evidence (manual slash ops exist via M4 stake operations)
 - [ ] Market-based gas pricing (reference price + surge pricing, per-epoch)
 - [ ] Snapshot-based fast sync (state snapshot + Merkle proof + incremental replay)
 - [ ] Real QUIC/UDP transport (replace TCP framing with msquic/quiche integration)
 - [ ] Narwhal-style data/consensus separation
 - [ ] Archive node mode (full history, no pruning)
-- [ ] State Merkle proofs for light client verification
 - [ ] Validator delegation and reward distribution
+
+### Completed since (light client)
+- [x] State Merkle proofs for light client verification
+      (Checkpoint.generateInclusionProof + app/LightClient.zig + SDK
+      checkpoint-proof verify, covered by sdk_checkpoint_proof tests)
 
 ---
 
@@ -398,24 +399,34 @@ verify Merkle proof, then replay only blocks from N+1 onward.
 
 ```bash
 zig build -Doptimize=ReleaseSafe    # Clean build
-zig build test                       # 358/361 pass
+zig build test                       # 385/385 (unit+integration+e2e+simulation+proofs)
+zig build test-formal                # 5 executable exhaustive proofs
+cd sdk/typescript && npm test        # 10/10 SDK tests
 ```
+
+CI runs the full matrix on the pinned official Zig nightly:
+test / formal (proofs + Coq + Lean) / sdk / build-release / docker /
+wan (netem latency/loss/partition gate).
 
 ---
 
 ## Quick Start
 
 ```bash
-# Prerequisites: Zig 0.17.0
+# Prerequisites: Zig 0.17.0-dev nightly (see .github/workflows/ci.yml for the
+# pinned build; 0.17.0 stable does not exist yet)
 git clone https://github.com/knot3bot/zknot3.git
 cd zknot3
 zig build -Doptimize=ReleaseSafe
 
-# Development node (single validator, no P2P)
-./zig-out/bin/zknot3-node --config ./deploy/config/devnet.toml
+# Development node (single validator; flags only, no config file needed)
+./zig-out/bin/zknot3-node-fast --dev --validator --data-dir ./data
 
-# Production validator
-./zig-out/bin/zknot3-node --config ./deploy/config/mainnet.toml --validator
+# Config-driven node (JSON configs only; TOML is not a supported format)
+./zig-out/bin/zknot3-node-fast -c deploy/docker/configs/validator-1.json --validator
+
+# Multi-node devnet (4 validators + fullnode)
+cd deploy/docker && cp .env.example .env && docker compose up -d
 ```
 
 ## Documentation Index

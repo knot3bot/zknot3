@@ -65,14 +65,19 @@ cd deploy/docker
 docker compose up -d
 ```
 
-Services exposed:
+Services exposed (host ports):
 | Node | RPC Port | P2P Port |
 |------|----------|----------|
-| validator-1 | 9003 | 8083 / 9133 |
-| validator-2 | 9013 | 8093 / 9143 |
-| validator-3 | 9023 | 8103 / 9153 |
-| validator-4 | 9033 | 8113 / 9163 |
-| fullnode | 9043 | 8123 / 9173 |
+| validator-1 | 9003 | 8083 |
+| validator-2 | 9013 | 8093 |
+| validator-3 | 9023 | 8103 |
+| validator-4 | 9033 | 8113 |
+| fullnode | 9043 | 8123 |
+
+Note: Prometheus metrics are served on the **RPC port** at `GET /metrics`
+(there is no separate metrics listener despite the `metrics_address`
+config field and the 9133/91xx port mappings, which are reserved but
+currently unbound).
 
 ### Kubernetes
 
@@ -248,6 +253,21 @@ This is expected behavior after the timeout fix. A `WouldBlock` from `stream.rea
 
 ## Monitoring
 
+### Prometheus Metrics
+
+`GET <rpc-port>/metrics` 暴露（与容器 RPC 端口同端口）：
+
+- `zknot3_consensus_round`、`zknot3_peers_connected`、`zknot3_uptime_seconds`
+- `zknot3_blocks_committed_total`（启动以来提交块数）
+- `zknot3_txn_pool_{size,received_total,executed_total}`
+- P2P 防滥用计数器：`zknot3_p2p_rate_limited_drops_total`、
+  `zknot3_p2p_banned_peers_total`、`zknot3_p2p_io_fallback_total`
+
+### WAN 仿真门禁（CI `wan` 作业）
+
+`tools/wan_emulation_gate.sh`：多容器 devnet + netem（80ms±10ms/2% 丢包/
+完全分区/愈合）四阶段断言与零重启审计，每次 push 运行。
+
 ### Soak Test Monitor
 
 ```bash
@@ -299,13 +319,17 @@ What it checks every 30 seconds:
 
 ---
 
-## Secrets / Keys（严禁提交到仓库）
+## Secrets / Keys
 
-`deploy/docker/configs/validator-*.json` 现在**不再**包含：
+生产环境**严禁**在入库配置中放置真实密钥：
 
 - `authority.signing_key`
 - `authority.bls_signing_seed`
 
-原因：它们属于高敏感材料，提交到仓库即视为泄漏。
+生产上应通过外部注入（环境变量/密钥管理器/挂载文件）提供。
 
-在生产上应通过外部注入（例如环境变量/密钥管理器/挂载文件）提供这些值；在 devnet 可用固定种子，但也应放在本机/CI 的私密配置中，而不是 git 跟踪文件中。
+**Devnet 例外（2026-09-26 起）**：`deploy/docker/configs/validator-*.json{,.tmpl}`
+包含**确定性的公开开发密钥**（如 `0xD1`×32 字节）——它们按设计对所有人可见、
+仅用于共享测试网，stake 为假值，不构成机密。这是 devnet 在现行
+`Node.validateConfig`（验证者必须有 signing_key）下能启动的前提；
+此前模板缺失密钥导致 devnet 完全无法启动。生产部署仍必须注入真实密钥。

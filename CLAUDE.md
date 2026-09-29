@@ -4,7 +4,9 @@
 
 **zknot3** is a Zig re-implementation of the Knot3 blockchain, guided by the "三源合恰" (物象性三源) philosophical framework.
 
-**Current Status**: Production-ready implementation with all core components complete and tested.
+**Current Status**: Core-complete implementation under active hardening.
+Evidence-based completion tracking lives in `docs/evaluation.md`
+(~95% by the production-readiness rubric; known residuals listed there).
 
 ## Architecture
 

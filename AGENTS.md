@@ -10,7 +10,7 @@
 
 ## Technology Stack
 
-- **Language**: Zig 0.15+ (required)
+- **Language**: Zig 0.17.0-dev nightly line (CI-pinned; 0.17.0 stable 未发布)
 - **Blockchain**: Knot3 (re-implementation target)
 - **VM**: Move VM (Zig interpreter)
 - **Consensus**: Mysticeti (DAG-based BFT)
@@ -43,23 +43,32 @@ zknot3/
 ## Build Commands
 
 ```bash
-# Full build with formal export
-zig build -Doptimize=ReleaseFast -Dexport-formal=true
+# Full build (ReleaseSafe recommended for long-running nodes)
+zig build -Doptimize=ReleaseSafe
 
-# Run tri-source metric tests
-zig build test -- tri_source.wu_feng    # 物丰: resource efficiency
-zig build test -- tri_source.xiang_da  # 象大: knowledge coverage  
-zig build test -- tri_source.zi_zai    # 性自在: user satisfaction
+# Test suites
+zig build test-unit          # fast unit tests (no I/O)
+zig build test-integration   # full suite: unit + integration + e2e + Byzantine simulation (385 tests)
+zig build test-formal        # 5 executable exhaustive proofs (quorum intersection, BFT bound, …)
+zig build benchmark          # unit tests in ReleaseFast (throughput measurement)
 
-# Export formal specs to Coq
-zig build export-coq -- --output specs/consensus.v
+# Formal specifications (machine-checked, fail-closed gates)
+bash tools/formal/coq_gate.sh    # Rocq/Coq: 8 Qed theorems
+bash tools/formal/lean_gate.sh   # Lean 4: 10 theorems, no sorry
 
-# Local devnet (4 validators + 1 fullnode)
-./build/zknot3-node --network local --validators 4
+# Formal spec export (prints the generated Coq source to stdout)
+zig build export-coq
 
-# Profiler
-./tools/profiler --metrics wu_feng,xiang_da,zi_zai --interval 5s
+# Local devnet (4 validators + 1 fullnode, Docker)
+cd deploy/docker && cp .env.example .env && docker compose up -d
+bash tools/wan_emulation_gate.sh   # netem latency/loss/partition/healing gate
+
+# Profiler (three-source metrics; binary lands in zig-out/bin)
+zig build && ./zig-out/bin/zknot3-profiler -m wu_feng,xiang_da,zi_zai
 ```
+
+CI pins the official Zig nightly (0.17.0 stable does not exist yet); see
+`.github/workflows/ci.yml`.
 
 ---
 
