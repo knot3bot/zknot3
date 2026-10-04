@@ -108,7 +108,7 @@ pub const AgentRegistry = struct {
 
         // Index by capability for fast discovery
         for (capabilities) |cap| {
-            const cap_byte: u8 = @intFromEnum(cap);
+            const cap_byte: u8 = @backingInt(cap);
             const list = try self.capability_index.getOrPutValue(self.allocator, cap_byte, std.ArrayList(core.ObjectID).empty);
             try list.value_ptr.append(self.allocator, id);
         }
@@ -127,7 +127,7 @@ pub const AgentRegistry = struct {
 
     /// Discover agents by capability. Returns agents sorted by reputation (highest first).
     pub fn discoverByCapability(self: *AgentRegistry, capability: AgentCapability) ![]Agent {
-        const cap_byte: u8 = @intFromEnum(capability);
+        const cap_byte: u8 = @backingInt(capability);
         const agent_ids = self.capability_index.get(cap_byte) orelse return &.{};
 
         var results = std.ArrayList(Agent).empty;
@@ -171,7 +171,7 @@ test "AgentRegistry register and discover" {
     defer reg.deinit();
 
     const owner = @as([32]u8, @splat(1));
-    const caps = [_]AgentCapability{.image_gen, .text_gen};
+    const caps = [_]AgentCapability{ .image_gen, .text_gen };
 
     const id = try reg.register(owner, "ArtBot-3000", &caps, "https://artbot.example.com/api");
     try std.testing.expect(!id.eql(core.ObjectID.zero));

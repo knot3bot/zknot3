@@ -18,4 +18,3 @@ test "p2p_async: exposes async backend metrics snapshot" {
         try std.testing.expect(m.fallback_count > 0);
     }
 }
-

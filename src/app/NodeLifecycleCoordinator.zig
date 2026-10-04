@@ -81,4 +81,3 @@ test "NodeLifecycleCoordinator runStart rejects non-initializing state" {
     var node: MockNode = .{};
     try std.testing.expectError(error.InvalidState, runStart(&node));
 }
-

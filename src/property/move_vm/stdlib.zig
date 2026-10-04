@@ -105,7 +105,7 @@ test "stdlib Coin split with 3 amounts" {
 }
 
 test "stdlib Coin join returns valid object" {
-    const ids = [_]core.ObjectID{core.ObjectID.hash("a"), core.ObjectID.hash("b")};
+    const ids = [_]core.ObjectID{ core.ObjectID.hash("a"), core.ObjectID.hash("b") };
     const result = try Coin.join(&ids);
     try std.testing.expect(result.eql(core.ObjectID.zero));
 }

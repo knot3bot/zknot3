@@ -39,7 +39,7 @@ pub const SQE = struct {
 
     pub fn init(op: IoUringOp) @This() {
         return .{
-            .opcode = @intFromEnum(op),
+            .opcode = @backingInt(op),
             .flags = 0,
             .ioprio = 0,
             .off = 0,

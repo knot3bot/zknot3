@@ -137,4 +137,3 @@ test "TxExecutionCoordinator rejects replay and invalid sequence" {
     };
     try std.testing.expectError(error.InvalidSequence, executeOne(&ctx, bad_seq_tx));
 }
-

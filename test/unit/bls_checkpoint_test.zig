@@ -54,4 +54,3 @@ test "checkpoint_bls: tampered message fails verification" {
     const agg_pk = Bls.aggregatePk(&[_]Bls.PublicKey{ p1, p2 });
     try std.testing.expect(!Bls.verifyAggregated(bad, agg_pk, agg_sig));
 }
-

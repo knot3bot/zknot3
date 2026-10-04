@@ -6,7 +6,6 @@
 //! - Message routing
 //! - Protocol negotiation
 
-
 const std = @import("std");
 const Transport = @import("Transport.zig");
 const Message = Transport.Message;
@@ -176,10 +175,14 @@ pub const P2PNode = struct {
             .server = server,
             .local_peer_id = local_peer_id,
             .state = .initializing,
-            .started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .started_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
 
-                return self;
+        return self;
     }
 
     /// Initialize with persistent node key (loads or generates new key pair)
@@ -199,7 +202,11 @@ pub const P2PNode = struct {
             .server = server,
             .local_peer_id = peer_id,
             .state = .initializing,
-            .started_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .started_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
 
         return self;
@@ -373,8 +380,16 @@ test "Peer creation" {
         .address = "127.0.0.1",
         .port = 8083,
         .is_outbound = true,
-        .connected_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
-        .last_message = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .connected_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
+        .last_message = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
         .latency_ms = 10,
     };
 
@@ -395,8 +410,16 @@ test "PeerManager with Kademlia routing" {
         .address = "127.0.0.1",
         .port = 8083,
         .is_outbound = true,
-        .connected_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
-        .last_message = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .connected_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
+        .last_message = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
         .latency_ms = 10,
     };
 

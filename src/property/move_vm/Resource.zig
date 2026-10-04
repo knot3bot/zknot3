@@ -31,7 +31,7 @@ pub const ResourceTag = enum(u8) {
 
     /// Check if this is a builtin type
     pub fn isBuiltin(self: Self) bool {
-        return @intFromEnum(self) < 3;
+        return @backingInt(self) < 3;
     }
 };
 

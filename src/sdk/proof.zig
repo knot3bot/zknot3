@@ -97,4 +97,3 @@ pub fn verifyCheckpointProof(
 
     return .{ .quorum_stake = selected, .total_stake = total };
 }
-

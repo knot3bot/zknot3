@@ -200,7 +200,11 @@ pub const QUICConnection = struct {
             .remote_window = 16 * 1024 * 1024,
             .bytes_sent = 0,
             .bytes_received = 0,
-            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .created_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .tcp_connection = null,
             .receive_buffer = .empty,
         };
@@ -502,4 +506,3 @@ test "QUICConnection stores TCP connection" {
     try std.testing.expect(conn.tcp_connection == null);
     try std.testing.expect(conn.state == .dialing);
 }
-

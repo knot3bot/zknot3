@@ -1,5 +1,10 @@
 # zknot3 Mainnet Profiles
 
+> **格式注意**：节点当前**仅加载 JSON 配置**（`-c <file>.json`）。
+> 本目录的 TOML 文件是调度参数的设计参考基准，尚无 TOML 加载器；
+> 使用前需将参数转换为 JSON 配置。
+
+
 This directory includes three production-oriented scheduling profiles:
 
 - `production-conservative.toml`

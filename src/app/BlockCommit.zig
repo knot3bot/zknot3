@@ -46,4 +46,3 @@ pub fn promotePendingBlock(
     }
     return false;
 }
-

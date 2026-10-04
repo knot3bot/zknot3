@@ -91,7 +91,7 @@ pub const Ownership = struct {
     /// Encode to bytes for storage
     pub fn encode(self: Self, allocator: std.mem.Allocator) ![]u8 {
         var result = try allocator.alloc(u8, 41); // tag(1) + owner(32) + context(8)
-        result[0] = @intFromEnum(self.tag);
+        result[0] = @backingInt(self.tag);
         if (self.owner) |addr| {
             @memcpy(result[1..33], &addr);
         } else {
@@ -135,4 +135,3 @@ test "Ownership immutable" {
     try std.testing.expect(!imm.isTransferable());
     try std.testing.expect(imm.getOwner() == null);
 }
-

@@ -249,7 +249,7 @@ test "Move VM: ERC20-like token contract - total supply" {
     defer interpreter.deinit();
 
     // Bytecode: return total supply (1000000)
-    const bytecode = &.{ 
+    const bytecode = &.{
         0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x42, 0x40, // 1000000
         0x01, // ret
     };
@@ -265,7 +265,6 @@ test "Move VM: ERC20-like token contract - total supply" {
     try std.testing.expectEqual(@as(i64, 1000000), result.return_value.?.data.int);
 }
 
-
 test "Move VM: ERC20-like token contract - balanceOf" {
     const allocator = std.testing.allocator;
 
@@ -278,7 +277,7 @@ test "Move VM: ERC20-like token contract - balanceOf" {
     defer interpreter.deinit();
 
     // Bytecode: return balance of address (0x1234... = 500)
-    const bytecode = &.{ 
+    const bytecode = &.{
         0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // 500
         0x01, // ret
     };
@@ -294,7 +293,6 @@ test "Move VM: ERC20-like token contract - balanceOf" {
     try std.testing.expectEqual(@as(i64, 500), result.return_value.?.data.int);
 }
 
-
 test "Move VM: ERC20-like token contract - transfer" {
     const allocator = std.testing.allocator;
 
@@ -307,7 +305,7 @@ test "Move VM: ERC20-like token contract - transfer" {
     defer interpreter.deinit();
 
     // Bytecode: sender_balance = 500; amount = 200; new_balance = sender_balance - amount
-    const bytecode = &.{ 
+    const bytecode = &.{
         0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // sender_balance = 500
         0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, // amount = 200
         0x41, // subtract
@@ -325,7 +323,6 @@ test "Move VM: ERC20-like token contract - transfer" {
     try std.testing.expectEqual(@as(i64, 300), result.return_value.?.data.int);
 }
 
-
 test "Move VM: ERC20-like token contract - approve and transferFrom" {
     const allocator = std.testing.allocator;
 
@@ -338,7 +335,7 @@ test "Move VM: ERC20-like token contract - approve and transferFrom" {
     defer interpreter.deinit();
 
     // Bytecode: allowance = 1000; amount = 500; remaining = allowance - amount
-    const bytecode = &.{ 
+    const bytecode = &.{
         0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xE8, // allowance = 1000
         0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xF4, // amount = 500
         0x41, // subtract

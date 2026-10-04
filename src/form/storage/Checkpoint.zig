@@ -54,7 +54,11 @@ pub const Checkpoint = struct {
 
         return .{
             .sequence = sequence,
-            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .timestamp = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .previous_digest = previous_digest,
             .object_changes = try allocator.dupe(ObjectChange, changes),
             .state_root = state_root,
@@ -84,7 +88,7 @@ pub const Checkpoint = struct {
         for (self.object_changes) |change| {
             try buf.appendSlice(allocator, change.id.asBytes());
             try buf.appendSlice(allocator, &change.version.encode());
-            try buf.append(allocator, @intFromEnum(change.status));
+            try buf.append(allocator, @backingInt(change.status));
         }
 
         return buf.toOwnedSlice(allocator);
@@ -217,7 +221,7 @@ pub const Checkpoint = struct {
             var ctx = std.crypto.hash.Blake3.init(.{});
             ctx.update(&change.id.bytes);
             ctx.update(std.mem.asBytes(&change.version.seq));
-            ctx.update(&[_]u8{@intFromEnum(change.status)});
+            ctx.update(&[_]u8{@backingInt(change.status)});
             ctx.final(&leaves[i]);
         }
 

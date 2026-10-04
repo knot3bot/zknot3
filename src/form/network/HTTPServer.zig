@@ -8,16 +8,34 @@ const Log = @import("../../app/Log.zig");
 const MainnetExtensionHooks = app.MainnetExtensionHooks;
 const M4RpcParams = @import("M4RpcParams.zig");
 
+// Raw posix socket I/O (the same runtime-proven path P2PServer uses).
+// The std.Io streaming helpers require the ambient Io context to be
+// pumped (drained) by the caller; nothing in the node's event loop does
+// that, so under the real process io every request stalled with an empty
+// reply (the test suites never saw this because std.testing.io pumps
+// itself). Sockets here are timeout-bounded (see handleConnection), so
+// blocking reads cannot wedge the loop.
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
-    var writer = stream.writer(@import("io_instance").io, &.{});
-    try writer.interface.writeAll(bytes);
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const rc = std.c.write(stream.socket.handle, bytes[off..].ptr, bytes.len - off);
+        if (rc < 0) {
+            const errno: std.c.E = @fromBackingInt(@intCast(-rc));
+            switch (errno) {
+                .AGAIN => {
+                    std.Thread.yield() catch {};
+                    continue;
+                },
+                else => return error.WriteFailed,
+            }
+        }
+        if (rc == 0) return error.BrokenPipe;
+        off += @intCast(rc);
+    }
 }
 
 fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
-    var reader = stream.reader(@import("io_instance").io, &.{});
-    return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
-    };
+    return std.posix.read(stream.socket.handle, buf);
 }
 
 /// Read until buf is full, EOF, or an error occurs. Returns total bytes read.
@@ -63,7 +81,8 @@ pub const JSONRPCResponse = struct {
     pub fn toJSON(self: @This(), allocator: std.mem.Allocator) ![]u8 {
         var buf: [256]u8 = undefined;
         if (self.err) |err| {
-            const json = std.fmt.bufPrint(&buf,
+            const json = std.fmt.bufPrint(
+                &buf,
                 "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{},\"message\":\"{s}\"}},\"id\":{}}}",
                 .{ err.code, err.message, self.id.?.integer },
             ) catch return error.BufferOverflow;
@@ -156,7 +175,7 @@ fn isWriteMethod(method: []const u8) bool {
         std.ascii.eqlIgnoreCase(method, "PATCH");
 }
 
-fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) bool {
+pub fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) bool {
     const n = node orelse return false;
     if (n.config.network.admin_token.len == 0) {
         // No admin token configured — all write endpoints require auth by default.
@@ -176,7 +195,7 @@ fn requireAdminForRequest(node: ?*Node, request: []const u8, path: []const u8) b
     return false;
 }
 
-fn isAuthorizedAdmin(node: ?*Node, request: []const u8) bool {
+pub fn isAuthorizedAdmin(node: ?*Node, request: []const u8) bool {
     const n = node orelse return true;
     if (n.config.network.admin_token.len == 0) return false; // No token set = writes denied
     const token = findHeaderValue(request, "X-Zknot3-Admin-Token") orelse return false;
@@ -386,84 +405,83 @@ pub const Response = struct {
 };
 
 /// Simple HTTP server with routing
-    // Extract the request path from a raw HTTP request
-    pub fn extractPath(request: []const u8) []const u8 {
-        // Find the space after the method to locate path start
-        const space_idx = std.mem.indexOf(u8, request, " ") orelse return "";
-        const path_start = space_idx + 1;
+// Extract the request path from a raw HTTP request
+pub fn extractPath(request: []const u8) []const u8 {
+    // Find the space after the method to locate path start
+    const space_idx = std.mem.indexOf(u8, request, " ") orelse return "";
+    const path_start = space_idx + 1;
 
-        // Find the space before HTTP version to locate path end
-        const path_end = std.mem.indexOf(u8, request[path_start..], " ") orelse return "";
+    // Find the space before HTTP version to locate path end
+    const path_end = std.mem.indexOf(u8, request[path_start..], " ") orelse return "";
 
-        return request[path_start..path_start + path_end];
-    }
+    return request[path_start .. path_start + path_end];
+}
 
-    // Parse Content-Length header from a raw HTTP request
-    pub fn parseContentLength(request: []const u8) ?usize {
-        const value = findHeaderValue(request, "Content-Length") orelse return null;
-        if (value.len == 0) return null;
-        return std.fmt.parseInt(usize, value, 10) catch null;
-    }
+// Parse Content-Length header from a raw HTTP request
+pub fn parseContentLength(request: []const u8) ?usize {
+    const value = findHeaderValue(request, "Content-Length") orelse return null;
+    if (value.len == 0) return null;
+    return std.fmt.parseInt(usize, value, 10) catch null;
+}
 
-    /// Extract HTTP body using Content-Length if available.
-    /// Returns `null` when the header terminator is missing or the body is
-    /// shorter than the declared Content-Length (incomplete request).
-    pub fn extractBody(request: []const u8) ?[]const u8 {
-        const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return null;
-        const body = request[body_start + 4 ..];
-        if (parseContentLength(request)) |content_len| {
-            if (body.len >= content_len) {
-                return body[0..content_len];
-            }
-            // Body is incomplete — do not return a truncated slice.
-            return null;
+/// Extract HTTP body using Content-Length if available.
+/// Returns `null` when the header terminator is missing or the body is
+/// shorter than the declared Content-Length (incomplete request).
+pub fn extractBody(request: []const u8) ?[]const u8 {
+    const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return null;
+    const body = request[body_start + 4 ..];
+    if (parseContentLength(request)) |content_len| {
+        if (body.len >= content_len) {
+            return body[0..content_len];
         }
-        return body;
+        // Body is incomplete — do not return a truncated slice.
+        return null;
     }
+    return body;
+}
 
-    fn hexNibble(c: u8) ?u8 {
-        return switch (c) {
-            '0'...'9' => c - '0',
-            'a'...'f' => c - 'a' + 10,
-            'A'...'F' => c - 'A' + 10,
-            else => null,
-        };
-    }
-
-    fn parseHexFixed(comptime N: usize, src: []const u8) ?[N]u8 {
-        if (src.len != N * 2) return null;
-        var out: [N]u8 = undefined;
-        var i: usize = 0;
-        while (i < N) : (i += 1) {
-            const hi = hexNibble(src[i * 2]) orelse return null;
-            const lo = hexNibble(src[i * 2 + 1]) orelse return null;
-            out[i] = (hi << 4) | lo;
-        }
-        return out;
-    }
-
-    pub const SubmitTxFields = struct {
-        sender: [32]u8,
-        public_key: [32]u8,
-        signature: [64]u8,
-        sequence: u64,
+fn hexNibble(c: u8) ?u8 {
+    return switch (c) {
+        '0'...'9' => c - '0',
+        'a'...'f' => c - 'a' + 10,
+        'A'...'F' => c - 'A' + 10,
+        else => null,
     };
+}
 
-    pub fn parseSubmitTransactionBody(body: []const u8) ?SubmitTxFields {
-        if (body.len < 256) return null;
-        var sequence: u64 = 0;
-        if (body.len > 256) {
-            if (body[256] != ':') return null;
-            sequence = std.fmt.parseInt(u64, body[257..], 10) catch return null;
-        }
-        return .{
-            .sender = parseHexFixed(32, body[0..64]) orelse return null,
-            .public_key = parseHexFixed(32, body[64..128]) orelse return null,
-            .signature = parseHexFixed(64, body[128..256]) orelse return null,
-            .sequence = sequence,
-        };
+fn parseHexFixed(comptime N: usize, src: []const u8) ?[N]u8 {
+    if (src.len != N * 2) return null;
+    var out: [N]u8 = undefined;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        const hi = hexNibble(src[i * 2]) orelse return null;
+        const lo = hexNibble(src[i * 2 + 1]) orelse return null;
+        out[i] = (hi << 4) | lo;
     }
+    return out;
+}
 
+pub const SubmitTxFields = struct {
+    sender: [32]u8,
+    public_key: [32]u8,
+    signature: [64]u8,
+    sequence: u64,
+};
+
+pub fn parseSubmitTransactionBody(body: []const u8) ?SubmitTxFields {
+    if (body.len < 256) return null;
+    var sequence: u64 = 0;
+    if (body.len > 256) {
+        if (body[256] != ':') return null;
+        sequence = std.fmt.parseInt(u64, body[257..], 10) catch return null;
+    }
+    return .{
+        .sender = parseHexFixed(32, body[0..64]) orelse return null,
+        .public_key = parseHexFixed(32, body[64..128]) orelse return null,
+        .signature = parseHexFixed(64, body[128..256]) orelse return null,
+        .sequence = sequence,
+    };
+}
 
 pub const HTTPServer = struct {
     const Self = @This();
@@ -600,7 +618,11 @@ pub const HTTPServer = struct {
         defer self.active_connections -= 1;
 
         // Rate limiting: global max requests per second
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         if (now != self.last_request_second) {
             self.last_request_second = now;
             self.request_count = 0;
@@ -612,7 +634,8 @@ pub const HTTPServer = struct {
                 .body = "{\"error\":\"Rate limit exceeded\"}",
             };
             _ = try response.withJSONContentType(self.allocator);
-            response.withTraceId(&trace_id); try response.send(conn);
+            response.withTraceId(&trace_id);
+            try response.send(conn);
             return;
         }
         self.request_count += 1;
@@ -623,7 +646,8 @@ pub const HTTPServer = struct {
             if (err == error.WouldBlock) {
                 var response = Response.badRequest("{\"error\":\"Request timeout\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             }
             return;
         };
@@ -639,7 +663,8 @@ pub const HTTPServer = struct {
                 .body = "{\"error\":\"Request body too large\"}",
             };
             _ = try response.withJSONContentType(self.allocator);
-            response.withTraceId(&trace_id); try response.send(conn);
+            response.withTraceId(&trace_id);
+            try response.send(conn);
             return;
         }
 
@@ -703,16 +728,19 @@ pub const HTTPServer = struct {
                 const html = handler.getHTML() catch {
                     var response = Response.internalError("Failed to load dashboard");
                     _ = try response.withHeader(self.allocator, "Content-Type", "text/html");
-                    response.withTraceId(&trace_id); try response.send(conn);
+                    response.withTraceId(&trace_id);
+                    try response.send(conn);
                     return;
                 };
                 var response = Response.ok(html);
                 _ = try response.withHeader(self.allocator, "Content-Type", "text/html");
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Dashboard not configured\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             }
         } else if (std.mem.eql(u8, path, "/health")) {
             const health_body = if (self.node) |node| blk: {
@@ -731,7 +759,8 @@ pub const HTTPServer = struct {
             } else "{\"healthy\":true}";
             var response = Response.ok(health_body);
             _ = try response.withJSONContentType(self.allocator);
-            response.withTraceId(&trace_id); try response.send(conn);
+            response.withTraceId(&trace_id);
+            try response.send(conn);
         } else if (std.mem.eql(u8, path, "/metrics")) {
             const metrics_body = if (self.node) |node| blk: {
                 const info = node.getNodeInfo();
@@ -743,6 +772,10 @@ pub const HTTPServer = struct {
                 const zi_zai = tri.zi_zai;
 
                 var metrics_buf: [8192]u8 = undefined;
+                // P2P abuse-defense counters (docs/observability_baseline.md).
+                const P2PServerMod = @import("P2PServer.zig").P2PServer;
+                const rl: P2PServerMod.RateLimitStats = if (node.getP2PServer()) |p2p| p2p.getRateLimitStats() else .{ .rate_limited_drops_total = 0, .banned_peers_total = 0 };
+                const am: P2PServerMod.AsyncMetrics = if (node.getP2PServer()) |p2p| p2p.asyncMetricsSnapshot() else .{ .sq_depth = 0, .cq_lat_ms = 0, .fallback_count = 0 };
                 const text = std.fmt.bufPrint(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
@@ -781,6 +814,18 @@ pub const HTTPServer = struct {
                     "# TYPE zknot3_txn_pool_executed_total counter\n" ++
                     "zknot3_txn_pool_executed_total {}\n" ++
                     "\n" ++
+                    "# HELP zknot3_p2p_rate_limited_drops_total Inbound messages dropped by per-peer/per-type caps\n" ++
+                    "# TYPE zknot3_p2p_rate_limited_drops_total counter\n" ++
+                    "zknot3_p2p_rate_limited_drops_total {}\n" ++
+                    "\n" ++
+                    "# HELP zknot3_p2p_banned_peers_total Peers banned by score threshold\n" ++
+                    "# TYPE zknot3_p2p_banned_peers_total counter\n" ++
+                    "zknot3_p2p_banned_peers_total {}\n" ++
+                    "\n" ++
+                    "# HELP zknot3_p2p_io_fallback_total Async-transport fallbacks to blocking I/O\n" ++
+                    "# TYPE zknot3_p2p_io_fallback_total counter\n" ++
+                    "zknot3_p2p_io_fallback_total {}\n" ++
+                    "\n" ++
                     "# HELP zknot3_tri_source_wu_feng Resource efficiency metric (WuFeng / 物丰)\n" ++
                     "# TYPE zknot3_tri_source_wu_feng gauge\n" ++
                     "zknot3_tri_source_wu_feng {d:.6}\n" ++
@@ -802,6 +847,9 @@ pub const HTTPServer = struct {
                         pool_stats.pending,
                         pool_stats.received_total,
                         pool_stats.executed_total,
+                        rl.rate_limited_drops_total,
+                        rl.banned_peers_total,
+                        am.fallback_count,
                         wu_feng,
                         xiang_da,
                         zi_zai,
@@ -814,15 +862,18 @@ pub const HTTPServer = struct {
             } else "# No metrics available\n";
             var response = Response.ok(metrics_body);
             _ = try response.withHeader(self.allocator, "Content-Type", "text/plain; version=0.0.4; charset=utf-8");
-            response.withTraceId(&trace_id); try response.send(conn);
+            response.withTraceId(&trace_id);
+            try response.send(conn);
         } else if (std.mem.eql(u8, path, "/ready")) {
             // Readiness: node must be running AND consensus must be advancing
             const is_ready = if (self.node) |node|
                 node.state == .running and node.consensus_round > 0
-            else false;
+            else
+                false;
             var response = if (is_ready) Response.ok("{\"ready\":true}") else Response.serviceUnavailable("{\"ready\":false}");
             _ = try response.withJSONContentType(self.allocator);
-            response.withTraceId(&trace_id); try response.send(conn);
+            response.withTraceId(&trace_id);
+            try response.send(conn);
         } else if (std.mem.eql(u8, path, "/peers")) {
             const peers_body = if (self.node) |node| blk: {
                 if (node.getP2PServer()) |p2p| {
@@ -852,8 +903,8 @@ pub const HTTPServer = struct {
             } else "{\"error\":\"Node not configured\"}";
             var response = Response.ok(peers_body);
             _ = try response.withJSONContentType(self.allocator);
-            response.withTraceId(&trace_id); try response.send(conn);
-
+            response.withTraceId(&trace_id);
+            try response.send(conn);
         } else if (std.mem.eql(u8, path, "/tx") and std.mem.startsWith(u8, request, "POST ")) {
             // POST /tx -> Submit transaction
             if (self.node) |node| {
@@ -904,11 +955,13 @@ pub const HTTPServer = struct {
                     "{\"success\":true,\"duplicate\":false}";
                 var response = Response.ok(ok_body);
                 _ = try response.withJSONContentType(self.allocator);
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             } else {
                 var response = Response.notFound("{\"error\":\"Node not configured\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             }
         } else if (std.mem.startsWith(u8, path, "/api/")) {
             // GET /api/* -> Dashboard API
@@ -916,7 +969,8 @@ pub const HTTPServer = struct {
                 const json = handler.handleAPI(path) catch {
                     var response = Response.notFound("{\"error\":\"API not found\"}");
                     _ = try response.withJSONContentType(self.allocator);
-                    response.withTraceId(&trace_id); try response.send(conn);
+                    response.withTraceId(&trace_id);
+                    try response.send(conn);
                     return;
                 };
                 defer self.allocator.free(json);
@@ -926,7 +980,8 @@ pub const HTTPServer = struct {
             } else {
                 var response = Response.notFound("{\"error\":\"Dashboard not configured\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (extractBody(request)) |body| {
@@ -1135,15 +1190,16 @@ pub const HTTPServer = struct {
             } else {
                 var response = Response.badRequest("{\"error\":\"Missing body\"}");
                 _ = try response.withJSONContentType(self.allocator);
-                response.withTraceId(&trace_id); try response.send(conn);
+                response.withTraceId(&trace_id);
+                try response.send(conn);
             }
         } else {
             var response = Response.notFound("{\"error\":\"Not found\"}");
             _ = try response.withJSONContentType(self.allocator);
-            response.withTraceId(&trace_id); try response.send(conn);
+            response.withTraceId(&trace_id);
+            try response.send(conn);
         }
     }
-
 };
 
 test "HTTP Response creation" {

@@ -9,10 +9,10 @@ const core = @import("../../core.zig");
 
 /// IPFS content identifier and metadata.
 pub const IpfsContent = struct {
-    cid: []const u8,       // IPFS CIDv1 (e.g. "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
+    cid: []const u8, // IPFS CIDv1 (e.g. "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
     size_bytes: u64,
     mime_type: []const u8, // e.g. "image/png", "video/mp4"
-    pinned: bool,          // true if pinned to local IPFS node
+    pinned: bool, // true if pinned to local IPFS node
     created_at: i64,
 
     pub fn deinit(self: *IpfsContent, allocator: std.mem.Allocator) void {

@@ -305,7 +305,7 @@ pub const TestResults = struct {
         self.failed += 1;
         try self.errors.append(self.allocator, .{
             .test_name = try self.allocator.dupe(u8, test_name),
-            .error = err,
+            .err = err,
         });
     }
 
@@ -326,7 +326,7 @@ pub const TestResults = struct {
 /// Test error information
 pub const TestError = struct {
     test_name: []const u8,
-    error: anyerror,
+    err: anyerror,
 };
 
 /// Helper function to create a test module

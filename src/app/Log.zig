@@ -13,7 +13,7 @@ pub var global_level: Level = .info;
 
 /// Check if a message at the given level should be emitted
 pub fn isEnabled(level: Level) bool {
-    return @intFromEnum(level) <= @intFromEnum(global_level);
+    return @backingInt(level) <= @backingInt(global_level);
 }
 
 /// Emit a log message. Caller must include [LEVEL] prefix and \n in fmt.

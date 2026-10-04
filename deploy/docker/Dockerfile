@@ -11,9 +11,16 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Zig tarball from build context (pre-downloaded)
-COPY zig-bin/zig-aarch64-linux-0.17.0.tar.xz /tmp/zig.tar.xz
-RUN tar xJf /tmp/zig.tar.xz --strip-components=1 -C /opt && rm /tmp/zig.tar.xz
+# Fetch the pinned official 0.17.0-dev nightly for the build host arch
+# (0.17.0 stable does not exist; the codebase tracks the dev line).
+ARG ZIG_VERSION=0.17.0-dev.2307+392b17125
+RUN case "$(uname -m)" in \
+      x86_64) ZARCH=x86_64 ;; \
+      aarch64|arm64) ZARCH=aarch64 ;; \
+      *) echo "unsupported build arch" >&2; exit 1 ;; \
+    esac && \
+    curl -sL "https://ziglang.org/builds/zig-${ZARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz && \
+    mkdir -p /opt && tar xJf /tmp/zig.tar.xz --strip-components=1 -C /opt && rm /tmp/zig.tar.xz
 
 # Add Zig to PATH
 ENV PATH="/opt:$PATH"
@@ -22,8 +29,10 @@ ENV PATH="/opt:$PATH"
 WORKDIR /src
 COPY . .
 
-# Cross-compile for ARM64 Linux
-RUN /opt/zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux-gnu
+# Build for the build host's native arch (the image was historically
+# hard-coded to aarch64, which made it unrunnable on x86_64 hosts — the
+# binary died instantly with exec format error, no logs).
+RUN /opt/zig build -Doptimize=ReleaseSafe
 
 # Final stage - runtime image
 FROM ubuntu:22.04
@@ -34,6 +43,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     gettext-base \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from build stage

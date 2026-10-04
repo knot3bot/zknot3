@@ -43,7 +43,7 @@ test "Ownership: encode produces bytes" {
     const encoded = try original.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
-    try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Owned));
+    try std.testing.expect(encoded[0] == @backingInt(OwnershipTag.Owned));
 }
 
 test "Ownership: shared object encode" {
@@ -51,7 +51,7 @@ test "Ownership: shared object encode" {
     const encoded = try original.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
-    try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Shared));
+    try std.testing.expect(encoded[0] == @backingInt(OwnershipTag.Shared));
     const context_back = std.mem.readInt(u64, encoded[33..41], .big);
     try std.testing.expect(context_back == 1234);
 }
@@ -61,7 +61,7 @@ test "Ownership: immutable encode" {
     const encoded = try original.encode(std.testing.allocator);
     defer std.testing.allocator.free(encoded);
     try std.testing.expect(encoded.len > 0);
-    try std.testing.expect(encoded[0] == @intFromEnum(OwnershipTag.Immutable));
+    try std.testing.expect(encoded[0] == @backingInt(OwnershipTag.Immutable));
 }
 
 // =============================================================================

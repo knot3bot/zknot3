@@ -1,0 +1,17 @@
+# WAN-emulation overlay for docker-compose-testnet.yml:
+# - NET_ADMIN so `tc netem` can inject inter-region latency, jitter, loss,
+#   and partitions from the host.
+# The gate deliberately runs under Docker's DEFAULT seccomp profile: the
+# node falls back to the portable HTTP server there (startWithFallback in
+# main.zig), which is the path real locked-down hosts take. The async
+# io_uring server has a known CQE buffer-management defect (NoSpaceLeft)
+# and stays masked by the fallback; see docs/evaluation.md.
+services:
+  zknot3-validator-1:
+    cap_add: [NET_ADMIN]
+  zknot3-validator-2:
+    cap_add: [NET_ADMIN]
+  zknot3-validator-3:
+    cap_add: [NET_ADMIN]
+  zknot3-validator-4:
+    cap_add: [NET_ADMIN]

@@ -98,7 +98,7 @@ test "E2E: Transaction execution via Node" {
         .inputs = &.{},
         .program = program,
         .gas_budget = 1000,
-        .sequence = 1,
+        .sequence = 0,
         .signature = null,
         .public_key = null,
     };
@@ -112,7 +112,7 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     const allocator = std.testing.allocator;
     @import("io_instance").io = std.testing.io;
 
-    var ingress = try Ingress.init(allocator, .{});
+    var ingress = try Ingress.init(allocator, .{ .require_signatures = false });
     defer ingress.deinit();
 
     var executor = try Executor.init(allocator, .{});
@@ -121,7 +121,8 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     var egress = try Egress.init(allocator, 3000);
     defer egress.deinit();
 
-    const program = try allocator.dupe(u8, "nop");
+    // Minimal valid bytecode: nop (0x00) then ret (0x01).
+    const program = try allocator.dupe(u8, &[_]u8{ 0x00, 0x01 });
     defer allocator.free(program);
 
     const tx = Transaction{
@@ -129,7 +130,7 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
         .inputs = &.{},
         .program = program,
         .gas_budget = 1000,
-        .sequence = 1,
+        .sequence = 0,
         .signature = null,
         .public_key = null,
     };
@@ -137,8 +138,9 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     try ingress.submit(tx);
     try ingress.verify();
 
-    const verified = ingress.getVerified();
+    var verified = ingress.getVerified();
     try std.testing.expect(verified != null);
+    defer verified.?.deinit(allocator);
 
     const execution = try executor.execute(verified.?);
     try std.testing.expect(execution.status == .success);
@@ -149,6 +151,7 @@ test "E2E: Pipeline integration — Ingress → Executor → Egress" {
     };
 
     const cert = try egress.aggregate(execution, signatures);
+    defer allocator.free(cert.signatures);
     try std.testing.expect(cert.stake_total == 3000);
 
     const commit = try egress.commit(cert);
@@ -181,7 +184,7 @@ test "E2E: Batch transaction execution via Node" {
             .inputs = &.{},
             .program = programs[i],
             .gas_budget = 1000,
-            .sequence = @intCast(i),
+            .sequence = 0,
             .signature = null,
             .public_key = null,
         };

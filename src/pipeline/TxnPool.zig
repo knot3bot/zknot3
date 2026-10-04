@@ -126,7 +126,11 @@ pub const TxnPool = struct {
         const pool_tx = PoolTransaction{
             .tx = tx_ptr,
             .gas_price = gas_price,
-            .received_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .received_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
 
         // Add to sender's list
@@ -194,7 +198,11 @@ pub const TxnPool = struct {
 
     /// Remove expired transactions - optimized lazy expiry approach
     pub fn removeExpired(self: *Self) usize {
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         var removed: usize = 0;
 
         // Use a temporary queue to rebuild without expired items
@@ -255,7 +263,11 @@ pub const TxnPool = struct {
 
     /// Check and skip expired transactions at front of queue (lazy expiry)
     pub fn skipExpired(self: *Self) void {
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         var expired: u64 = 0;
         while (self.priority_queue.peek()) |ptx_peek| {
             if (now - ptx_peek.received_at > self.config.timeout_seconds) {

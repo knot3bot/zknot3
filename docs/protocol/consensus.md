@@ -117,3 +117,23 @@ If no block reaches quorum within `round_timeout_secs` (default 5s):
 
 To bound memory, committed rounds beyond `max_committed_blocks` (default 10000)
 are pruned from the in-memory DAG. Pruned blocks cannot be referenced by new blocks.
+
+## Implemented extensions (2026-09-26)
+
+Beyond the base rules above, the implementation now includes:
+
+- **Compact QuorumCertificate**: BLS aggregate signature + u128 signer
+  bitmap (`Mysticeti.QuorumCertificate`), rogue-key safe (POP variant)
+- **View change**: Ed25519 `TimeoutVote`s; f+1 of them assemble a
+  re-verifiable `TimeoutCertificate` and advance the view
+  (`receiveTimeoutVote` / `tryViewChange`); commit-rule round lookups are
+  view-agnostic
+- **3-chain leader verification**: commits under the 3-chain rule require
+  the committed block to be authored by the round's elected leader
+- **Block author signatures**: optional Ed25519 signature over the block
+  digest, enforced when present (`Block.createSigned`)
+- **Block digest commits to parents** (single `computeDigest` shared by
+  producer and validator)
+
+Machine-checked counterparts: `specs/consensus.{v,lean}` (coq_gate /
+lean_gate) and `tools/formal/proofs.zig` (`zig build test-formal`).

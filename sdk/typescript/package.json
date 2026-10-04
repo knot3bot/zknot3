@@ -1,19 +1,25 @@
 {
   "name": "zknot3-agent-sdk",
-  "version": "0.11.0",
-  "description": "Creator³ Agent SDK — Human-AI Co-Creation Network",
+  "version": "0.16.0",
+  "description": "Creator\u00b3 Agent SDK \u2014 Human-AI Co-Creation Network",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest",
+    "test": "tsc && node --test dist/test/sdk.test.js",
     "prepublish": "npm run build"
   },
-  "keywords": ["zknot3", "agent", "blockchain", "move", "ai", "creator"],
+  "keywords": [
+    "zknot3",
+    "agent",
+    "blockchain",
+    "move",
+    "ai",
+    "creator"
+  ],
   "license": "MIT",
   "dependencies": {
-    "blake3": "^1.0.0",
-    "tweetnacl": "^1.0.3"
+    "@noble/hashes": "^1.5.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

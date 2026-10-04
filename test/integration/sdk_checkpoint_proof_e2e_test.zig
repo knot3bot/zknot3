@@ -41,4 +41,3 @@ fn tryMaterial(comptime b: u8) [32]u8 {
     const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch @panic("bad seed");
     return kp.public_key.toBytes();
 }
-

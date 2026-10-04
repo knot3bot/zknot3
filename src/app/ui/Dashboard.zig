@@ -19,7 +19,7 @@ pub const NodeInfoResponse = struct {
     pub fn fromNode(node: *Node) @This() {
         const info = node.getNodeInfo();
         return .{
-            .version = "0.1.0",
+            .version = "0.16.0",
             .state = "running",
             .uptime_seconds = info.uptime_seconds,
             .object_store_count = info.object_store_count,
@@ -257,7 +257,11 @@ pub const DashboardHandler = struct {
         if (self.node == null) return error.NodeNotSet;
         const node = self.node.?;
 
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         const limit = clampLimit(limit_raw);
         var blocks = try std.ArrayList(BlockInfo).initCapacity(self.allocator, @min(limit, 500));
         var hex_strings = std.ArrayList([]const u8).empty;
@@ -351,7 +355,11 @@ pub const DashboardHandler = struct {
                 .hash = hash_hex,
                 .status = @tagName(receipt.status),
                 .gas_used = receipt.gas_used,
-                .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+                .timestamp = blk: {
+                    var ts: std.c.timespec = undefined;
+                    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                    break :blk (ts.sec);
+                },
                 .sender = sender_hex,
             });
         }
@@ -404,7 +412,11 @@ pub const DashboardHandler = struct {
         const receipt = node.getTransactionReceipt(digest);
         const exec = node.getExecutionResult(digest);
 
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         return try toJSON(self.allocator, .{
             .hash = clean,
             .receipt = if (receipt) |r| .{
@@ -653,10 +665,13 @@ pub const DashboardHandler = struct {
         const node = self.node.?;
         var list = std.ArrayList(struct {
             peer_id: []const u8,
-            @"type": []const u8,
+            type: []const u8,
         }).empty;
         defer {
-            for (list.items) |p| { self.allocator.free(p.peer_id); self.allocator.free(p.@"type"); }
+            for (list.items) |p| {
+                self.allocator.free(p.peer_id);
+                self.allocator.free(p.type);
+            }
             list.deinit(self.allocator);
         }
         if (node.getP2PServer()) |p2p| {
@@ -664,14 +679,14 @@ pub const DashboardHandler = struct {
             while (it.next()) |entry| {
                 try list.append(self.allocator, .{
                     .peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*),
-                    .@"type" = try self.allocator.dupe(u8, "TCP"),
+                    .type = try self.allocator.dupe(u8, "TCP"),
                 });
             }
             var qit = p2p.quic_peers.iterator();
             while (qit.next()) |entry| {
                 try list.append(self.allocator, .{
                     .peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*),
-                    .@"type" = try self.allocator.dupe(u8, "QUIC"),
+                    .type = try self.allocator.dupe(u8, "QUIC"),
                 });
             }
         }

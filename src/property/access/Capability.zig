@@ -34,7 +34,7 @@ pub const Capability = struct {
             .key = std.mem.bytesToValue(u256, &secret_key),
         });
         ctx.update(&issuer);
-        ctx.update(&[_]u8{@intFromEnum(cap_type)});
+        ctx.update(&[_]u8{@backingInt(cap_type)});
         if (target) |t| {
             ctx.update(t.asBytes());
         }
@@ -45,7 +45,7 @@ pub const Capability = struct {
         var sig_ctx = std.crypto.sign.Signature.init(.{});
         var msg: [64]u8 = undefined;
         @memcpy(msg[0..32], &issuer);
-        msg[32] = @intFromEnum(cap_type);
+        msg[32] = @backingInt(cap_type);
         var sig: [64]u8 = undefined;
         sig_ctx.update(&msg);
         sig_ctx.final(&sig);

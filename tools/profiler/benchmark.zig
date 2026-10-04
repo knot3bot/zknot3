@@ -48,14 +48,22 @@ pub const Benchmark = struct {
 
     /// Run a benchmark
     pub fn run(self: *Self, name: []const u8, iterations: u64, func: *const fn () void) !void {
-        const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+        const start = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+        };
 
         var i: u64 = 0;
         while (i < iterations) : (i += 1) {
             func();
         }
 
-        const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+        const end = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+        };
         const total_ns = @as(u64, @intCast(end - start));
         const avg_ns = total_ns / iterations;
         const ops_per_sec = @as(f64, @floatFromInt(iterations)) * 1_000_000_000.0 / @as(f64, @floatFromInt(total_ns));
@@ -91,13 +99,21 @@ pub fn benchObjectIDHash(iterations: u64) !BenchmarkResult {
     const allocator = std.testing.allocator;
     const input = "benchmark_test_input_data_for_object_id_hash";
 
-    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const start = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         const id = ObjectID.hash(input);
         _ = id;
     }
-    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const end = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -117,19 +133,26 @@ pub fn benchLSMTreePutGet(iterations: u64) !BenchmarkResult {
     var tree = try LSMTree.init(allocator, .{});
     defer tree.deinit();
 
-
     const key: []const u8 = "benchmark_key_for_lsm_tree_testing_12345678";
     const value: []const u8 = "benchmark_value_for_lsm_tree_operations_test";
     // Warm up
     try tree.put(&key, &value);
 
-    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const start = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         try tree.put(&key, &value);
         _ = try tree.get(&key);
     }
-    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const end = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -151,13 +174,21 @@ pub fn benchSignatureSignVerify(iterations: u64) !BenchmarkResult {
     const secret_key = Signature.generateSecretKey(seed);
     const public_key = Signature.derivePublicKey(secret_key);
 
-    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const start = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         const signature = Signature.sign(&message, secret_key);
         _ = Signature.verify(&message, signature, public_key);
     }
-    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const end = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -179,12 +210,20 @@ pub fn benchInterpreterExecute(iterations: u64) !BenchmarkResult {
 
     const bytecode = &.{ 0x31, 0x01 }; // ld_true; ret
 
-    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const start = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         _ = try interpreter.execute(bytecode);
     }
-    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const end = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -203,13 +242,21 @@ pub fn benchVersionCompare(iterations: u64) !BenchmarkResult {
     const v1 = Versioned{ .seq = 100, .causal = @as([16]u8, @splat(1)) };
     const v2 = Versioned{ .seq = 200, .causal = @as([16]u8, @splat(2)) };
 
-    const start = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const start = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         _ = v1.lessThan(v2);
         _ = v1.compare(v2);
     }
-    const end = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec); };
+    const end = blk: {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        break :blk (ts.tv_sec * std.time.ns_per_s + ts.tv_nsec);
+    };
 
     const total_ns = @as(u64, @intCast(end - start));
     const avg_ns = total_ns / iterations;
@@ -244,29 +291,19 @@ pub fn runAllBenchmarks() !void {
     std.debug.print("  ObjectID.hash: done\n", .{});
 
     const result = try benchObjectIDHash(iterations);
-    std.debug.print("  ObjectID.hash: {d} ns/op, {d:.2} ops/sec\n", .{
-        result.avg_ns, result.ops_per_sec
-    });
+    std.debug.print("  ObjectID.hash: {d} ns/op, {d:.2} ops/sec\n", .{ result.avg_ns, result.ops_per_sec });
 
     const lsm_result = try benchLSMTreePutGet(iterations);
-    std.debug.print("  LSMTree.put+get: {d} ns/op, {d:.2} ops/sec\n", .{
-        lsm_result.avg_ns, lsm_result.ops_per_sec
-    });
+    std.debug.print("  LSMTree.put+get: {d} ns/op, {d:.2} ops/sec\n", .{ lsm_result.avg_ns, lsm_result.ops_per_sec });
 
     const sig_result = try benchSignatureSignVerify(iterations);
-    std.debug.print("  Signature.sign+verify: {d} ns/op, {d:.2} ops/sec\n", .{
-        sig_result.avg_ns, sig_result.ops_per_sec
-    });
+    std.debug.print("  Signature.sign+verify: {d} ns/op, {d:.2} ops/sec\n", .{ sig_result.avg_ns, sig_result.ops_per_sec });
 
     const interp_result = try benchInterpreterExecute(iterations);
-    std.debug.print("  Interpreter.execute: {d} ns/op, {d:.2} ops/sec\n", .{
-        interp_result.avg_ns, interp_result.ops_per_sec
-    });
+    std.debug.print("  Interpreter.execute: {d} ns/op, {d:.2} ops/sec\n", .{ interp_result.avg_ns, interp_result.ops_per_sec });
 
     const ver_result = try benchVersionCompare(iterations);
-    std.debug.print("  Version.compare: {d} ns/op, {d:.2} ops/sec\n", .{
-        ver_result.avg_ns, ver_result.ops_per_sec
-    });
+    std.debug.print("  Version.compare: {d} ns/op, {d:.2} ops/sec\n", .{ ver_result.avg_ns, ver_result.ops_per_sec });
 
     std.debug.print("\nBenchmarks complete!\n", .{});
 }

@@ -4,7 +4,13 @@
 
 是的，**zknot3 支持智能合约**！
 
-zknot3 包含完整的 **Move VM** 实现（Zig 语言版本），支持基于 Move 语言的智能合约开发。
+zknot3 包含完整的 **Move 风格虚拟机** 实现（Zig 语言版本）。
+
+> **定位说明（重要）**：该 VM 使用 zknot3 原生字节码格式（54 个操作码，
+> 见 `src/property/move_vm/Bytecode.zig`），**不兼容 Move 二进制**，也没有
+> Move 源语言编译器——合约以原生字节码构造（经 PTB `Publish` 发布，
+> 支持 immutable/compatible/free 升级策略，见 `ModuleRegistry.zig`）。
+> 资源/线性类型语义对齐 Move 的设计思想。
 
 ---
 

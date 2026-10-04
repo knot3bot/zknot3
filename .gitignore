@@ -1,7 +1,9 @@
 # Zig build artifacts
 .zig-cache/
 zig-out/
-build/
+# Anchored: an unanchored "build/" also ignored zig-pkg/blst-*/build/
+# (assembly.S etc.), which broke builds from a fresh clone.
+/build/
 
 # macOS
 .DS_Store
@@ -46,3 +48,11 @@ vendor/
 *.glob
 *.aux
 *.olean
+# TypeScript SDK artifacts
+node_modules/
+sdk/typescript/dist/
+sdk/typescript/package-lock.json
+
+# Coq/prover caches
+.lia.cache
+.zcodeignore

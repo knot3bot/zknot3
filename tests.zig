@@ -24,8 +24,11 @@ comptime {
     _ = @import("test/integration/transaction_execution_test.zig");
     _ = @import("test/integration/indexing_end_to_end_test.zig");
     _ = @import("test/integration/epoch_advance_test.zig");
+    _ = @import("test/integration/module_publish_test.zig");
+    _ = @import("src/property/move_vm/ModuleRegistry.zig");
     _ = @import("test/property/property_test.zig");
     _ = @import("test/property/mysticeti_concurrency_test.zig");
+    _ = @import("test/property/byzantine_simulation_test.zig");
     _ = @import("test/fuzz/fuzz_framework.zig");
     _ = @import("test/fuzz/ObjectIDFuzzTests.zig");
     _ = @import("test/unit/performance_bench_test.zig");
@@ -36,9 +39,7 @@ comptime {
     _ = @import("src/property/move_vm/agent_registry.zig");
     _ = @import("src/property/move_vm/marketplace.zig");
     _ = @import("src/property/move_vm/agent_messaging.zig");
-    // E2E tests require real filesystem (not testing.io). Run with:
-    //   zig build test -- Integration tests use /tmp/ directories.
-    // _ = @import("src/test/e2e_test.zig");
+    _ = @import("src/test/e2e_test.zig");
 }
 
 

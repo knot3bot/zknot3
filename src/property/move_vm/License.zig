@@ -8,12 +8,12 @@ const std = @import("std");
 
 /// License type enum for on-chain creations.
 pub const LicenseType = enum(u8) {
-    CC0 = 0,              // Public domain, no restrictions
-    CC_BY = 1,            // Attribution required
-    CC_BY_SA = 2,         // Attribution + ShareAlike
-    MIT = 3,              // Permissive, attribution optional
+    CC0 = 0, // Public domain, no restrictions
+    CC_BY = 1, // Attribution required
+    CC_BY_SA = 2, // Attribution + ShareAlike
+    MIT = 3, // Permissive, attribution optional
     AllRightsReserved = 4, // Full copyright, no reuse without permission
-    Custom = 5,           // Custom terms
+    Custom = 5, // Custom terms
 
     pub fn name(self: LicenseType) []const u8 {
         return switch (self) {
@@ -67,25 +67,25 @@ pub const License = struct {
     pub fn serialize(self: License, allocator: std.mem.Allocator) ![]u8 {
         var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
-        try buf.append(allocator,@intFromEnum(self.license_type));
+        try buf.append(allocator, @backingInt(self.license_type));
         var royalty_bytes: [2]u8 = undefined;
         std.mem.writeInt(u16, &royalty_bytes, self.royalty_bps, .big);
-        try buf.appendSlice(allocator,&royalty_bytes);
+        try buf.appendSlice(allocator, &royalty_bytes);
         var exp_bytes: [8]u8 = undefined;
         std.mem.writeInt(i64, &exp_bytes, self.expiration_secs, .big);
-        try buf.appendSlice(allocator,&exp_bytes);
+        try buf.appendSlice(allocator, &exp_bytes);
         const terms_len: u16 = @intCast(self.terms.len);
         var len_bytes: [2]u8 = undefined;
         std.mem.writeInt(u16, &len_bytes, terms_len, .big);
-        try buf.appendSlice(allocator,&len_bytes);
-        if (self.terms.len > 0) try buf.appendSlice(allocator,self.terms);
+        try buf.appendSlice(allocator, &len_bytes);
+        if (self.terms.len > 0) try buf.appendSlice(allocator, self.terms);
         return buf.toOwnedSlice(allocator);
     }
 
     /// Deserialize license from bytes.
     pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !License {
         if (bytes.len < 1 + 2 + 8 + 2) return error.InvalidLicense;
-        const license_type: LicenseType = @enumFromInt(bytes[0]);
+        const license_type: LicenseType = @fromBackingInt(@intCast(bytes[0]));
         const royalty_bps = std.mem.readInt(u16, bytes[1..3], .big);
         const expiration_secs = std.mem.readInt(i64, bytes[3..11], .big);
         const terms_len = std.mem.readInt(u16, bytes[11..13], .big);

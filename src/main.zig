@@ -11,10 +11,99 @@ const Config = app.Config;
 const ConfigWithBuffer = app.ConfigWithBuffer;
 const ConfigModule = @import("app/Config.zig");
 const NodeDependencies = app.NodeDependencies;
-const HTTPServer = if (builtin.os.tag == .linux)
+// The async server pulls the Linux-only IoUring module; on other
+// platforms the slot exists but is void and never constructed.
+const AsyncHTTPServerImpl = if (builtin.os.tag == .linux)
     @import("form/network/AsyncHTTPServer.zig").AsyncHTTPServer
 else
-    @import("form/network/HTTPServer.zig").HTTPServer;
+    void;
+const PortableHTTPServerImpl = @import("form/network/HTTPServer.zig").HTTPServer;
+
+/// Runtime-selected HTTP server: io_uring-backed on Linux when the kernel
+/// allows it, the portable implementation otherwise. Containers (Docker
+/// 24+ default seccomp profile) deny io_uring syscalls, which previously
+/// killed the node at startup with PermissionDenied.
+const HttpServer = union(enum) {
+    async_impl: AsyncHTTPServerImpl,
+    portable_impl: PortableHTTPServerImpl,
+
+    fn start(self: *@This()) !void {
+        switch (self.*) {
+            .portable_impl => |*impl| try impl.start(),
+            .async_impl => |*impl| if (builtin.os.tag == .linux) try impl.start(),
+        }
+    }
+
+    /// Start with graceful degradation: the io_uring server initializes its
+    /// ring in start(), and containers with restrictive seccomp profiles
+    /// (Docker 24+ default) deny it. Any async-start failure falls back to
+    /// the portable server; a genuine bind failure then fails for both.
+    fn startWithFallback(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        rpc_addr: std.Io.net.IpAddress,
+        node: *@import("app/Node.zig").Node,
+        max_requests_per_second: u32,
+    ) !void {
+        self.start() catch |first_err| {
+            if (builtin.os.tag == .linux) {
+                switch (self.*) {
+                    .async_impl => {
+                        Log.warn("async HTTP start failed ({s}); falling back to the portable server", .{@errorName(first_err)});
+                        self.* = .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
+                        return self.start();
+                    },
+                    else => {},
+                }
+            }
+            return first_err;
+        };
+    }
+
+    fn deinit(self: *@This()) void {
+        switch (self.*) {
+            .portable_impl => |*impl| impl.deinit(),
+            .async_impl => |*impl| if (builtin.os.tag == .linux) impl.deinit(),
+        }
+    }
+
+    /// Returns true when a portable connection was served this call.
+    /// The async implementation serves itself from its own thread.
+    fn pollPortable(self: *@This()) !bool {
+        switch (self.*) {
+            else => return false, // async_impl serves itself (Linux only)
+            .portable_impl => |*srv| {
+                if (srv.listener) |_| {
+                    if (srv.accept()) |conn| {
+                        srv.handleConnection(conn) catch |err| {
+                            Log.err("[MAIN] HTTP handleConnection error: {s}", .{@errorName(err)});
+                        };
+                        return true;
+                    } else |err| {
+                        if (err != error.WouldBlock) {
+                            Log.err("[MAIN] HTTP accept error: {s}", .{@errorName(err)});
+                        }
+                    }
+                }
+                return false;
+            },
+        }
+    }
+};
+
+fn initHttpServer(
+    allocator: std.mem.Allocator,
+    rpc_addr: std.Io.net.IpAddress,
+    node: *@import("app/Node.zig").Node,
+    max_requests_per_second: u32,
+    max_connections: usize,
+) anyerror!HttpServer {
+    if (builtin.os.tag == .linux) {
+        return .{ .async_impl = try AsyncHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second, max_connections) };
+    }
+    return .{ .portable_impl = try PortableHTTPServerImpl.initWithDashboard(allocator, rpc_addr, node, max_requests_per_second) };
+}
+
 const ConsensusIntegration = @import("form/consensus/ConsensusIntegration.zig").ConsensusIntegration;
 const Log = @import("app/Log.zig");
 
@@ -26,7 +115,6 @@ fn isLoopbackIPv4(addr: []const u8) bool {
 var running = std.atomic.Value(bool).init(true);
 
 /// Global I/O instance for compatibility with Zig 0.17.0 API
-
 /// Command line options
 const Options = struct {
     help: bool = false,
@@ -50,7 +138,7 @@ fn printUsage() void {
         \\Options:
         \\  -h, --help           Show this help message
         \\  -v, --version        Show version information
-        \\  -d, --dev            Start in development mode (validator enabled)
+        \\  -d, --dev            Start in development mode (relaxed peer auth)
         \\  --validator          Enable validator mode
         \\  -c, --config <file>  Load configuration from file
         \\  --rpc-port <port>    Set RPC server port (default: 9003)
@@ -64,7 +152,7 @@ fn printUsage() void {
         \\  zknot3-node --rpc-port 9001          Use custom RPC port
         \\  zknot3-node --log-level debug         Enable debug logging
         \\
-    , .{"0.1.0"});
+    , .{"0.16.0"});
 }
 
 /// Print version information
@@ -124,10 +212,11 @@ fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Options {
 /// Apply parsed options to configuration
 fn applyOptions(opts: Options, config: *Config) void {
     if (opts.dev) {
-        // Only set dev-specific defaults if not already configured
-        if (config.consensus.validator_enabled == false) {
-            config.*.consensus.validator_enabled = true;
-        }
+        // Dev mode relaxes peer authentication; it must NOT imply validator
+        // identity — a fullnode started with --dev was silently promoted to
+        // validator and then failed validation for the missing signing key.
+        // Being a validator comes from config or the explicit --validator
+        // flag (the documented pairing is `--dev --validator`).
         if (config.network.p2p_enabled == false) {
             config.*.network.p2p_enabled = true;
         }
@@ -188,7 +277,6 @@ fn registerSignalHandlers() void {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     @import("io_instance").io = init.io;
-
 
     // Parse command line arguments
     const opts = parseArgs(allocator, init.minimal.args) catch |err| {
@@ -276,11 +364,11 @@ pub fn main(init: std.process.Init) !void {
         Log.err("Invalid RPC address", .{});
         return;
     };
-    var http_server = HTTPServer.initWithDashboard(allocator, rpc_addr, node, config.network.max_requests_per_second) catch |init_err| {
-        Log.err("Failed to create HTTP server: {s}", .{@errorName(init_err)});
+    var http_server = initHttpServer(allocator, rpc_addr, node, config.network.max_requests_per_second, config.network.max_connections) catch |http_err| {
+        Log.err("Failed to create HTTP server: {s}", .{@errorName(http_err)});
         return;
     };
-    http_server.start() catch |http_err| {
+    http_server.startWithFallback(allocator, rpc_addr, node, config.network.max_requests_per_second) catch |http_err| {
         Log.err("Failed to start HTTP server: {s}", .{@errorName(http_err)});
         return;
     };
@@ -331,23 +419,9 @@ pub fn main(init: std.process.Init) !void {
     // Event loop - accept and handle HTTP and P2P connections
     while (running.load(.seq_cst)) {
         var did_work = false;
-        // On non-Linux, accept and handle HTTP connection in main loop.
-        // On Linux, AsyncHTTPServer runs in a dedicated io_uring thread.
-        if (builtin.os.tag != .linux) {
-            if (http_server.listener) |_| {
-                if (http_server.accept()) |conn| {
-                    did_work = true;
-                    http_server.handleConnection(conn) catch |err| {
-                        Log.err("[MAIN] HTTP handleConnection error: {s}", .{@errorName(err)});
-                    };
-                } else |err| {
-                    if (err != error.WouldBlock) {
-                        Log.err("[MAIN] HTTP accept error: {s}", .{@errorName(err)});
-                        continue;
-                    }
-                }
-            }
-        }
+        // The portable server (non-Linux, or Linux fallback) is polled
+        // from this loop; the async server serves itself.
+        if (try http_server.pollPortable()) did_work = true;
         // Accept P2P connection if enabled
         // Accept P2P connection if enabled
         if (node.getP2PServer()) |p2p| {

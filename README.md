@@ -15,7 +15,7 @@ Existing L1 blockchains trade off correctness for throughput. zknot3 inverts thi
 | Problem | zknot3 Approach |
 |---------|-----------------|
 | Smart contract exploits (reentrancy, double-spend) | Move VM with linear types — resources cannot be duplicated or dropped |
-| Non-deterministic execution across validators | Deterministic Move bytecode + checked arithmetic + monotonic gas |
+| Non-deterministic execution across validators | Deterministic Move-style bytecode + checked arithmetic + monotonic gas |
 | Silent state corruption on crash | WAL-before-MemTable ordering + checkpoint chain with cryptographic continuity |
 | Unbounded memory growth under load | Arena allocation per transaction; LSM-Tree compaction with configurable levels |
 | Leader bottleneck in consensus | Leaderless DAG-BFT (Mysticeti) — all validators propose in parallel |
@@ -41,7 +41,7 @@ Object {
 }
 ```
 
-**Execution model**: Transactions read input objects, execute Move bytecode,
+**Execution model**: Transactions read input objects, execute bytecode,
 and produce output objects (created, modified, or deleted). State transitions
 are deterministic: `execute(state₀, ordered_txs) → state₁` always produces
 the same `state₁` on every validator.
@@ -306,9 +306,9 @@ verify Merkle proof, then replay only blocks from N+1 onward.
 
 ## 13. Roadmap
 
-### Completed (v0.13.0)
+### Completed (v0.16.0)
 - [x] Mysticeti DAG-BFT consensus (2-chain + 3-chain, equivocation detection)
-- [x] Move VM (40+ opcodes, linear types, bytecode verifier, type abilities)
+- [x] Move-style VM (54 opcodes, linear types, bytecode verifier, type abilities; zknot3-native bytecode format — not Move-binary compatible) + module publish/upgrade system (ModuleRegistry, compatible/immutable policies)
 - [x] Block-STM optimistic parallel execution (8-core default, auto retry)
 - [x] LSM-Tree storage (WAL + MemTable + SSTable + compaction + Bloom filter)
 - [x] Fast Path (single-owner tx bypass consensus, <100ms latency)
@@ -317,20 +317,38 @@ verify Merkle proof, then replay only blocks from N+1 onward.
 - [x] Production hardening (graceful shutdown draining, error logging, Docker HEALTHCHECK)
 - [x] Protocol documentation suite (invariants, ADRs, consensus/state/network specs)
 
-### In Progress
-- [ ] Property-based testing (randomized state transition sequences)
-- [ ] Byzantine simulation framework (malicious peer, partition, delayed gossip)
-- [ ] Block author Ed25519 signature verification
+### Completed (v0.16.0, consensus & module lifecycle)
+- [x] Compact BLS QuorumCertificate (aggregate signature + signer bitmap, rogue-key safe)
+- [x] View change with f+1 TimeoutVotes and re-verifiable TimeoutCertificate
+- [x] 3-chain leader commit rule (elected-leader verification, auto-selected for >20 validators)
+- [x] Module publish/upgrade lifecycle (ModuleRegistry, immutable/compatible policies, on-chain objects)
+- [x] Executable formal proofs (quorum intersection, BFT bound, lattice order, leader election)
+- [x] TypeScript SDK test suite (10 tests, node:test)
+- [x] Block author Ed25519 signature verification (createSigned / present-signature policy)
+- [x] Property-based randomized testing + Byzantine simulation framework
+      (test/property/byzantine_simulation_test.zig: equivocation safety,
+      partition safety + healing liveness, view-change liveness under
+      withholding leaders, seed-determinism, randomized gossip soak with
+      drops/delays — caught and fixed three real consensus bugs)
+- [x] WAN emulation gate in CI (tools/wan_emulation_gate.sh): multi-container
+      devnet under kernel-level netem — 80ms±10ms + 2% loss soak, full
+      partition of one validator (3/4 majority keeps committing), healing
+      catch-up, zero-restart audit; revived the devnet itself (nine bugs,
+      including configs that could never pass current validation)
 
 ### Planned
-- [ ] Validator slashing (automatic penalty for equivocation)
+- [ ] Automatic slashing on equivocation evidence (manual slash ops exist via M4 stake operations)
 - [ ] Market-based gas pricing (reference price + surge pricing, per-epoch)
 - [ ] Snapshot-based fast sync (state snapshot + Merkle proof + incremental replay)
 - [ ] Real QUIC/UDP transport (replace TCP framing with msquic/quiche integration)
 - [ ] Narwhal-style data/consensus separation
 - [ ] Archive node mode (full history, no pruning)
-- [ ] State Merkle proofs for light client verification
 - [ ] Validator delegation and reward distribution
+
+### Completed since (light client)
+- [x] State Merkle proofs for light client verification
+      (Checkpoint.generateInclusionProof + app/LightClient.zig + SDK
+      checkpoint-proof verify, covered by sdk_checkpoint_proof tests)
 
 ---
 
@@ -381,24 +399,34 @@ verify Merkle proof, then replay only blocks from N+1 onward.
 
 ```bash
 zig build -Doptimize=ReleaseSafe    # Clean build
-zig build test                       # 358/361 pass
+zig build test                       # 385/385 (unit+integration+e2e+simulation+proofs)
+zig build test-formal                # 5 executable exhaustive proofs
+cd sdk/typescript && npm test        # 10/10 SDK tests
 ```
+
+CI runs the full matrix on the pinned official Zig nightly:
+test / formal (proofs + Coq + Lean) / sdk / build-release / docker /
+wan (netem latency/loss/partition gate).
 
 ---
 
 ## Quick Start
 
 ```bash
-# Prerequisites: Zig 0.17.0
+# Prerequisites: Zig 0.17.0-dev nightly (see .github/workflows/ci.yml for the
+# pinned build; 0.17.0 stable does not exist yet)
 git clone https://github.com/knot3bot/zknot3.git
 cd zknot3
 zig build -Doptimize=ReleaseSafe
 
-# Development node (single validator, no P2P)
-./zig-out/bin/zknot3-node --config ./deploy/config/devnet.toml
+# Development node (single validator; flags only, no config file needed)
+./zig-out/bin/zknot3-node-fast --dev --validator --data-dir ./data
 
-# Production validator
-./zig-out/bin/zknot3-node --config ./deploy/config/mainnet.toml --validator
+# Config-driven node (JSON configs only; TOML is not a supported format)
+./zig-out/bin/zknot3-node-fast -c deploy/docker/configs/validator-1.json --validator
+
+# Multi-node devnet (4 validators + fullnode)
+cd deploy/docker && cp .env.example .env && docker compose up -d
 ```
 
 ## Documentation Index

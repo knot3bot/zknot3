@@ -18,7 +18,7 @@ fn buildCallPayload(allocator: std.mem.Allocator, module: []const u8, func: []co
     payload[0] = @intCast(module.len);
     @memcpy(payload[1..][0..module.len], module);
     payload[1 + module.len] = @intCast(func.len);
-    @memcpy(payload[2 + module.len..][0..func.len], func);
+    @memcpy(payload[2 + module.len ..][0..func.len], func);
     payload[2 + module.len + func.len] = arg_count;
     return payload;
 }
@@ -199,9 +199,8 @@ test "event::emit collects events into ExecutionResult" {
     try std.testing.expect(result.success);
     try std.testing.expectEqual(@as(usize, 1), result.events.len);
     try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0xCD)), &result.events[0].sender);
-    try std.testing.expectEqualSlices(u8, &[_]u8{0x01, 0x02, 0x03}, result.events[0].payload);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02, 0x03 }, result.events[0].payload);
 }
-
 
 test "object::new returns fresh ObjectID via tx_context" {
     const allocator = std.testing.allocator;
@@ -269,8 +268,8 @@ test "balance::split returns split amount" {
     const module = Bytecode.VerifiedModule{
         .name = "balance_split_test",
         .instructions = &[_]Bytecode.Instruction{
-            .{ .opcode = .ld_u64, .payload = &[_]u8{100, 0, 0, 0, 0, 0, 0, 0} }, // balance=100
-            .{ .opcode = .ld_u64, .payload = &[_]u8{30, 0, 0, 0, 0, 0, 0, 0} },  // amount=30
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 100, 0, 0, 0, 0, 0, 0, 0 } }, // balance=100
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 30, 0, 0, 0, 0, 0, 0, 0 } }, // amount=30
             .{ .opcode = .call, .payload = payload },
             .{ .opcode = .ret, .payload = &.{} },
         },
@@ -303,8 +302,8 @@ test "balance::join sums two balances" {
     const module = Bytecode.VerifiedModule{
         .name = "balance_join_test",
         .instructions = &[_]Bytecode.Instruction{
-            .{ .opcode = .ld_u64, .payload = &[_]u8{50, 0, 0, 0, 0, 0, 0, 0} },
-            .{ .opcode = .ld_u64, .payload = &[_]u8{25, 0, 0, 0, 0, 0, 0, 0} },
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 50, 0, 0, 0, 0, 0, 0, 0 } },
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 25, 0, 0, 0, 0, 0, 0, 0 } },
             .{ .opcode = .call, .payload = payload },
             .{ .opcode = .ret, .payload = &.{} },
         },
@@ -338,11 +337,11 @@ test "pay::join_vec sums vector of balances" {
     const module = Bytecode.VerifiedModule{
         .name = "pay_join_vec_test",
         .instructions = &[_]Bytecode.Instruction{
-            .{ .opcode = .ld_u64, .payload = &[_]u8{10, 0, 0, 0, 0, 0, 0, 0} },
-            .{ .opcode = .ld_u64, .payload = &[_]u8{20, 0, 0, 0, 0, 0, 0, 0} },
-            .{ .opcode = .ld_u64, .payload = &[_]u8{30, 0, 0, 0, 0, 0, 0, 0} },
-            .{ .opcode = .ld_u64, .payload = &[_]u8{3, 0, 0, 0, 0, 0, 0, 0} }, // count=3
-            .{ .opcode = .vec_pack, .payload = &[_]u8{3, 0, 0, 0} },
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 10, 0, 0, 0, 0, 0, 0, 0 } },
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 20, 0, 0, 0, 0, 0, 0, 0 } },
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 30, 0, 0, 0, 0, 0, 0, 0 } },
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 3, 0, 0, 0, 0, 0, 0, 0 } }, // count=3
+            .{ .opcode = .vec_pack, .payload = &[_]u8{ 3, 0, 0, 0 } },
             .{ .opcode = .call, .payload = payload },
             .{ .opcode = .ret, .payload = &.{} },
         },

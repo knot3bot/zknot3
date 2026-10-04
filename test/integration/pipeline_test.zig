@@ -33,7 +33,7 @@ test "Pipeline: executor init" {
     var executor = try Executor.init(allocator, .{});
     defer executor.deinit();
 
-    try std.testing.expect(executor.getParallelism() == 4);
+    try std.testing.expect(executor.getParallelism() == (root.pipeline.ExecutorConfig{}).parallelism);
 }
 
 test "Pipeline: object store put and get" {

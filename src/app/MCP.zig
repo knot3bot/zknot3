@@ -53,7 +53,11 @@ pub const Resource = struct {
             .description = description,
             .mime_type = "application/json",
             .is_sensitive = false,
-            .updated_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .updated_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         };
     }
 
@@ -165,15 +169,15 @@ pub const SecurityPolicy = struct {
         for (self.denied_tools.items) |denied| {
             if (denied.eql(tool_id)) return false;
         }
-        
+
         // If allow list is empty, all non-denied are allowed
         if (self.allowed_tools.items.len == 0) return true;
-        
+
         // Check allow list
         for (self.allowed_tools.items) |allowed| {
             if (allowed.eql(tool_id)) return true;
         }
-        
+
         return false;
     }
 };
@@ -230,8 +234,16 @@ pub const MCPServer = struct {
             .id = ObjectID.hash(agent_id.asBytes()),
             .agent_id = agent_id,
             .policy_id = policy_id,
-            .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
-            .last_active = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .created_at = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
+            .last_active = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .request_count = 0,
             .is_active = true,
         };
@@ -273,7 +285,11 @@ pub const MCPSession = struct {
 
     /// Record activity
     pub fn recordActivity(self: *Self) void {
-        self.last_active = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+        self.last_active = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        };
         self.request_count += 1;
     }
 };
@@ -322,7 +338,7 @@ pub const MCPResponse = struct {
     /// Result data (JSON)
     result: []const u8,
     /// Error message
-    error: ?[]const u8,
+    error_message: ?[]const u8,
     /// Execution time in ms
     execution_time_ms: u64,
 
@@ -332,18 +348,18 @@ pub const MCPResponse = struct {
             .id = id,
             .success = true,
             .result = result,
-            .error = null,
+            .error_message = null,
             .execution_time_ms = exec_time,
         };
     }
 
     /// Create error response
-    pub fn error(id: ObjectID, err: []const u8, exec_time: u64) Self {
+    pub fn err(id: ObjectID, err: []const u8, exec_time: u64) Self {
         return .{
             .id = id,
             .success = false,
             .result = "",
-            .error = err,
+            .error_message = err,
             .execution_time_ms = exec_time,
         };
     }
@@ -356,7 +372,7 @@ test "Resource creation" {
         "Wallet Balance",
         "Current token balance",
     );
-    
+
     try std.testing.expectEqualStrings("zknot3://wallet/balance", resource.fullURI());
     try std.testing.expect(!resource.is_sensitive);
 }
@@ -364,32 +380,32 @@ test "Resource creation" {
 test "MCPServer resource registration" {
     const allocator = std.testing.allocator;
     var server = MCPServer.init(allocator);
-    
+
     var resource = Resource.create(
         "object/123",
         .Object,
         "Test Object",
         "A test object",
     );
-    
+
     try server.registerResource(resource);
-    
+
     const found = server.resources.get("object/123");
     try std.testing.expect(found != null);
 }
 
 test "SecurityPolicy tool check" {
     var policy = SecurityPolicy.create("test_policy");
-    
+
     const allowed_tool = ObjectID.hash("allowed");
     const denied_tool = ObjectID.hash("denied");
-    
+
     try policy.allowed_tools.append(allowed_tool);
     try policy.denied_tools.append(denied_tool);
-    
+
     try std.testing.expect(policy.isToolAllowed(allowed_tool));
     try std.testing.expect(!policy.isToolAllowed(denied_tool));
-    
+
     // Unknown tool should be denied when allow list is populated
     const unknown = ObjectID.hash("unknown");
     try std.testing.expect(!policy.isToolAllowed(unknown));
@@ -400,14 +416,22 @@ test "MCPSession activity" {
         .id = ObjectID.hash("session"),
         .agent_id = ObjectID.hash("agent"),
         .policy_id = ObjectID.hash("policy"),
-        .created_at = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
-        .last_active = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .created_at = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
+        .last_active = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
         .request_count = 0,
         .is_active = true,
     };
-    
+
     try std.testing.expect(session.checkRateLimit(60));
-    
+
     session.recordActivity();
     try std.testing.expect(session.request_count == 1);
 }
@@ -419,20 +443,24 @@ test "MCPRequest validation" {
         .request_type = .tools_list,
         .method = "tools.list",
         .params = "{}",
-        .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+        .timestamp = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk (ts.sec);
+        },
     };
-    
+
     try std.testing.expect(req.isValid());
 }
 
 test "MCPResponse success and error" {
     const id = ObjectID.hash("req");
-    
+
     const success_resp = MCPResponse.success(id, "{\"tools\": []}", 100);
     try std.testing.expect(success_resp.success);
-    try std.testing.expect(success_resp.error == null);
-    
-    const error_resp = MCPResponse.error(id, "Tool not found", 50);
+    try std.testing.expect(success_resp.error_message == null);
+
+    const error_resp = MCPResponse.err(id, "Tool not found", 50);
     try std.testing.expect(!error_resp.success);
-    try std.testing.expect(error_resp.error != null);
+    try std.testing.expect(error_resp.error_message != null);
 }

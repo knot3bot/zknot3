@@ -18,7 +18,7 @@ P2P rate-limiter exposes:
 - `rate_limited_drops_total`: total dropped inbound messages due to per-peer/per-type caps
 - `banned_peers_total`: total peer ban events triggered by score threshold
 
-These counters are collected in `P2PServer` and should be exported by runtime metrics endpoint.
+These counters are collected in `P2PServer` and exported at `GET <rpc-port>/metrics` as `zknot3_p2p_rate_limited_drops_total` and `zknot3_p2p_banned_peers_total` (plus `zknot3_p2p_io_fallback_total`).
 
 ## Recovery Integrity Checks
 

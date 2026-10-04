@@ -63,6 +63,7 @@ const ResourceTracker = property.move_vm.ResourceTracker;
 const Interpreter = property.move_vm.Interpreter;
 const Bytecode = property.move_vm.Bytecode;
 const Registry = property.move_vm.Registry;
+const ModuleRegistry = property.move_vm.ModuleRegistry;
 const TxContext = property.move_vm.TxContext;
 const Event = property.move_vm.Event;
 const Ingress = @import("Ingress.zig");
@@ -119,6 +120,10 @@ pub const Executor = struct {
     /// Optional native function registry for VM calls.
     /// Ownership: once set, the Executor takes ownership and will deinit+destroy in deinit().
     registry: ?*Registry = null,
+    /// On-chain published module registry (owned by the Executor).
+    module_registry: ModuleRegistry = undefined,
+    /// Optional object store for persisting published module objects.
+    object_store: ?*ObjectStore = null,
 
     pub fn init(allocator: std.mem.Allocator, config: ExecutorConfig) !*Self {
         const tracker = try allocator.create(ResourceTracker);
@@ -135,6 +140,8 @@ pub const Executor = struct {
             .config = config,
             .resource_tracker = tracker,
             .registry = null,
+            .module_registry = ModuleRegistry.init(allocator),
+            .object_store = null,
         };
         return self;
     }
@@ -144,6 +151,7 @@ pub const Executor = struct {
             reg.deinit();
             self.allocator.destroy(reg);
         }
+        self.module_registry.deinit();
         if (self.result_pool.len > 0) self.allocator.free(self.result_pool);
         self.resource_tracker.deinit();
         self.allocator.destroy(self.resource_tracker);
@@ -213,7 +221,9 @@ pub const Executor = struct {
         self.resource_tracker.validate() catch |err| {
             Log.err("[ERR] Resource validation failed: {}", .{err});
             if (result.output_objects.len > 0) self.allocator.free(result.output_objects);
-            for (result.events) |evt| { if (evt.payload.len > 0) self.allocator.free(evt.payload); }
+            for (result.events) |evt| {
+                if (evt.payload.len > 0) self.allocator.free(evt.payload);
+            }
             if (result.events.len > 0) self.allocator.free(result.events);
             return ExecutionResult{
                 .digest = undefined,
@@ -228,7 +238,9 @@ pub const Executor = struct {
         self.resource_tracker.checkLeaks() catch |err| {
             Log.err("[ERR] Resource leak check failed: {}", .{err});
             if (result.output_objects.len > 0) self.allocator.free(result.output_objects);
-            for (result.events) |evt| { if (evt.payload.len > 0) self.allocator.free(evt.payload); }
+            for (result.events) |evt| {
+                if (evt.payload.len > 0) self.allocator.free(evt.payload);
+            }
             if (result.events.len > 0) self.allocator.free(result.events);
             return ExecutionResult{
                 .digest = undefined,
@@ -287,13 +299,72 @@ pub const Executor = struct {
         return try self.executeOrdered(eligible.items);
     }
 
+    /// Attach an object store so Publish operations persist module objects.
+    pub fn attachObjectStore(self: *Self, store: *ObjectStore) void {
+        self.object_store = store;
+    }
+
+    const PublishSummary = struct {
+        ids: [][32]u8,
+        gas_after: u64,
+    };
+
+    /// Register every module blob from a Publish operation on-chain.
+    /// Charges gas per published byte; persists module objects when a store
+    /// is attached. Caller owns the returned ids slice.
+    fn publishModules(self: *Self, tx: Ingress.Transaction, blobs: []const []const u8, gas_so_far: u64) !PublishSummary {
+        var ids = try self.allocator.alloc([32]u8, blobs.len);
+        errdefer self.allocator.free(ids);
+        var gas_after = gas_so_far;
+        for (blobs, 0..) |blob, i| {
+            const outcome = try self.module_registry.publish(tx.sender, tx.sender, blob, 0);
+            gas_after += outcome.gas_charge;
+            if (outcome.upgraded) gas_after /= 2; // upgrades are cheaper than fresh publishes
+            ids[i] = outcome.id;
+            if (self.object_store) |store| {
+                // put() serializes internally; the data copy stays ours.
+                const data = try self.allocator.dupe(u8, blob);
+                defer self.allocator.free(data);
+                try store.put(.{
+                    .id = .{ .bytes = outcome.id },
+                    .version = .{ .seq = @intCast(outcome.version), .causal = @as([16]u8, @splat(0)) },
+                    .ownership = core.Ownership.shared(0),
+                    .type_tag = 2, // module object
+                    .data = data,
+                });
+            }
+        }
+        return .{ .ids = ids, .gas_after = gas_after };
+    }
+
     /// Execute a Programmable Transaction Block or single transaction.
     /// When `tx.operations` is non-empty, each operation dispatches by type.
     /// All operations in the block share the same gas budget.
     pub fn executePTB(self: *Self, tx: Ingress.Transaction) !ExecutionResult {
         if (tx.operations.len > 0) {
             var cumulative_gas: u64 = 0;
+            var published_ids = std.ArrayList([32]u8).empty;
+            defer published_ids.deinit(self.allocator);
             for (tx.operations) |op| {
+                // Publish operations register modules on-chain instead of
+                // running bytecode: each module blob is decoded, policy-
+                // checked, versioned, and (when a store is attached)
+                // persisted as a module object.
+                if (op == .Publish) {
+                    const outcome = self.publishModules(tx, op.Publish.modules, cumulative_gas) catch {
+                        return ExecutionResult{
+                            .digest = tx.digest(),
+                            .status = .invalid_bytecode,
+                            .gas_used = cumulative_gas,
+                            .output_objects = &.{},
+                            .events = &.{},
+                        };
+                    };
+                    cumulative_gas = outcome.gas_after;
+                    try published_ids.appendSlice(self.allocator, outcome.ids);
+                    self.allocator.free(outcome.ids);
+                    continue;
+                }
                 // Build a per-operation sub-transaction for execution
                 const op_tx = switch (op) {
                     .MoveCall => tx,
@@ -315,12 +386,14 @@ pub const Executor = struct {
                     };
                 }
             }
-            // All operations succeeded — return aggregate result
+            // All operations succeeded — return aggregate result with the
+            // ids of any published module objects.
+            const owned_ids = try self.allocator.dupe([32]u8, published_ids.items);
             return ExecutionResult{
                 .digest = tx.digest(),
                 .status = .success,
                 .gas_used = cumulative_gas,
-                .output_objects = &.{},
+                .output_objects = owned_ids,
                 .events = &.{},
             };
         }
@@ -568,9 +641,13 @@ pub const Executor = struct {
         if (comptime builtin.os.tag == .linux) {
             if (exec.config.parallelism > 1) {
                 const tid = @atomicRmw(u32, &exec._thread_counter, .Add, 1, .monotonic);
-                var cpu_set: std.os.linux.CPU.set = std.os.linux.CPU.set{};
-                cpu_set.set(tid % exec.config.parallelism);
-                _ = std.os.linux.sched_setaffinity(0, @sizeOf(std.os.linux.CPU.set), &cpu_set);
+                // Raw affinity mask (cpu_set_t layout, 1024 CPUs): avoids
+                // std.os.linux.CPU.set, whose location moved across
+                // 0.17-dev nightlies.
+                var cpu_mask: [16]u8 = @splat(0);
+                const target_core = tid % @as(u32, @intCast(exec.config.parallelism));
+                cpu_mask[target_core / 8] |= @as(u8, 1) << @intCast(target_core % 8);
+                _ = std.os.linux.syscall3(.sched_setaffinity, 0, cpu_mask.len, @intFromPtr(&cpu_mask));
             }
         }
         for (indices) |idx| {

@@ -176,13 +176,26 @@ pub const Node = struct {
         self_ptr.consensus_round = 0;
         self_ptr.txn_pool = txn_pool;
         self_ptr.executor = exec;
+        self_ptr.runtime_metrics = null;
         self_ptr.runtime_metrics = try RuntimeMetrics.RuntimeMetricsCollector.init(allocator, 100);
         errdefer {
-            self_ptr.runtime_metrics.?.deinit();
-            allocator.destroy(self_ptr.runtime_metrics.?);
+            if (self_ptr.runtime_metrics) |rm| {
+                rm.deinit();
+                allocator.destroy(rm);
+            }
         }
         self_ptr.mainnet_hooks = try MainnetExtensionHooks.Manager.init(allocator);
         self_ptr.m4_wal = null;
+        // allocator.create(Self) yields undefined memory: field defaults do
+        // NOT apply. The blanket errdefer below runs deinit on partially
+        // initialized state, so every optional member must be explicitly
+        // nulled here (deinit dereferences them) — this was a segfault on
+        // any init error between this point and their real assignment.
+        self_ptr.epoch_manager = null;
+        self_ptr.stake_pool = null;
+        self_ptr.quorum = null;
+        self_ptr.epoch_bridge = null;
+        self_ptr.indexer = null;
 
         errdefer self_ptr.deinit();
 
@@ -457,7 +470,7 @@ pub const Node = struct {
     pub fn getNodeInfo(self: *Self) NodeInfo {
         const epoch_info = self.getEpochInfo();
         return .{
-            .version = "0.1.0",
+            .version = "0.16.0",
             .state = @tagName(self.state),
             .uptime_seconds = NodeMetricsCoordinator.computeUptimeSeconds(self.started_at),
             .object_store_count = self.execution_results.count(),
@@ -737,7 +750,9 @@ pub const Node = struct {
         if (!self.committed_blocks.contains(block.digest)) return error.BlockNotFound;
         const results = try self.executeBlockTransactions(block);
         defer {
-            for (results) |res| { res.deinit(self.allocator); }
+            for (results) |res| {
+                res.deinit(self.allocator);
+            }
             self.allocator.free(results);
         }
         var total_gas: u64 = 0;
@@ -826,7 +841,11 @@ pub const Node = struct {
 
     fn indexExecutionResult(self: *Self, tx_digest: [32]u8, result: ExecutionResult) void {
         const idx = self.indexer orelse return;
-        const now = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk ts.sec; };
+        const now = blk: {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+            break :blk ts.sec;
+        };
         // Phase 2: index VM-emitted events
         for (result.events) |evt| {
             idx.indexEvent(.{

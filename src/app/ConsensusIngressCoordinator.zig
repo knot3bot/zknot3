@@ -140,4 +140,3 @@ test "receiveVote returns equivocation when same voter votes two digests in same
         else => return error.TestUnexpectedResult,
     }
 }
-

@@ -203,7 +203,7 @@ pub const RPCServer = struct {
             return try std.fmt.allocPrint(
                 self.allocator,
                 "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{},\"message\":\"{s}\"}},\"id\":null}}",
-                .{ @intFromEnum(ErrorCode.internal_error), @errorName(err) },
+                .{ @backingInt(ErrorCode.internal_error), @errorName(err) },
             );
         };
         defer response.deinit(self.allocator);
@@ -212,7 +212,7 @@ pub const RPCServer = struct {
             return try std.fmt.allocPrint(
                 self.allocator,
                 "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{d},\"message\":\"{s}\"}},\"id\":null}}",
-                .{ @intFromEnum(e.code), e.message },
+                .{ @backingInt(e.code), e.message },
             );
         }
 
@@ -313,7 +313,11 @@ fn handleGetCheckpoint(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
         .checkpoint = RPCResponse.CheckpointResponse{
             .sequence = ctx.checkpoint_sequence,
             .digest = @as([]u8, @constCast("0xabc123")),
-            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .timestamp = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
         },
     };
     return .{ .id = null, .result = result, .err = null };
@@ -348,7 +352,11 @@ fn handleGetEvents(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
     _ = _ctx;
     const result = RPCResponse.RPCResult{
         .event = RPCResponse.EventEnvelope{
-            .timestamp = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .timestamp = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .events = &.{},
         },
     };

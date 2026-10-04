@@ -26,4 +26,3 @@ test "sdk proof verify rejects bitmap below quorum" {
 
     try std.testing.expectError(error.ProtocolInvalidResponse, sdk.proof.verifyCheckpointProof(allocator, proof, expected, &validators, .{}));
 }
-

@@ -1,12 +1,12 @@
 //! Kademlia-inspired Routing Table for peer discovery
 //!
 //! Reference: libp2p Kademlia DHT
-//! 
+//!
 //! This is a simplified implementation suitable for blockchain consensus:
 //! - Buckets of 20 peers based on XOR distance
 //! - Local peer ID as reference point
 //! - Ping/pong for peer liveness checks
-//! 
+//!
 //! Key differences from full Kademlia DHT:
 //! - Used for direct peer connections, not distributed storage
 //! - Fixed bucket size (k=20)
@@ -76,7 +76,11 @@ pub const KBucket = struct {
             .peer_id = peer_id,
             .address = try self.allocator.dupe(u8, address),
             .port = port,
-            .last_seen = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); },
+            .last_seen = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            },
             .successful_pings = 0,
             .failed_pings = 0,
         };
@@ -94,7 +98,11 @@ pub const KBucket = struct {
     /// Update peer last_seen timestamp
     pub fn touchPeer(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
-            entry.last_seen = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+            entry.last_seen = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            };
         }
     }
 
@@ -102,7 +110,11 @@ pub const KBucket = struct {
     pub fn recordPingSuccess(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
             entry.successful_pings += 1;
-            entry.last_seen = blk: { var ts: std.c.timespec = undefined; _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts); break :blk (ts.sec); };
+            entry.last_seen = blk: {
+                var ts: std.c.timespec = undefined;
+                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+                break :blk (ts.sec);
+            };
         }
     }
 
@@ -209,17 +221,17 @@ pub const RoutingTable = struct {
     /// Get all known peer IDs
     pub fn getAllPeers(self: *Self) []const [32]u8 {
         var result = std.ArrayList([32]u8).init(self.allocator);
-        
+
         for (self.buckets) |bucket| {
             if (bucket) |b| {
-                                var it = b.peers.iterator();
-                                while (it.next()) |entry| {
-                                        try result.append(entry.key_ptr.*);
-                                }
-                        }
+                var it = b.peers.iterator();
+                while (it.next()) |entry| {
+                    try result.append(entry.key_ptr.*);
                 }
-        
-                return result.toOwnedSlice();
+            }
+        }
+
+        return result.toOwnedSlice();
     }
 
     /// Get peers closest to a target ID
@@ -321,7 +333,7 @@ pub fn encodeKadMessage(allocator: std.mem.Allocator, msg: KadMessage) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
-    try buf.append(allocator,@intFromEnum(msg.msg_type));
+    try buf.append(allocator, @backingInt(msg.msg_type));
     try buf.appendSlice(allocator, &msg.sender_id);
     const tid = msg.target_id orelse @as([32]u8, @splat(0));
     try buf.appendSlice(allocator, &tid);
@@ -339,7 +351,7 @@ pub fn encodeKadMessage(allocator: std.mem.Allocator, msg: KadMessage) ![]u8 {
 /// Decode a Kademlia wire message.
 pub fn decodeKadMessage(allocator: std.mem.Allocator, data: []const u8) !KadMessage {
     if (data.len < 1 + 32 + 32 + 2) return error.MessageTooShort;
-    const msg_type: KadMessageType = @enumFromInt(data[0]);
+    const msg_type: KadMessageType = @fromBackingInt(@intCast(data[0]));
     var sender_id: [32]u8 = undefined;
     @memcpy(&sender_id, data[1..33]);
     var target_id: [32]u8 = undefined;
@@ -369,7 +381,7 @@ pub fn decodeKadMessage(allocator: std.mem.Allocator, data: []const u8) !KadMess
 test "KBucket distance calculation" {
     const a = @as([32]u8, @splat(0x00));
     const b = @as([32]u8, @splat(0xff));
-    
+
     const dist = KBucket.xorDistance(a, b);
     try std.testing.expect(dist > 0);
 }
@@ -377,25 +389,25 @@ test "KBucket distance calculation" {
 test "RoutingTable init and deinit" {
     const allocator = std.testing.allocator;
     const local_id = @as([32]u8, @splat(0x12));
-    
+
     const rt = try RoutingTable.init(allocator, local_id);
     defer rt.deinit();
-    
+
     try std.testing.expect(rt.totalPeers() == 0);
 }
 
 test "RoutingTable add/remove peer" {
     const allocator = std.testing.allocator;
     const local_id = @as([32]u8, @splat(0x12));
-    
+
     const rt = try RoutingTable.init(allocator, local_id);
     defer rt.deinit();
-    
+
     const peer_id = @as([32]u8, @splat(0x34));
     try rt.addPeer(peer_id, "127.0.0.1", 8083);
-    
+
     try std.testing.expect(rt.totalPeers() == 1);
-    
+
     rt.removePeer(peer_id);
     try std.testing.expect(rt.totalPeers() == 0);
 }
@@ -403,22 +415,22 @@ test "RoutingTable add/remove peer" {
 test "RoutingTable closest peers" {
     const allocator = std.testing.allocator;
     const local_id = @as([32]u8, @splat(0x00));
-    
+
     const rt = try RoutingTable.init(allocator, local_id);
     defer rt.deinit();
-    
+
     // Add several peers
     const peer1 = @as([32]u8, @splat(0x01));
     const peer2 = @as([32]u8, @splat(0x10));
     const peer3 = @as([32]u8, @splat(0xff));
-    
+
     try rt.addPeer(peer1, "127.0.0.1", 8083);
     try rt.addPeer(peer2, "127.0.0.1", 8084);
     try rt.addPeer(peer3, "127.0.0.1", 8085);
-    
+
     const closest = try rt.getClosestPeers(peer1, 2);
     defer allocator.free(closest);
-    
+
     try std.testing.expect(closest.len == 2);
 }
 

@@ -184,10 +184,8 @@ pub const WAL = struct {
             .durability_io = durability_io,
         };
     }
-    
+
     /// Initialize WAL with default sync mode
-
-
     /// Initialize WAL (sync mode)
     pub fn init(allocator: std.mem.Allocator, db_path: []const u8) !Self {
         return try initWithOptions(allocator, @import("io_instance").io, db_path, null);
@@ -331,7 +329,7 @@ pub const WAL = struct {
         // Build header
         var header = WalRecordHeader{
             .checksum = 0, // Computed below after preparing header body
-            .record_type = @intFromEnum(record_type),
+            .record_type = @backingInt(record_type),
             .key_len = key_len,
             .value_len = value_len,
             ._pad = 0,
@@ -396,7 +394,7 @@ pub const WAL = struct {
         // Update offset in all cases
         self.current_offset += @sizeOf(WalRecordHeader) + key_len + value_len;
     }
-    
+
     /// Flush async write buffer to disk
     pub fn flushAsync(self: *Self) !void {
         if (!self.use_async_writes or self.async_write == null) return;
@@ -411,7 +409,7 @@ pub const WAL = struct {
             try self.writeDurable(data, self.current_offset - write_offset);
         }
     }
-    
+
     /// Force sync both async buffer and file
     pub fn syncAll(self: *Self) !void {
         try self.flushAsync();
@@ -469,7 +467,7 @@ pub const WAL = struct {
                 break;
             }
 
-            const header = @as(*const WalRecordHeader, @alignCast(@ptrCast(&buf))).*;
+            const header = @as(*const WalRecordHeader, @ptrCast(@alignCast(&buf))).*;
 
             // Validate record fields before using them
             if (header.record_type < 1 or header.record_type > options.max_record_type) {
@@ -523,7 +521,7 @@ pub const WAL = struct {
             }
 
             // Apply record
-            const record_type = @as(WalRecordType, @enumFromInt(header.record_type));
+            const record_type = @as(WalRecordType, @fromBackingInt(@intCast(header.record_type)));
             callback(record_type, key_buf, value_buf, ctx) catch {
                 errors += 1;
                 if (!options.skip_corrupted) {
@@ -592,10 +590,11 @@ test "WAL replay recovers inserted records" {
         commits: u32 = 0,
     };
 
-    var counters: State = .{ };
+    var counters: State = .{};
     const callback = struct {
         fn cb(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void {
-            _ = key; _ = value;
+            _ = key;
+            _ = value;
             const s = @as(*State, @ptrCast(@alignCast(ctx)));
             switch (op) {
                 .insert => s.inserts += 1,
@@ -612,7 +611,7 @@ test "WAL replay recovers inserted records" {
     try wal.logCommit();
 
     // Replay and verify
-        _ = try wal.replay(&callback, &counters);
+    _ = try wal.replay(&callback, &counters);
 
     try std.testing.expectEqual(@as(u32, 2), counters.inserts);
     try std.testing.expectEqual(@as(u32, 1), counters.deletes);
@@ -651,10 +650,11 @@ test "WAL replay after crash simulation" {
             commits: u32 = 0,
         };
 
-        var counters: State = .{ };
+        var counters: State = .{};
         const callback = struct {
             fn cb(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void {
-                _ = key; _ = value;
+                _ = key;
+                _ = value;
                 const s = @as(*State, @ptrCast(@alignCast(ctx)));
                 switch (op) {
                     .insert => s.inserts += 1,
@@ -703,16 +703,18 @@ test "WAL clear resets state" {
         count: u32 = 0,
     };
 
-    var counters: State = .{ };
+    var counters: State = .{};
     const callback = struct {
         fn cb(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) anyerror!void {
-            _ = op; _ = key; _ = value;
+            _ = op;
+            _ = key;
+            _ = value;
             const s = @as(*State, @ptrCast(@alignCast(ctx)));
             s.count += 1;
         }
     }.cb;
 
-        _ = try wal.replay(&callback, &counters);
+    _ = try wal.replay(&callback, &counters);
     try std.testing.expectEqual(@as(u32, 0), counters.count);
 
     // Clean up
@@ -887,4 +889,3 @@ test "WAL truncated tail during crash is detected" {
     std.Io.Dir.cwd().deleteFile(std.testing.io, wal_path) catch {};
     std.Io.Dir.cwd().deleteFile(std.testing.io, test_path) catch {};
 }
-

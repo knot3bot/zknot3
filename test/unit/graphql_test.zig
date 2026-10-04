@@ -33,7 +33,7 @@ test "GraphQL scalar types" {
     };
 
     for (scalars) |scalar| {
-        try std.testing.expect(@as(u8, @intFromEnum(scalar)) >= 0);
+        try std.testing.expect(@as(u8, @backingInt(scalar)) >= 0);
     }
 }
 
@@ -48,7 +48,7 @@ test "GraphQL type kinds" {
     };
 
     for (kinds) |kind| {
-        try std.testing.expect(@as(u8, @intFromEnum(kind)) >= 0);
+        try std.testing.expect(@as(u8, @backingInt(kind)) >= 0);
     }
 }
 

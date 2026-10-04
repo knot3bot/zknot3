@@ -10,3 +10,5 @@ pub const Registry = NativeFunction.Registry;
 pub const TxContext = @import("TxContext.zig").TxContext;
 pub const EventEmitter = @import("EventEmitter.zig");
 pub const Event = EventEmitter.Event;
+pub const ModuleRegistry = @import("ModuleRegistry.zig").ModuleRegistry;
+pub const UpgradePolicy = @import("ModuleRegistry.zig").UpgradePolicy;

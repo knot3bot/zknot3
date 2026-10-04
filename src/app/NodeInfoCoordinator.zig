@@ -93,4 +93,3 @@ test "NodeInfoCoordinator getSystemInfo returns sane defaults" {
     try std.testing.expect(info.cpu_count >= 1);
     try std.testing.expect(info.cpu_usage_percent == 0.0);
 }
-
