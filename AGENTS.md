@@ -10,7 +10,7 @@
 
 ## Technology Stack
 
-- **Language**: Zig 0.17.0-dev nightly line (CI-pinned; 0.17.0 stable 未发布)
+- **Language**: Zig 0.17.0 (stable; `minimum_zig_version` pinned in `build.zig.zon`)
 - **Blockchain**: Knot3 (re-implementation target)
 - **VM**: Move VM (Zig interpreter)
 - **Consensus**: Mysticeti (DAG-based BFT)
@@ -67,8 +67,8 @@ bash tools/wan_emulation_gate.sh   # netem latency/loss/partition/healing gate
 zig build && ./zig-out/bin/zknot3-profiler -m wu_feng,xiang_da,zi_zai
 ```
 
-CI pins the official Zig nightly (0.17.0 stable does not exist yet); see
-`.github/workflows/ci.yml`.
+CI pins Zig 0.17.0 stable (`minimum_zig_version = "0.17.0"` in `build.zig.zon`);
+see `.github/workflows/ci.yml`.
 
 ---
 
@@ -130,7 +130,7 @@ This repo contains a **production-ready implementation** of the zknot3 node with
 
 ## Learned Workspace Facts
 
-- `package.zig.zon` 声明 `minimum_zig_version` 为 `0.15.0`；讨论异步能力时仍会对照较新 Zig 版本的语言级 async/await 与当前代码路径的差异。
+- `build.zig.zon` 声明 `minimum_zig_version` 为 `0.17.0`（2026-10-05 起，Zig 0.17.0 stable 发布即适配）；讨论异步能力时仍会对照较新 Zig 版本的语言级 async/await 与当前代码路径的差异。
 - 存储层 `Checkpoint.digest()` 与 `signingCommitment()` 已统一为 Blake3(serialize())；Ed25519 验证路径逐签名者校验签名字节并按 stake 加权（2026-09-26 核实）。
 - M4 状态恢复闭环已实现：`Node.recoverFromDisk → replayMainnetM4Wal` 重放 m4_* WAL 记录，`test/integration/m4_wal_recovery_test.zig` 覆盖重启重放、幂等、证据去重、截断 fail-closed、epoch 轮换。
 - `Mysticeti.Block.computeDigest` 是唯一的块摘要公式（create 与 addBlock 共用）；digest 覆盖 author+round+payload+parents。

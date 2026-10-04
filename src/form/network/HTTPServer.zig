@@ -779,64 +779,64 @@ pub const HTTPServer = struct {
                 const text = std.fmt.bufPrint(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
-                    "# TYPE zknot3_consensus_round gauge\n" ++
-                    "zknot3_consensus_round {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_peers_connected Number of connected peers\n" ++
-                    "# TYPE zknot3_peers_connected gauge\n" ++
-                    "zknot3_peers_connected {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_uptime_seconds Node uptime in seconds\n" ++
-                    "# TYPE zknot3_uptime_seconds gauge\n" ++
-                    "zknot3_uptime_seconds {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_pending_transactions Number of pending transactions\n" ++
-                    "# TYPE zknot3_pending_transactions gauge\n" ++
-                    "zknot3_pending_transactions {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_committed_blocks_total Total committed blocks in memory\n" ++
-                    "# TYPE zknot3_committed_blocks_total gauge\n" ++
-                    "zknot3_committed_blocks_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_blocks_committed_total Total blocks committed since startup\n" ++
-                    "# TYPE zknot3_blocks_committed_total counter\n" ++
-                    "zknot3_blocks_committed_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_txn_pool_size Current transaction pool size\n" ++
-                    "# TYPE zknot3_txn_pool_size gauge\n" ++
-                    "zknot3_txn_pool_size {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_txn_pool_received_total Total transactions received\n" ++
-                    "# TYPE zknot3_txn_pool_received_total counter\n" ++
-                    "zknot3_txn_pool_received_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_txn_pool_executed_total Total transactions executed\n" ++
-                    "# TYPE zknot3_txn_pool_executed_total counter\n" ++
-                    "zknot3_txn_pool_executed_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_p2p_rate_limited_drops_total Inbound messages dropped by per-peer/per-type caps\n" ++
-                    "# TYPE zknot3_p2p_rate_limited_drops_total counter\n" ++
-                    "zknot3_p2p_rate_limited_drops_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_p2p_banned_peers_total Peers banned by score threshold\n" ++
-                    "# TYPE zknot3_p2p_banned_peers_total counter\n" ++
-                    "zknot3_p2p_banned_peers_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_p2p_io_fallback_total Async-transport fallbacks to blocking I/O\n" ++
-                    "# TYPE zknot3_p2p_io_fallback_total counter\n" ++
-                    "zknot3_p2p_io_fallback_total {}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_tri_source_wu_feng Resource efficiency metric (WuFeng / 物丰)\n" ++
-                    "# TYPE zknot3_tri_source_wu_feng gauge\n" ++
-                    "zknot3_tri_source_wu_feng {d:.6}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_tri_source_xiang_da Knowledge coverage metric (XiangDa / 象大)\n" ++
-                    "# TYPE zknot3_tri_source_xiang_da gauge\n" ++
-                    "zknot3_tri_source_xiang_da {d:.6}\n" ++
-                    "\n" ++
-                    "# HELP zknot3_tri_source_zi_zai User satisfaction metric (ZiZai / 性自在)\n" ++
-                    "# TYPE zknot3_tri_source_zi_zai gauge\n" ++
-                    "zknot3_tri_source_zi_zai {d:.6}\n",
+                        "# TYPE zknot3_consensus_round gauge\n" ++
+                        "zknot3_consensus_round {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_peers_connected Number of connected peers\n" ++
+                        "# TYPE zknot3_peers_connected gauge\n" ++
+                        "zknot3_peers_connected {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_uptime_seconds Node uptime in seconds\n" ++
+                        "# TYPE zknot3_uptime_seconds gauge\n" ++
+                        "zknot3_uptime_seconds {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_pending_transactions Number of pending transactions\n" ++
+                        "# TYPE zknot3_pending_transactions gauge\n" ++
+                        "zknot3_pending_transactions {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_committed_blocks_total Total committed blocks in memory\n" ++
+                        "# TYPE zknot3_committed_blocks_total gauge\n" ++
+                        "zknot3_committed_blocks_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_blocks_committed_total Total blocks committed since startup\n" ++
+                        "# TYPE zknot3_blocks_committed_total counter\n" ++
+                        "zknot3_blocks_committed_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_txn_pool_size Current transaction pool size\n" ++
+                        "# TYPE zknot3_txn_pool_size gauge\n" ++
+                        "zknot3_txn_pool_size {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_txn_pool_received_total Total transactions received\n" ++
+                        "# TYPE zknot3_txn_pool_received_total counter\n" ++
+                        "zknot3_txn_pool_received_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_txn_pool_executed_total Total transactions executed\n" ++
+                        "# TYPE zknot3_txn_pool_executed_total counter\n" ++
+                        "zknot3_txn_pool_executed_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_rate_limited_drops_total Inbound messages dropped by per-peer/per-type caps\n" ++
+                        "# TYPE zknot3_p2p_rate_limited_drops_total counter\n" ++
+                        "zknot3_p2p_rate_limited_drops_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_banned_peers_total Peers banned by score threshold\n" ++
+                        "# TYPE zknot3_p2p_banned_peers_total counter\n" ++
+                        "zknot3_p2p_banned_peers_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_io_fallback_total Async-transport fallbacks to blocking I/O\n" ++
+                        "# TYPE zknot3_p2p_io_fallback_total counter\n" ++
+                        "zknot3_p2p_io_fallback_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_tri_source_wu_feng Resource efficiency metric (WuFeng / 物丰)\n" ++
+                        "# TYPE zknot3_tri_source_wu_feng gauge\n" ++
+                        "zknot3_tri_source_wu_feng {d:.6}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_tri_source_xiang_da Knowledge coverage metric (XiangDa / 象大)\n" ++
+                        "# TYPE zknot3_tri_source_xiang_da gauge\n" ++
+                        "zknot3_tri_source_xiang_da {d:.6}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_tri_source_zi_zai User satisfaction metric (ZiZai / 性自在)\n" ++
+                        "# TYPE zknot3_tri_source_zi_zai gauge\n" ++
+                        "zknot3_tri_source_zi_zai {d:.6}\n",
                     .{
                         info.consensus_round,
                         peers,
