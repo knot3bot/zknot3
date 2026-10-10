@@ -751,7 +751,7 @@ pub const TriSourceTest = struct {
 ## 五、启动命令与开发指南
 
 ```bash
-# 1. 环境准备（Zig 0.17.0-dev nightly，CI 固定版本）
+# 1. 环境准备（Zig 0.17.0 stable，CI 固定版本）
 $ zig version  # 要求 >= 0.15.0
 
 # 2. 编译时验证构建

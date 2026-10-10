@@ -404,7 +404,7 @@ zig build test-formal                # 5 executable exhaustive proofs
 cd sdk/typescript && npm test        # 10/10 SDK tests
 ```
 
-CI runs the full matrix on the pinned official Zig nightly:
+CI runs the full matrix on the pinned official Zig 0.17.0 stable:
 test / formal (proofs + Coq + Lean) / sdk / build-release / docker /
 wan (netem latency/loss/partition gate).
 
@@ -413,8 +413,8 @@ wan (netem latency/loss/partition gate).
 ## Quick Start
 
 ```bash
-# Prerequisites: Zig 0.17.0-dev nightly (see .github/workflows/ci.yml for the
-# pinned build; 0.17.0 stable does not exist yet)
+# Prerequisites: Zig 0.17.0 stable (see .github/workflows/ci.yml for the
+# pinned build)
 git clone https://github.com/knot3bot/zknot3.git
 cd zknot3
 zig build -Doptimize=ReleaseSafe

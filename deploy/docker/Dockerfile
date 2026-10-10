@@ -11,15 +11,15 @@ RUN apt-get update && apt-get install -y \
     librocksdb-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Fetch the pinned official 0.17.0-dev nightly for the build host arch
-# (0.17.0 stable does not exist; the codebase tracks the dev line).
-ARG ZIG_VERSION=0.17.0-dev.2307+392b17125
+# Fetch the pinned official 0.17.0 stable for the build host arch
+# (matches `minimum_zig_version` in build.zig.zon).
+ARG ZIG_VERSION=0.17.0
 RUN case "$(uname -m)" in \
       x86_64) ZARCH=x86_64 ;; \
       aarch64|arm64) ZARCH=aarch64 ;; \
       *) echo "unsupported build arch" >&2; exit 1 ;; \
     esac && \
-    curl -sL "https://ziglang.org/builds/zig-${ZARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz && \
+    curl -sL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz && \
     mkdir -p /opt && tar xJf /tmp/zig.tar.xz --strip-components=1 -C /opt && rm /tmp/zig.tar.xz
 
 # Add Zig to PATH

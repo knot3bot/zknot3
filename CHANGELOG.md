@@ -4,6 +4,19 @@ All notable changes to zknot3 are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Toolchain pins moved to Zig 0.17.0 stable** — CI (`.github/workflows/ci.yml`,
+  3 jobs) and `deploy/docker/Dockerfile` still pulled the `0.17.0-dev.2307+392b17125`
+  nightly from `ziglang.org/builds/`. Both now use stable `0.17.0` from
+  `ziglang.org/download/`, matching `minimum_zig_version` in `build.zig.zon` and
+  the installer. No source changes were required: the codebase already compiled
+  and tested clean on stable. Verified locally — 271/271 unit, 385/385
+  integration, 5/5 formal proofs, 10/10 TS SDK, plus `zig fmt --check` and
+  `-Doptimize=ReleaseSafe`.
+
 ## [0.18.0] — 2026-10-05
 
 Zig 0.17.0 stable adaptation release. The project now compiles, tests, and
