@@ -39,6 +39,9 @@ jobs:
       - name: Run integration tests
         run: zig build test-integration -Doptimize=Debug
 
+      - name: Quorum single-source gate
+        run: bash tools/quorum_single_source_gate.sh
+
   formal:
     runs-on: ubuntu-latest
     steps:

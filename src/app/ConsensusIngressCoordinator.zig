@@ -11,21 +11,43 @@ pub const VoteIngressResult = union(enum) {
     equivocation: Mysticeti.EquivocationEvidence,
 };
 
+/// Ingest a block received from a peer.
+///
+/// `block_data` must be a `Mysticeti.Block.serialize` payload — that is what
+/// `ConsensusIntegration.onBlockReceived` forwards after deserializing it from
+/// the wire.
+///
+/// This previously re-created a block with `block_data` as its *payload* and a
+/// zero author/round, which produced a *different* digest from the proposer's.
+/// Votes are signed over the real digest, so every vote failed to match the
+/// stored pending block and a node could never reach quorum over real P2P.
+///
+/// The digest is recomputed and checked. `Block.deserialize` trusts the digest
+/// carried in the wire bytes, so without this an attacker could inject a block
+/// under any digest they liked and have it filed under a key that no honest
+/// vote will ever match (or, worse, pre-empt a real block's slot).
 pub fn receiveBlock(
     allocator: std.mem.Allocator,
     pending_blocks: *BlockMap,
     committed_blocks: *BlockMap,
     block_data: []const u8,
 ) !void {
-    var block = try Mysticeti.Block.create(
-        @as([32]u8, @splat(0)),
-        Mysticeti.Round{ .value = 0 },
-        block_data,
-        &.{},
-        allocator,
-    );
+    var block = Mysticeti.Block.deserialize(allocator, block_data) catch |err| switch (err) {
+        error.InvalidFormat => return error.InvalidBlockFormat,
+        else => return err,
+    };
+    errdefer block.deinit(allocator);
+
+    // Recompute rather than trust the transmitted digest.
+    const expected = Mysticeti.Block.computeDigest(block.author, block.round, block.payload, block.parents);
+    if (!std.mem.eql(u8, &expected, &block.digest)) {
+        return error.BlockDigestMismatch;
+    }
 
     if (pending_blocks.contains(block.digest) or committed_blocks.contains(block.digest)) {
+        // Already have this block. `errdefer` only fires on the error path, so
+        // the freshly deserialized copy has to be released explicitly here —
+        // otherwise every duplicate gossiped block leaks its payload.
         block.deinit(allocator);
         return;
     }
@@ -105,12 +127,19 @@ test "receiveVote returns equivocation when same voter votes two digests in same
     std.mem.writeInt(u64, msg_a[0..8], block_a.round.value, .big);
     @memcpy(msg_a[8..40], &block_a.digest);
     const sig_a = try @import("../property/Signature.zig").Ed25519.sign(seed, &msg_a);
+    // `Vote.signature` is a 96-byte field that holds either BLS (96 bytes) or
+    // Ed25519 left-aligned in the first 64. `Ed25519.sign` returns 64 bytes, so
+    // it must be widened here; this matches `Mysticeti.createVote`. The previous
+    // direct assignment did not compile, which is why this equivocation test
+    // had never been built or run.
+    var sig_a_wide: [96]u8 = @splat(0);
+    @memcpy(sig_a_wide[0..64], &sig_a);
     const vote_a = Mysticeti.Vote{
         .voter = voter,
         .stake = 100,
         .round = block_a.round,
         .block_digest = block_a.digest,
-        .signature = sig_a,
+        .signature = sig_a_wide,
     };
     const vote_a_data = try vote_a.serialize(allocator);
     defer allocator.free(vote_a_data);
@@ -121,12 +150,14 @@ test "receiveVote returns equivocation when same voter votes two digests in same
     std.mem.writeInt(u64, msg_b[0..8], block_b.round.value, .big);
     @memcpy(msg_b[8..40], &block_b.digest);
     const sig_b = try @import("../property/Signature.zig").Ed25519.sign(seed, &msg_b);
+    var sig_b_wide: [96]u8 = @splat(0);
+    @memcpy(sig_b_wide[0..64], &sig_b);
     const vote_b = Mysticeti.Vote{
         .voter = voter,
         .stake = 100,
         .round = block_b.round,
         .block_digest = block_b.digest,
-        .signature = sig_b,
+        .signature = sig_b_wide,
     };
     const vote_b_data = try vote_b.serialize(allocator);
     defer allocator.free(vote_b_data);

@@ -1,6 +1,7 @@
 //! Stake - Staking algebra for voting power in consensus
 
 const std = @import("std");
+const QuorumConfig = @import("../form/consensus/QuorumConfig.zig");
 
 /// Stake amount (u128 for large stake amounts)
 pub const StakeAmount = u128;
@@ -102,14 +103,15 @@ pub const StakePool = struct {
         return self.total;
     }
 
-    /// Compute quorum threshold (> 2/3), overflow-safe
+    /// Compute quorum threshold (> 2/3).
+    ///
+    /// Delegates to `QuorumConfig.thresholdOf`, the single source of truth for
+    /// the quorum formula. The previous local implementation branched on
+    /// overflow but both branches still evaluated `self.total * 2`, so the
+    /// guard did not actually prevent wrapping; `thresholdOf` uses a checked
+    /// multiply and saturates instead.
     pub fn quorumThreshold(self: *const Self) StakeAmount {
-        // Use checked multiplication to avoid overflow on self.total * 2
-        if (self.total > std.math.maxInt(StakeAmount) / 2) {
-            // For very large total, use division-first approach
-            return @divFloor(self.total * 2, 3) + 1;
-        }
-        return (self.total * 2) / 3 + 1;
+        return QuorumConfig.thresholdOf(self.total);
     }
 
     /// Check if a set of stakes reaches quorum, overflow-safe
@@ -118,12 +120,12 @@ pub const StakePool = struct {
         for (stakes) |s| {
             total_accum = std.math.add(StakeAmount, total_accum, s) catch return true;
         }
-        return total_accum > self.quorumThreshold();
+        return QuorumConfig.accepts(total_accum, self.total);
     }
 
     /// Byzantine stake threshold: maximum faulty stake tolerated (floor(total / 3))
     pub fn byzantineStakeThreshold(self: *const Self) StakeAmount {
-        return self.total / 3;
+        return QuorumConfig.byzantineThreshold(self.total);
     }
 };
 

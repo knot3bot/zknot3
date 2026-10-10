@@ -6,6 +6,7 @@ const Node = app.Node;
 const NodeStatsCoordinator = @import("../NodeStatsCoordinator.zig");
 const core = @import("../../core.zig");
 const NetworkConfig = @import("../Config.zig").NetworkConfig;
+const QuorumConfig = @import("../../form/consensus/QuorumConfig.zig");
 
 pub const NodeInfoResponse = struct {
     version: []const u8,
@@ -462,7 +463,7 @@ pub const DashboardHandler = struct {
         // Fallback: compute from static known validators in config.
         var total: u128 = 0;
         for (node.config.network.known_validators) |kv| total += @as(u128, kv.stake);
-        const quorum: u128 = if (total == 0) 0 else ((2 * total + 2) / 3) + 1;
+        const quorum: u128 = if (total == 0) 0 else QuorumConfig.thresholdOf(total);
         return try toJSON(self.allocator, .{
             .epoch_number = @as(u64, 0),
             .total_stake = total,
@@ -514,7 +515,7 @@ pub const DashboardHandler = struct {
             });
         }
 
-        const quorum_threshold: u128 = if (total_stake == 0) 0 else ((2 * total_stake + 2) / 3) + 1;
+        const quorum_threshold: u128 = if (total_stake == 0) 0 else QuorumConfig.thresholdOf(total_stake);
 
         const response = .{
             .validators = list.items,

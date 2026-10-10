@@ -27,7 +27,7 @@
 
 | 维度 | 前 | 现 | 变化依据（证据） |
 |---|---|---|---|
-| 构建/工具链 | 85 | **98** | blst 全平台汇编入库；版本统一；**官方工具链 CI 全绿**（固定 nightly 0.17.0-dev.2307，五作业：test/formal/sdk/release/docker；依赖哈希在官方包管理器下验证通过；迭代修复 8 个仅 Linux 编译路径缺陷 + CI 版本错误 + Dockerfile 幽灵引用） |
+| 构建/工具链 | 85 | **98** | blst 全平台汇编入库；版本统一；**官方工具链 CI 全绿**（当时固定 nightly 0.17.0-dev.2307，五作业：test/formal/sdk/release/docker；依赖哈希在官方包管理器下验证通过；迭代修复 8 个仅 Linux 编译路径缺陷 + CI 版本错误 + Dockerfile 幽灵引用）。**后续更新**：Zig 0.17.0 stable 发布后，CI 与 Dockerfile 已改用 stable `0.17.0`（原 nightly 归档路径 `/builds/` → stable 路径 `/download/`） |
 | 测试与质量 | 95 | **99** | e2e 启用；**随机化 property/Byzantine 模拟框架**（5 场景、种子可复现，README roadmap 项闭环）；385+10 全绿；零泄漏 |
 | 存储 | 90 | **92** | WAL double-free 修复。余：io_uring 仅 Linux（macOS 走回退，已测试） |
 | 网络 | 90 | **95** | 限流/封禁/Noise 握手/admin token；分区/丢包/延迟经 Byzantine 模拟**与** CI 多容器 WAN 仿真门禁双重检验；运行时 HTTP 响应缺陷修复（posix 直写） |

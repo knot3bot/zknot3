@@ -1,8 +1,10 @@
 //! Quorum - 2f+1 voting power quorum management
 //!
-//! Implements quotient group semantics for BFT quorum calculations.
+//! Stake-weighted quorum accounting. The threshold formula and the accept/reject
+//! boundary live in `QuorumConfig` — this file only applies them.
 
 const std = @import("std");
+const QuorumConfig = @import("QuorumConfig.zig");
 
 /// QuorumMember - lightweight validator record for quorum calculations
 ///
@@ -141,10 +143,13 @@ pub const Quorum = struct {
     }
 
     /// Minimum stake for quorum (> 2/3 of total)
-    /// This is the PRIMARY quorum check for stake-based consensus
+    /// This is the PRIMARY quorum check for stake-based consensus.
+    ///
+    /// An empty quorum reports 0 rather than the generic formula's 1, because
+    /// "no stake can reach quorum" is vacuously true when there is no stake.
     pub fn quorumStakeThreshold(self: Self) u128 {
         if (self.total_stake == 0) return 0;
-        return (self.total_stake * 2) / 3 + 1;
+        return QuorumConfig.thresholdOf(self.total_stake);
     }
 
     /// Vote type for quorum check
@@ -156,7 +161,7 @@ pub const Quorum = struct {
         for (votes) |vote| {
             total += vote.stake;
         }
-        return total >= self.quorumStakeThreshold();
+        return QuorumConfig.accepts(total, self.total_stake);
     }
 
     /// Get voting power for an address
@@ -241,7 +246,10 @@ test "Quorum removeValidator updates total_stake" {
     try std.testing.expectEqual(@as(u128, 0), quorum.totalStake());
 }
 
-// Comptime assertion: quorum forms quotient group
+// Structural assertion: the quorum API must expose the Byzantine bound and the
+// validator-count bound. Note this does NOT verify any algebraic (group or
+// quotient-set) property of `Quorum`; see AGENTS.md "Key Architectural
+// Decisions" item 7 — that remains unimplemented.
 comptime {
     if (!@hasDecl(Quorum, "byzantineThreshold")) @compileError("Quorum must have byzantineThreshold method");
     if (!@hasDecl(Quorum, "quorumSize")) @compileError("Quorum must have quorumSize method");

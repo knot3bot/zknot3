@@ -106,18 +106,32 @@ pub const ConsensusIntegration = struct {
         self.allocator.destroy(self);
     }
 
+    /// Handle a block announced by a peer.
+    ///
+    /// `receiveBlock` validates the digest and files the block under it; we
+    /// then re-read the validated block and vote on that. Previously this
+    /// deserialized the bytes and voted on that copy *before* any digest check,
+    /// so a peer could steer us into signing a vote for an arbitrary digest.
     pub fn onBlockReceived(self: *Self, peer_id: [32]u8, block_data: []const u8) !void {
         Log.debug("consensus_event=block_received peer_prefix={} payload_bytes={}", .{
             peer_id[0], block_data.len,
         });
 
+        // Validate + store. On a malformed or digest-mismatched block this
+        // returns an error and nothing is voted on.
+        self.node.receiveBlock(block_data) catch |err| {
+            Log.warn("Rejected block from peer: {s}", .{@errorName(err)});
+            return err;
+        };
+
+        // Re-derive the block we just accepted, so the vote covers the digest
+        // that is actually keyed in the pending set.
         var block = Mysticeti.Block.deserialize(self.allocator, block_data) catch {
             Log.err("Failed to deserialize block", .{});
             return;
         };
         defer block.deinit(self.allocator);
 
-        try self.node.receiveBlock(block_data);
         try self.createAndBroadcastVote(&block);
     }
 

@@ -6,6 +6,7 @@
 //! - Latency bounds
 
 const std = @import("std");
+const QuorumConfig = @import("QuorumConfig.zig");
 
 /// Commit rule configuration
 pub const CommitRuleConfig = struct {
@@ -29,7 +30,7 @@ pub const CommitRule = struct {
     }
     /// Verify quorum formation: stake > 2/3 total
     pub fn verifyQuorum(comptime stake: u128, comptime total: u128) void {
-        if (stake <= (total * 2) / 3) @compileError("stake must be > 2/3 total for quorum");
+        if (stake <= QuorumConfig.thresholdOf(total)) @compileError("stake must be > 2/3 total for quorum");
     }
     /// Verify round latency bound: min_commit >= 3 * network_rtt
     pub fn verifyLatency(comptime min_latency: u64, comptime rtt: u64) void {
@@ -57,9 +58,10 @@ pub const CommitRule = struct {
         // Check round bounds
         if (round > self.config.max_round) return false;
 
-        // Check stake threshold
-        const threshold = (total_stake * 2) / 3 + 1;
-        if (stake <= threshold) return false;
+        // Check stake threshold via the single source of truth. The previous
+        // local form was `stake <= (total*2)/3 + 1 -> reject`, i.e. `>` to
+        // accept; QuorumConfig.accepts expresses the same rule directly.
+        if (!QuorumConfig.accepts(stake, total_stake)) return false;
 
         // Check latency bound
         if (elapsed_ms < self.config.min_commit_latency_ms) return false;
@@ -70,7 +72,7 @@ pub const CommitRule = struct {
     /// Compute minimum stake for commit
     pub fn minCommitStake(self: Self, total_stake: u128) u128 {
         _ = self;
-        return (total_stake * 2) / 3 + 1;
+        return QuorumConfig.thresholdOf(total_stake);
     }
 };
 

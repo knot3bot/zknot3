@@ -3,6 +3,7 @@
 const std = @import("std");
 const core = @import("../core.zig");
 const Executor = @import("Executor.zig");
+const QuorumConfig = @import("../form/consensus/QuorumConfig.zig");
 
 /// Certificate for committed transactions
 pub const Certificate = struct {
@@ -112,14 +113,9 @@ pub const Egress = struct {
         return self.pending_certificates.orderedRemove(0);
     }
 
-    /// Compute the 2/3+1 quorum threshold from total stake.
-    fn quorumThreshold(self: Self) u128 {
-        return (self.quorum_stake * 2) / 3 + 1;
-    }
-
     /// Verify a certificate has sufficient stake for quorum AND valid signatures.
     pub fn verifyCertificate(self: Self, cert: Certificate) bool {
-        if (cert.stake_total < self.quorumThreshold()) return false;
+        if (!QuorumConfig.accepts(cert.stake_total, self.quorum_stake)) return false;
         return self.verifySignatures(cert);
     }
 
@@ -147,7 +143,7 @@ pub const Egress = struct {
     /// Verify a certificate using BLS aggregated signatures (O(1) size vs O(n)).
     /// Validators must have registered BLS public keys via the Quorum module.
     pub fn verifyCertificateBLS(self: Self, cert: Certificate, bls_pubkeys: []const [96]u8) bool {
-        if (cert.stake_total < self.quorumThreshold()) return false;
+        if (!QuorumConfig.accepts(cert.stake_total, self.quorum_stake)) return false;
         if (cert.signatures.len < 1) return false;
         // BLS aggregate signature is stored in the first signature pair as the combined sig
         const BlsModule = @import("../core/crypto/Bls.zig");

@@ -2,6 +2,7 @@ const std = @import("std");
 const core = @import("../core.zig");
 const types = @import("types.zig");
 const errors = @import("errors.zig");
+const QuorumConfig = @import("../form/consensus/QuorumConfig.zig");
 
 const Bls = core.Bls;
 
@@ -22,9 +23,12 @@ pub fn buildProofBytes(state_root: [32]u8, sequence: u64, object_id: [32]u8) [80
 }
 
 fn quorumThreshold(total_stake: u64) u64 {
-    // ceil(2/3 * total) + 1 (avoid float)
-    // For integers: floor((2*total + 2)/3) + 1 achieves ceil(2/3*total)+1
-    return ((2 * total_stake + 2) / 3) + 1;
+    // Delegates to the node-wide single source of truth. This previously used
+    // a second, differently-written formula `((2t + 2) / 3) + 1`, which agrees
+    // with the consensus layer only when `t % 3 == 0` and is one unit stricter
+    // otherwise (t = 4: consensus 3, SDK 4) — so a 4-validator network could
+    // reject a certificate the node had already committed.
+    return @intCast(QuorumConfig.thresholdOf(total_stake));
 }
 
 fn bitmapSelected(bitmap: []const u8, idx: usize) bool {

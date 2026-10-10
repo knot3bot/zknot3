@@ -5,6 +5,17 @@
 > zknot3 is a correctness-first blockchain node. This document defines the
 > **protocol**, not the implementation. The Zig codebase is a reference
 > implementation of this protocol.
+>
+> **Known gaps** (stated plainly, see `AGENTS.md` → "Key Architectural
+> Decisions" for the itemised list):
+> - Multi-node distributed behaviour is **not yet covered by tests**. The
+>   single-node network, storage and consensus paths are exercised; the
+>   `test/integration/test_cluster.zig` multi-validator harness exists but
+>   contains no test cases yet.
+> - There is **no `@compileAssert`** in the tree. Earlier revisions claimed
+>   compile-time category-theoretic verification; it was never implemented.
+> - The Move-style VM executes a **zknot3-native bytecode**, not Move bytecode.
+>   It is not binary-compatible with Sui and cannot run existing Move packages.
 
 ---
 

@@ -12,6 +12,7 @@ const std = @import("std");
 const Blake3 = std.crypto.hash.Blake3;
 const checkpoint_mod = @import("../form/storage/Checkpoint.zig");
 const Checkpoint = checkpoint_mod.Checkpoint;
+const QuorumConfig = @import("../form/consensus/QuorumConfig.zig");
 const Validator = @import("../form/consensus/Validator.zig").Validator;
 const MainnetExtensionHooks = @import("MainnetExtensionHooks.zig");
 const Sig = @import("../property/crypto/Signature.zig");
@@ -100,7 +101,7 @@ pub fn verifyCheckpointProofQuorum(
     var total_stake: u64 = 0;
     for (validators) |v| total_stake += v.stake.votingPower();
     if (total_stake == 0) return false;
-    const quorum_threshold = (total_stake * 2) / 3 + 1;
+    const quorum_threshold: u64 = @intCast(QuorumConfig.thresholdOf(total_stake));
 
     if (proof.bls_signature.len > 0 and proof.bls_signer_bitmap.len > 0) {
         if (proof.bls_signature.len != @sizeOf(Bls.Signature)) return false;

@@ -14,9 +14,16 @@
 - **Blockchain**: Knot3 (re-implementation target)
 - **VM**: Move VM (Zig interpreter)
 - **Consensus**: Mysticeti (DAG-based BFT)
-- **Storage**: RocksDB + io_uring (custom LSM-Tree in Zig)
+- **Storage**: io_uring + custom LSM-Tree (in Zig). No RocksDB — the LSM-Tree
+  is implemented from scratch in `src/form/storage/LSMTree.zig`.
 - **Formal Verification**: Coq 8.18+ / Lean 4
-- **Fuzzing**: AFL++ with libFuzzer mode
+- **Fuzzing**: AFL++ with libFuzzer mode (harness present; not yet run in CI)
+
+> **Verification honesty note**: the codebase has **no `@compileAssert`**. Earlier
+> revisions of this file claimed "comptime-first verification" of category-theoretic
+> constraints (commutative groups, partial orders, linear types). That was not
+> implemented and the claim has been removed. What exists today is documented
+> under "Key Architectural Decisions" below, item by item.
 
 ---
 
@@ -74,11 +81,26 @@ see `.github/workflows/ci.yml`.
 
 ## Key Architectural Decisions
 
-1. **Comptime-first verification**: Use Zig's `@compileAssert` for category-theoretic constraints (commutative groups, partial orders, linear types)
-2. **io_uring for storage**: Async I/O with fixed buffers, zero-copy to user buffers
-3. **Linear type system**: Compile-time enforcement of Move resource semantics (no cloning, no leaks)
-4. **Quotient group consensus**: Model voting power as quotient groups for BFT safety proofs
-5. **Three-layer metrics**: Always measure and optimize across 物丰/象大/性自在 dimensions
+Status legend: **done** = implemented and exercised by tests; **partial** =
+implemented but narrower than the wording suggests; **planned** = not implemented.
+
+1. **io_uring for storage** — **done**. `src/form/storage/IOUring.zig` (623 lines)
+   with graceful fallback when io_uring is unavailable (restricted containers).
+2. **Linear resource semantics** — **partial**. `src/property/move_vm/Resource.zig`
+   tracks use-after-move at *runtime* via a `ResourceState` state machine; there is
+   **no compile-time** enforcement. Its header comment claiming "compile-time
+   verification" is inaccurate.
+3. **Three-layer metrics** — **done**. 物丰/象大/性自在 measured in `src/metric/`
+   and exposed on `/metrics`.
+4. **Object-centric state with version lattice** — **done**. `src/core/VersionLattice.zig`,
+   `src/core/Ownership.zig`.
+5. **Single-source quorum threshold** — **done**. `src/form/consensus/QuorumConfig.zig`
+   owns the only quorum formula in the tree; all call sites reference it.
+6. **Compile-time category-theoretic constraints** — **planned, not implemented**.
+   The `comptime` block in `Quorum.zig:244` only asserts that two methods *exist*;
+   it does not verify any algebraic law.
+7. **Quotient-group voting-power model** — **planned, not implemented**. "Quotient set"
+   currently appears only in documentation comments, not as an algebraic structure.
 
 ---
 

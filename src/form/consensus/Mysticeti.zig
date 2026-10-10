@@ -21,6 +21,7 @@
 
 const std = @import("std");
 const core = @import("../../core.zig");
+const QuorumConfig = @import("QuorumConfig.zig");
 const Quorum = @import("Quorum.zig");
 const Signature = @import("../../property/Signature.zig").Ed25519;
 const Bls = @import("../../core/crypto/Bls.zig");
@@ -911,9 +912,7 @@ pub const Mysticeti = struct {
             while (it.next()) |entry| {
                 const block = entry.value_ptr;
                 const stake = computeStake(block);
-                const threshold = (self.total_stake * 2) / 3 + 1;
-
-                if (stake >= threshold) {
+                if (QuorumConfig.accepts(stake, self.total_stake)) {
                     const committed_round = Round{ .value = round.value - 2 };
 
                     if (self.lookupBlock(block_digest)) |committed_block| {
@@ -940,7 +939,10 @@ pub const Mysticeti = struct {
     /// Reference: Sui Mysticeti commit rule.
     pub fn tryCommit3Chain(self: *Self, round: Round, block_digest: [32]u8) !?CommitCertificate {
         if (round.value < 3) return null;
-        const threshold = (self.total_stake * 2) / 3 + 1;
+        // Retained for the certificate's `quorum_stake` field below. Note the
+        // accept rule is strictly-greater (see QuorumConfig.accepts), so the
+        // smallest stake that actually commits is `threshold + 1`.
+        const threshold = QuorumConfig.thresholdOf(self.total_stake);
         const next_round = Round{ .value = round.value + 1 };
         const next_next_round = Round{ .value = round.value + 2 };
 
@@ -950,7 +952,7 @@ pub const Mysticeti = struct {
                 var it = blocks.iterator();
                 while (it.next()) |entry| {
                     const stake = computeStake(entry.value_ptr);
-                    if (stake >= threshold) break :blk true;
+                    if (QuorumConfig.accepts(stake, self.total_stake)) break :blk true;
                 }
             }
             break :blk false;
@@ -963,7 +965,7 @@ pub const Mysticeti = struct {
                 var it = blocks.iterator();
                 while (it.next()) |entry| {
                     const stake = computeStake(entry.value_ptr);
-                    if (stake >= threshold) break :blk true;
+                    if (QuorumConfig.accepts(stake, self.total_stake)) break :blk true;
                 }
             }
             break :blk false;
@@ -1038,8 +1040,7 @@ pub const Mysticeti = struct {
     /// Check if a block has reached quorum for commit
     pub fn hasQuorum(self: *Self, block: *Block) bool {
         const stake = computeStake(block);
-        const threshold = (self.total_stake * 2) / 3 + 1;
-        return stake >= threshold;
+        return QuorumConfig.accepts(stake, self.total_stake);
     }
 
     /// Get all blocks that have reached quorum for commit

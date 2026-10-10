@@ -8,6 +8,7 @@
 const std = @import("std");
 const core = @import("../../core.zig");
 const ValidatorSet = @import("../consensus/Validator.zig").ValidatorSet;
+const QuorumConfig = @import("../consensus/QuorumConfig.zig");
 const Sig = @import("../../property/crypto/Signature.zig");
 const Bls = core.Bls;
 
@@ -142,7 +143,7 @@ pub const Checkpoint = struct {
             var total_power: u128 = 0;
             for (bvset.validators) |v| total_power += v.voting_power;
             if (total_power == 0) return false;
-            const quorum_threshold: u128 = (total_power * 2) / 3 + 1;
+            const quorum_threshold: u128 = QuorumConfig.thresholdOf(total_power);
             var selected = std.ArrayList(Bls.PublicKey).empty;
             defer selected.deinit(allocator);
             var power: u128 = 0;
@@ -186,7 +187,7 @@ pub const Checkpoint = struct {
             const total_stake: u128 = vset.totalStake();
             if (total_stake == 0) return false;
             // Quorum threshold is 2/3+ of total stake computed in u128
-            const quorum_threshold: u128 = (total_stake * 2) / 3 + 1;
+            const quorum_threshold: u128 = QuorumConfig.thresholdOf(total_stake);
             var stake_sum: u128 = 0;
             var it = self.signatures.iterator();
             while (it.next()) |entry| {
