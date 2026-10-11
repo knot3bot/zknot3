@@ -24,6 +24,10 @@ const HandshakeNonceTracker = struct {
     allocator: std.mem.Allocator,
     ttl_secs: i64,
     entries: std.AutoArrayHashMapUnmanaged([32]u8, i64) = .empty,
+    /// Inbound handshakes run on worker threads, so the shared nonce table
+    /// needs a lock: replay protection is only sound if the check-and-insert
+    /// is atomic.
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
 
     fn init(allocator: std.mem.Allocator, ttl_secs: i64) HandshakeNonceTracker {
         return .{
@@ -37,6 +41,13 @@ const HandshakeNonceTracker = struct {
     }
 
     fn registerFresh(self: *HandshakeNonceTracker, nonce: [32]u8, now: i64) bool {
+        const io = @import("io_instance").io;
+        self.mutex.lock(io) catch return false;
+        defer self.mutex.unlock(io);
+        return self.registerFreshLocked(nonce, now);
+    }
+
+    fn registerFreshLocked(self: *HandshakeNonceTracker, nonce: [32]u8, now: i64) bool {
         var i: usize = 0;
         while (i < self.entries.count()) {
             const ts = self.entries.values()[i];
@@ -138,6 +149,9 @@ pub const P2PServer = struct {
     last_bootstrap_retry: i64,
     validator_key: ?[32]u8,
     handshake_nonce_tracker: HandshakeNonceTracker,
+    /// Worker threads running inbound handshakes. Joined in `deinit` so shared
+    /// state is not torn down while a handshake is still reading from it.
+    handshake_threads: std.ArrayListUnmanaged(std.Thread) = .empty,
     peer_rate_states: std.AutoArrayHashMapUnmanaged([32]u8, PeerRateState),
     rate_limited_drops_total: u64,
     banned_peers_total: u64,
@@ -201,6 +215,9 @@ pub const P2PServer = struct {
 
     pub fn deinit(self: *Self) void {
         self.stop();
+
+        // `stop()` already joined every worker; only the storage is left.
+        self.handshake_threads.deinit(self.allocator);
 
         var it = self.peers.iterator();
         while (it.next()) |entry| {
@@ -276,6 +293,10 @@ pub const P2PServer = struct {
 
     pub fn stop(self: *Self) void {
         self.is_running = false;
+        // Workers hold `*Self` and touch `peers` / the nonce tracker; they must
+        // finish before the listener and peer tables are torn down.
+        for (self.handshake_threads.items) |t| t.join();
+        self.handshake_threads.clearRetainingCapacity();
         if (self.listener) |*listener| {
             listener.deinit(@import("io_instance").io);
             self.listener = null;
@@ -340,19 +361,78 @@ pub const P2PServer = struct {
             return err;
         };
         peer_conn.max_message_size = self.config.max_message_size;
-        errdefer {
+
+        // Hand the connection to a worker thread.
+        //
+        // `performHandshake` blocks on three socket round-trips (request,
+        // response, ack). Running it inline froze the accept loop, so a peer
+        // waiting on *our* response could not be served while we were blocked
+        // waiting on *its* ack. Both sides then timed out and every connection
+        // died with HandshakeFailed. Offloading lets both handshakes progress.
+        const thread = std.Thread.spawn(.{}, handshakeResponder, .{ self, peer_conn, peer_id }) catch |err| {
+            // Spawn failed: ownership never left this function, so clean up here.
             peer_conn.deinit();
             self.allocator.destroy(peer_conn);
-        }
+            return err;
+        };
+        self.handshake_threads.append(self.allocator, thread) catch |err| {
+            // Cannot track the thread, so we cannot join it later. Log loudly
+            // rather than free `peer_conn`, which the thread owns now.
+            Log.err("Failed to track handshake thread (id={}): {t}", .{ peer_id, err });
+            return err;
+        };
+        return;
+    }
 
-        // Perform handshake
-        try peer_conn.performHandshake(
+    /// Worker body for an inbound connection: run the handshake, then publish
+    /// the peer. Owns `peer_conn` for its whole lifetime.
+    fn handshakeResponder(server: *Self, peer_conn: *PeerConnection, peer_id: u64) void {
+        peer_conn.performHandshake(
             false,
-            self.validator_key,
-            self.config.allow_unauthenticated_handshake,
-            &self.handshake_nonce_tracker,
-        );
+            server.validator_key,
+            server.config.allow_unauthenticated_handshake,
+            &server.handshake_nonce_tracker,
+        ) catch |err| {
+            Log.warn("Peer handshake failed (id={}): {t}", .{ peer_id, err });
+            peer_conn.deinit();
+            server.allocator.destroy(peer_conn);
+            return;
+        };
         Log.info("Peer handshake completed (id={})", .{peer_id});
+
+        server.publishPeer(peer_conn) catch |err| {
+            Log.warn("Failed to publish peer (id={}): {t}", .{ peer_id, err });
+            peer_conn.deinit();
+            server.allocator.destroy(peer_conn);
+        };
+    }
+
+    /// Worker body for an outbound connection. Owns `peer_conn` for its whole
+    /// lifetime.
+    fn handshakeInitiator(server: *Self, peer_conn: *PeerConnection, address: []const u8) void {
+        peer_conn.performHandshake(
+            true,
+            server.validator_key,
+            server.config.allow_unauthenticated_handshake,
+            &server.handshake_nonce_tracker,
+        ) catch |err| {
+            Log.warn("Outbound handshake failed ({s}): {t}", .{ address, err });
+            peer_conn.deinit();
+            server.allocator.destroy(peer_conn);
+            return;
+        };
+        server.publishPeer(peer_conn) catch |err| {
+            Log.warn("Failed to publish peer ({s}): {t}", .{ address, err });
+            peer_conn.deinit();
+            server.allocator.destroy(peer_conn);
+            return;
+        };
+        Log.info("Connected to peer at {s} (id={})", .{ address, peer_conn.peer_id });
+    }
+
+    /// Move a handshaken connection into the live peer table. Shared by the
+    /// inbound worker and the outbound dial path.
+    fn publishPeer(self: *Self, peer_conn: *PeerConnection) !void {
 
         // For legacy mode without auth, generate random peer key using CSPRNG
         if (self.validator_key == null) {
@@ -652,8 +732,12 @@ pub const P2PServer = struct {
         return error.PeerNotFound;
     }
 
-    /// Connect to a remote peer (dial)
+    /// Connect to a remote peer (dial).
+    ///
+    /// TCP: returns as soon as the socket is connected; the handshake runs on
+    /// a worker thread. QUIC: still handled inline by the transport.
     pub fn dial(self: *Self, address: []const u8, peer_id: [32]u8) !void {
+        _ = &peer_id; // only the QUIC path uses the supplied peer id
         if (self.config.transport_type == .quic) {
             if (self.quic_transport) |qt| {
                 const quic_conn = try qt.dial(address);
@@ -684,26 +768,21 @@ pub const P2PServer = struct {
             };
             peer_conn.max_message_size = self.config.max_message_size;
             self.next_peer_id += 1;
-            errdefer {
+
+            // Outbound handshakes block on three round-trips too. Dialing from
+            // the main loop froze it while waiting for the responder, which
+            // could not answer because its own loop was blocked in
+            // `acceptOne` -> `performHandshake`. Hand off to a worker so both
+            // sides can make progress.
+            const thread = std.Thread.spawn(.{}, handshakeInitiator, .{ self, peer_conn, address }) catch |err| {
                 peer_conn.deinit();
                 self.allocator.destroy(peer_conn);
-            }
-            try peer_conn.performHandshake(
-                true,
-                self.validator_key,
-                self.config.allow_unauthenticated_handshake,
-                &self.handshake_nonce_tracker,
-            );
-            if (self.validator_key == null) {
-                peer_conn.peer_key = peer_id;
-            }
-            if (self.peers.contains(peer_conn.peer_key) or self.quic_peers.contains(peer_conn.peer_key)) {
-                self.disconnectPeer(peer_conn.peer_key);
-            }
-            try self.peers.put(self.allocator, peer_conn.peer_key, peer_conn);
-            errdefer _ = self.peers.swapRemove(peer_conn.peer_key);
-            try self.peer_rate_states.put(self.allocator, peer_conn.peer_key, .{});
-            Log.info("Connected to peer at {s} (id={})", .{ address, peer_conn.peer_id });
+                return err;
+            };
+            self.handshake_threads.append(self.allocator, thread) catch |err| {
+                Log.err("Failed to track dial thread for {s}: {t}", .{ address, err });
+                return err;
+            };
         }
     }
 

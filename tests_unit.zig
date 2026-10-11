@@ -13,5 +13,8 @@ comptime {
     _ = @import("test/fuzz/fuzz_framework.zig");
     _ = @import("test/fuzz/ObjectIDFuzzTests.zig");
     _ = @import("src/form/network/P2PServer.zig");
+    // Peer-liveness error classification: the devnet silently held zero peers
+    // until this file's tests were compiled in.
+    _ = @import("src/form/consensus/ConsensusIntegration.zig");
     _ = @import("src/property/move_vm/ModuleRegistry.zig");
 }

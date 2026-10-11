@@ -8,6 +8,30 @@ const Message = @import("../network/Transport.zig").Message;
 const Log = @import("../../app/Log.zig");
 const CommitCoordinator = @import("../../app/CommitCoordinator.zig");
 
+/// Read errors that mean "nothing available right now", not "peer is gone".
+/// These must never evict a peer: the socket is healthy, we simply raced the
+/// sender.
+fn isTransientReadError(err: anyerror) bool {
+    return switch (err) {
+        error.WouldBlock, error.Unexpected => true,
+        else => false,
+    };
+}
+
+/// Read errors that mean the connection can no longer carry framed messages.
+/// Only these may evict a peer.
+///
+/// `WouldBlock` is transient, and a short read is not fatal: `readSliceShort`
+/// only returns a short count at end of stream, which `recvMessage` surfaces as
+/// EOF (a null message) rather than as an error.
+fn isFatalPeerError(err: anyerror) bool {
+    return switch (err) {
+        error.EndOfStream, error.BrokenPipe, error.ConnectionResetByPeer => true,
+        else => false,
+    };
+}
+
+/// Handle an inbound block announced by a peer.
 pub const ConsensusIntegration = struct {
     allocator: std.mem.Allocator,
     node: *Node,
@@ -410,16 +434,17 @@ pub const ConsensusIntegration = struct {
                 // Try TCP peers first, then QUIC peers.
                 const msg = blk: {
                     if (self.p2p_server.peers.getPtr(peer_id)) |peer| {
-                        break :blk peer.*.recvMessage() catch |err| switch (err) {
-                            error.WouldBlock => break,
-                            else => {
-                                peer_dead = true;
-                                break;
-                            },
+                        break :blk peer.*.recvMessage() catch |err| {
+                            if (isTransientReadError(err)) break; // retry next tick
+                            if (!isFatalPeerError(err)) break;
+                            peer_dead = true;
+                            break;
                         };
                     }
                     if (self.p2p_server.quic_peers.getPtr(peer_id)) |peer| {
-                        break :blk peer.*.recvMessage() catch {
+                        break :blk peer.*.recvMessage() catch |err| {
+                            if (isTransientReadError(err)) break;
+                            if (!isFatalPeerError(err)) break;
                             peer_dead = true;
                             break;
                         };
@@ -620,3 +645,28 @@ pub const ConsensusIntegration = struct {
         self.p2p_server.disconnectPeer(peer_id);
     }
 };
+
+test "peer read errors: only fatal ones evict a peer" {
+    // Regression: `processPeerMessages` used `else => peer_dead = true`, so any
+    // error that was not `WouldBlock` removed the peer. Because Zig collapses
+    // unrecognised errnos into `error.Unexpected`, healthy peers were evicted
+    // on the first transient socket hiccup and the devnet never held a single
+    // connection (`peers: 0` on every node).
+
+    // Nothing available right now -> retry, never evict.
+    try std.testing.expect(isTransientReadError(error.WouldBlock));
+    try std.testing.expect(isTransientReadError(error.Unexpected));
+    try std.testing.expect(!isFatalPeerError(error.WouldBlock));
+    try std.testing.expect(!isFatalPeerError(error.Unexpected));
+
+    // Connection genuinely gone -> evict.
+    try std.testing.expect(isFatalPeerError(error.EndOfStream));
+    try std.testing.expect(isFatalPeerError(error.BrokenPipe));
+    try std.testing.expect(isFatalPeerError(error.ConnectionResetByPeer));
+
+    // Unclassified errors must not evict: the fail-open direction keeps a peer
+    // that could still be healthy, at the cost of retrying a dead one until
+    // the peer itself reports EOF.
+    try std.testing.expect(!isFatalPeerError(error.MessageTooLarge));
+    try std.testing.expect(!isTransientReadError(error.MessageTooLarge));
+}

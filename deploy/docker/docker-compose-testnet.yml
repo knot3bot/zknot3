@@ -31,7 +31,8 @@ services:
       - RUST_LOG=info
     command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
     networks:
-      - zknot3-testnet
+      zknot3-testnet:
+        ipv4_address: 172.20.0.2
 
   zknot3-validator-2:
     image: zknot3:latest
@@ -54,7 +55,8 @@ services:
       - RUST_LOG=info
     command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
     networks:
-      - zknot3-testnet
+      zknot3-testnet:
+        ipv4_address: 172.20.0.3
 
   zknot3-validator-3:
     image: zknot3:latest
@@ -77,7 +79,8 @@ services:
       - RUST_LOG=info
     command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
     networks:
-      - zknot3-testnet
+      zknot3-testnet:
+        ipv4_address: 172.20.0.4
 
   zknot3-validator-4:
     image: zknot3:latest
@@ -100,7 +103,8 @@ services:
       - RUST_LOG=info
     command: ["-c", "/etc/zknot3/config.json", "--dev", "--validator"]
     networks:
-      - zknot3-testnet
+      zknot3-testnet:
+        ipv4_address: 172.20.0.5
 
   # ============================================
   # Full Node (for RPC queries)
@@ -125,7 +129,8 @@ services:
       - RUST_LOG=info
     command: ["-c", "/etc/zknot3/config.json", "--dev"]
     networks:
-      - zknot3-testnet
+      zknot3-testnet:
+        ipv4_address: 172.20.0.6
     depends_on:
       zknot3-validator-1:
         condition: service_started

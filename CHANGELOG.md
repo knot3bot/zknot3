@@ -8,6 +8,32 @@ All notable changes to zknot3 are documented here. The format follows
 
 ### Fixed
 
+- **Devnet validators never connected** — three independent defects stacked, so
+  every node reported `peers: 0` and the "4-validator devnet" was really four
+  isolated nodes each proposing and voting for itself:
+  1. `docker-compose-testnet.yml` (the stack `wan_emulation_gate.sh` runs) pinned
+     no static IPs, while `configs/validator-*.json` hard-code
+     `172.20.0.2-.5` as bootstrap peers, so nodes dialled the wrong containers.
+  2. `performHandshake` blocks on three socket round-trips and ran inline in the
+     accept/dial path. Both peers blocked inside their own main loop waiting on
+     the other, so every handshake timed out with `HandshakeFailed`. Inbound and
+     outbound handshakes now run on worker threads, with the shared nonce
+     tracker behind a mutex and workers joined in `stop()`.
+  3. `processPeerMessages` treated *any* read error other than `WouldBlock` as a
+     dead peer. Zig collapses unrecognised errnos into `error.Unexpected`, so
+     healthy peers were evicted on the first transient socket hiccup. Reads are
+     now classified: transient errors retry, only `EndOfStream` / `BrokenPipe` /
+     `ConnectionResetByPeer` evict.
+
+  Validators now hold 2-3 peers each with consensus rounds and committed-block
+  counts advancing in step, and the WAN gate's commit progression roughly
+  doubled (0 -> 16 -> 29 -> 44 before, 0 -> 29 -> 54 -> 87 after).
+
+- **`ConsensusIntegration.zig` had no tests at all** — it was never referenced
+  from `tests_unit.zig`, so 600+ lines of peer-liveness logic went unverified.
+  It is now compiled into the unit suite and carries a regression test for the
+  error classification above.
+
 - **Toolchain pins moved to Zig 0.17.0 stable** — CI (`.github/workflows/ci.yml`,
   3 jobs) and `deploy/docker/Dockerfile` still pulled the `0.17.0-dev.2307+392b17125`
   nightly from `ziglang.org/builds/`. Both now use stable `0.17.0` from
