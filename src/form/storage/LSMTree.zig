@@ -857,9 +857,18 @@ pub const LSMTree = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, config: LSMTreeConfig) !*Self {
+        // Create the SST directory first: it is the only step that can fail for
+        // an unwritable path, and running it before any allocation keeps the
+        // error path free of partial-state cleanup.
+        std.Io.Dir.cwd().createDir(@import("io_instance").io, config.sst_dir, .default_dir) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
+
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
         // Initialize WAL for durability
         const wal_path = try std.fmt.allocPrint(allocator, "{s}/wal.log", .{config.sst_dir});
+        errdefer allocator.free(wal_path);
         const wal: ?WAL = initWALOrNull(allocator, wal_path);
         self.* = .{
             .allocator = allocator,
@@ -873,11 +882,6 @@ pub const LSMTree = struct {
             .wal_path = wal_path,
         };
         self.compaction.* = try CompactionManager.init(allocator, config);
-
-        // Create SST directory
-        std.Io.Dir.cwd().createDir(@import("io_instance").io, config.sst_dir, .default_dir) catch |err| {
-            if (err != error.PathAlreadyExists) return err;
-        };
         return self;
     }
 

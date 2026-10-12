@@ -96,7 +96,12 @@ pub const Node = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
+    /// Deep copy of the configuration handed to `init`. The node owns it: callers
+    /// commonly heap-allocate the config and free it as soon as `init` returns,
+    /// and a borrowed `*const Config` would dangle on every later access
+    /// (`deinit` included). Backing storage lives in `config_arena`.
     config: *const Config,
+    config_arena: std.heap.ArenaAllocator,
     state: NodeState,
     deps: NodeDependencies,
     object_store: ?*ObjectStore,
@@ -131,31 +136,54 @@ pub const Node = struct {
         config: *const Config,
         deps: NodeDependencies,
     ) !*Self {
-        const txn_pool = try pipeline.TxnPool.init(allocator, .{});
-        errdefer txn_pool.deinit();
-        const exec = try pipeline.Executor.init(allocator, .{
-            .parallelism = config.consensus.max_txs_per_block,
-            .max_gas = config.vm.max_gas_budget,
-        });
-        errdefer exec.deinit();
+        // Own the configuration before anything else: every field below reads it.
+        //
+        // Ownership hand-off: every resource built here is stored on `self_ptr`
+        // and freed by `deinit`. Until `errdefer self_ptr.deinit()` is armed
+        // further down, the local guards must release them instead — otherwise
+        // both fire and the same allocation is freed twice.
+        var config_arena = std.heap.ArenaAllocator.init(allocator);
+        const owned_config = try config_arena.allocator().create(Config);
+        owned_config.* = try config.dupe(config_arena.allocator());
 
-        // Phase 2: set up native function registry for Move VM
-        const vm_registry = try allocator.create(property.move_vm.Registry);
-        errdefer allocator.destroy(vm_registry);
-        vm_registry.* = property.move_vm.Registry.init(allocator);
-        errdefer vm_registry.deinit();
-        try vm_registry.registerSuiFramework();
-        exec.registry = vm_registry;
+        var locals_owned_by_node = false;
+        errdefer if (!locals_owned_by_node) config_arena.deinit();
+
+        const txn_pool = try pipeline.TxnPool.init(allocator, .{});
+        var txn_pool_owned_locally = true;
+        errdefer if (txn_pool_owned_locally) txn_pool.deinit();
+        const exec = try pipeline.Executor.init(allocator, .{
+            .parallelism = owned_config.consensus.max_txs_per_block,
+            .max_gas = owned_config.vm.max_gas_budget,
+        });
+        var exec_owned_locally = true;
+        errdefer if (exec_owned_locally) exec.deinit();
+
+        // Phase 2: set up native function registry for Move VM.
+        // On success `exec` owns the registry (`Executor.deinit` frees it), so
+        // these errdefers must not outlive the block.
+        {
+            const vm_registry = try allocator.create(property.move_vm.Registry);
+            errdefer allocator.destroy(vm_registry);
+            vm_registry.* = property.move_vm.Registry.init(allocator);
+            errdefer vm_registry.deinit();
+            try vm_registry.registerSuiFramework();
+            exec.registry = vm_registry;
+        }
 
         const self_ptr = try allocator.create(Self);
-        errdefer allocator.destroy(self_ptr);
+        // `deinit` ends in `allocator.destroy(self)`, so once it is armed below
+        // this guard must stand down or the two errdefers double-free.
+        var self_destroyed = false;
+        errdefer if (!self_destroyed) allocator.destroy(self_ptr);
 
         self_ptr.allocator = allocator;
-        self_ptr.config = config;
+        self_ptr.config = owned_config;
+        self_ptr.config_arena = config_arena;
         self_ptr.state = .initializing;
         self_ptr.deps = deps;
         self_ptr.object_store = null;
-        const cp_path = try std.fmt.allocPrint(allocator, "{s}/{s}/sequence.bin", .{ config.storage.data_dir, config.storage.checkpoint_store_path });
+        const cp_path = try std.fmt.allocPrint(allocator, "{s}/{s}/sequence.bin", .{ owned_config.storage.data_dir, owned_config.storage.checkpoint_store_path });
         defer allocator.free(cp_path);
         self_ptr.checkpoint_store = CheckpointSequence.load(cp_path) catch |err| blk: {
             Log.warn("[WARN] Failed to load checkpoint sequence from {s}: {s}, starting from 0", .{ cp_path, @errorName(err) });
@@ -178,12 +206,14 @@ pub const Node = struct {
         self_ptr.executor = exec;
         self_ptr.runtime_metrics = null;
         self_ptr.runtime_metrics = try RuntimeMetrics.RuntimeMetricsCollector.init(allocator, 100);
-        errdefer {
+        // Needed only until `deinit` is armed below, which tears down
+        // `runtime_metrics` itself; errdefers run in reverse order.
+        errdefer if (!self_destroyed) {
             if (self_ptr.runtime_metrics) |rm| {
                 rm.deinit();
                 allocator.destroy(rm);
             }
-        }
+        };
         self_ptr.mainnet_hooks = try MainnetExtensionHooks.Manager.init(allocator);
         self_ptr.m4_wal = null;
         // allocator.create(Self) yields undefined memory: field defaults do
@@ -198,18 +228,24 @@ pub const Node = struct {
         self_ptr.indexer = null;
 
         errdefer self_ptr.deinit();
+        // From here `deinit` owns the node, its config arena, the executor and
+        // the txn pool; the local guards above stand down.
+        self_destroyed = true;
+        locals_owned_by_node = true;
+        exec_owned_locally = false;
+        txn_pool_owned_locally = false;
 
         self_ptr.object_store = try ObjectStore.init(
             allocator,
             .{},
-            config.storage.data_dir,
+            owned_config.storage.data_dir,
         );
 
         // Phase 0: initialize epoch bridge as the default primary path
         const epoch_manager = try EpochManager.init(allocator, .{
-            .duration_seconds = config.consensus.epoch_duration_secs,
-            .min_validators = config.consensus.min_validators,
-            .max_validators = config.consensus.max_validators,
+            .duration_seconds = owned_config.consensus.epoch_duration_secs,
+            .min_validators = owned_config.consensus.min_validators,
+            .max_validators = owned_config.consensus.max_validators,
         }, self_ptr.started_at);
         errdefer epoch_manager.deinit();
 
@@ -223,7 +259,7 @@ pub const Node = struct {
         errdefer epoch_bridge.deinit();
 
         // Phase 0: bootstrap validator stake from config known_validators into stake_pool
-        for (config.network.known_validators) |kv| {
+        for (owned_config.network.known_validators) |kv| {
             if (kv.stake > 0) {
                 const pk = std.fmt.parseInt(u256, kv.public_key_hex, 16) catch |err| {
                     Log.err("[init] invalid validator public_key_hex: {s}", .{@errorName(err)});
@@ -252,7 +288,7 @@ pub const Node = struct {
         self_ptr.indexer = indexer;
         self_ptr.deps.indexer = indexer;
 
-        const m4_base = try std.fmt.allocPrint(allocator, "{s}/m4_state", .{config.storage.data_dir});
+        const m4_base = try std.fmt.allocPrint(allocator, "{s}/m4_state", .{owned_config.storage.data_dir});
         defer allocator.free(m4_base);
         if (WAL.init(allocator, m4_base)) |wal_val| {
             const m4_wal_ptr = try allocator.create(WAL);
@@ -263,18 +299,18 @@ pub const Node = struct {
             Log.warn("M4 WAL init failed: {s}", .{@errorName(err)});
         }
 
-        if (config.network.p2p_enabled) {
+        if (owned_config.network.p2p_enabled) {
             const p2p_config = P2PServer_module.P2PServerConfig{
-                .bind_address = config.network.p2p_address,
+                .bind_address = owned_config.network.p2p_address,
                 .max_connections = 256,
-                .bootstrap_peers = config.network.bootstrap_peers,
+                .bootstrap_peers = owned_config.network.bootstrap_peers,
                 .dial_bootstrap = true,
-                .validator_key = config.authority.signing_key,
-                .allow_unauthenticated_handshake = config.allow_unauthenticated_p2p,
-                .max_messages_per_second_per_peer = config.network.p2p_max_messages_per_peer_per_second,
-                .max_messages_per_second_per_type = config.network.p2p_max_messages_per_type_per_second,
-                .peer_score_ban_threshold = config.network.p2p_peer_score_ban_threshold,
-                .peer_ban_seconds = config.network.p2p_peer_ban_seconds,
+                .validator_key = owned_config.authority.signing_key,
+                .allow_unauthenticated_handshake = owned_config.allow_unauthenticated_p2p,
+                .max_messages_per_second_per_peer = owned_config.network.p2p_max_messages_per_peer_per_second,
+                .max_messages_per_second_per_type = owned_config.network.p2p_max_messages_per_type_per_second,
+                .peer_score_ban_threshold = owned_config.network.p2p_peer_score_ban_threshold,
+                .peer_ban_seconds = owned_config.network.p2p_peer_ban_seconds,
             };
 
             self_ptr.p2p_server = try P2PServer.init(allocator, p2p_config);
@@ -344,6 +380,9 @@ pub const Node = struct {
             self.allocator.destroy(rm);
         }
         self.state = .stopped;
+        // Release the owned config last: components torn down above (object
+        // store, P2P server) still hold string slices pointing into the arena.
+        self.config_arena.deinit();
         self.allocator.destroy(self);
     }
 
@@ -1218,6 +1257,66 @@ test "Node initialization" {
         std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
     }
     try std.testing.expect(node.state == .initializing);
+}
+
+test "Node outlives the caller-owned Config it was initialized from" {
+    // Regression: `Node` used to retain a borrowed `*const Config`. Callers
+    // routinely release the config as soon as `init` returns (and `defer` runs
+    // in reverse order, so `deinit` came after the free), leaving `deinit` to
+    // read poisoned memory. Every string here is heap-allocated and freed
+    // *before* the node is used, so a shallow copy cannot survive.
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_config_ownership";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = try allocator.dupe(u8, test_dir);
+    config.network.p2p_address = try allocator.dupe(u8, "127.0.0.1:0");
+    config.network.known_validators = &.{
+        .{ .public_key_hex = "0a0b0c", .name = "ownership-probe", .stake = 1 },
+    };
+
+    const node = try Node.init(allocator, config, NodeDependencies{});
+
+    // Release every string the caller owned; the node must never touch them.
+    allocator.free(config.storage.data_dir);
+    allocator.free(config.network.p2p_address);
+    allocator.destroy(config);
+
+    try std.testing.expectEqualStrings(test_dir, node.config.storage.data_dir);
+    try std.testing.expectEqualStrings("ownership-probe", node.config.network.known_validators[0].name);
+
+    try node.start();
+    _ = node.getNodeInfo();
+    node.stop();
+    node.deinit();
+}
+
+test "Node.init releases the owned config copy when init fails" {
+    // The arena holding the config copy must be reclaimed on the error path,
+    // whichever stage of `init` fails.
+    const allocator = std.testing.allocator;
+    // `createDir` does not create parents, so a missing grandparent makes
+    // `ObjectStore.init` fail after the config copy was handed to the node.
+    const missing_parent = "/tmp/node_test_init_failure_parent";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, missing_parent) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, missing_parent) catch {};
+    const bad_data_dir = try std.fmt.allocPrint(allocator, "{s}/data", .{missing_parent});
+    defer allocator.free(bad_data_dir);
+
+    const config = try allocator.create(Config);
+    defer allocator.destroy(config);
+    config.* = Config.default();
+    config.storage.data_dir = bad_data_dir;
+
+    // std.testing.allocator reports the leak if the arena is not reclaimed.
+    try std.testing.expectError(
+        error.FileNotFound,
+        Node.init(allocator, config, NodeDependencies{}),
+    );
 }
 
 test "Node info" {

@@ -75,11 +75,48 @@ pub const NetworkConfig = struct {
     /// TLS private key file path (PEM). When set with tls_cert_path, enables HTTPS.
     tls_key_path: ?[]const u8 = null,
     known_validators: []const KnownValidator = &.{},
+
+    /// Deep-copy every string and slice field into `allocator`.
+    pub fn dupe(self: NetworkConfig, allocator: std.mem.Allocator) !NetworkConfig {
+        var out = self;
+        out.bind_address = try allocator.dupe(u8, self.bind_address);
+        out.admin_token = try allocator.dupe(u8, self.admin_token);
+        out.p2p_address = try allocator.dupe(u8, self.p2p_address);
+        out.local_peer_id = try allocator.dupe(u8, self.local_peer_id);
+        out.metrics_address = try allocator.dupe(u8, self.metrics_address);
+        out.tls_cert_path = try dupeOpt(u8, self.tls_cert_path, allocator);
+        out.tls_key_path = try dupeOpt(u8, self.tls_key_path, allocator);
+        out.bootstrap_peers = try dupeSliceOfSlices(self.bootstrap_peers, allocator);
+        if (self.known_validators.len > 0) {
+            const kvs = try allocator.alloc(KnownValidator, self.known_validators.len);
+            for (self.known_validators, kvs) |kv, *slot| {
+                slot.* = .{
+                    .public_key_hex = try allocator.dupe(u8, kv.public_key_hex),
+                    .name = try allocator.dupe(u8, kv.name),
+                    .stake = kv.stake,
+                };
+            }
+            out.known_validators = kvs;
+        }
+        return out;
+    }
 };
 
 /// Returns true if TLS is configured (both cert and key paths are set).
 pub fn tlsEnabled(config: NetworkConfig) bool {
     return config.tls_cert_path != null and config.tls_key_path != null;
+}
+
+fn dupeOpt(comptime T: type, src: ?[]const T, allocator: std.mem.Allocator) !?[]T {
+    const s = src orelse return null;
+    return try allocator.dupe(T, s);
+}
+
+fn dupeSliceOfSlices(src: []const []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+    if (src.len == 0) return &.{};
+    const out = try allocator.alloc([]const u8, src.len);
+    for (src, out) |item, *slot| slot.* = try allocator.dupe(u8, item);
+    return out;
 }
 
 /// Consensus configuration
@@ -162,6 +199,15 @@ pub const StorageConfig = struct {
     compaction_interval_secs: u64 = 3600,
     /// Skip corrupted WAL records during recovery (default: true for resilience)
     recovery_skip_corrupted: bool = true,
+
+    /// Deep-copy every string field into `allocator`.
+    pub fn dupe(self: StorageConfig, allocator: std.mem.Allocator) !StorageConfig {
+        var out = self;
+        out.data_dir = try allocator.dupe(u8, self.data_dir);
+        out.object_store_path = try allocator.dupe(u8, self.object_store_path);
+        out.checkpoint_store_path = try allocator.dupe(u8, self.checkpoint_store_path);
+        return out;
+    }
 };
 
 /// VM/execution configuration
@@ -204,6 +250,18 @@ pub const AuthorityConfig = struct {
     bls_signing_seed: ?[32]u8 = null,
     /// Extra BLS seeds aggregated together with `bls_signing_seed`.
     extra_bls_signing_seeds: []const [32]u8 = &.{},
+
+    /// Deep-copy every string and slice field into `allocator`.
+    pub fn dupe(self: AuthorityConfig, allocator: std.mem.Allocator) !AuthorityConfig {
+        var out = self;
+        out.address = try allocator.dupe(u8, self.address);
+        out.name = try allocator.dupe(u8, self.name);
+        out.description = try allocator.dupe(u8, self.description);
+        out.gas_station_allowlist = try allocator.dupe([32]u8, self.gas_station_allowlist);
+        out.checkpoint_proof_extra_signing_seeds = try allocator.dupe([32]u8, self.checkpoint_proof_extra_signing_seeds);
+        out.extra_bls_signing_seeds = try allocator.dupe([32]u8, self.extra_bls_signing_seeds);
+        return out;
+    }
 };
 
 /// Full node configuration
@@ -335,6 +393,20 @@ pub const Config = struct {
         var buf = std.ArrayList(u8).init(allocator);
         try json.stringify(self, .{ .whitespace = .indent_tab }, buf.writer());
         return buf.toOwnedSlice();
+    }
+
+    /// Deep-copy every string and slice field into `allocator`.
+    ///
+    /// Long-lived owners (e.g. `Node`) must not retain a borrowed `Config`:
+    /// callers routinely heap-allocate the config and free it as soon as
+    /// `init` returns, which would leave dangling string slices behind.
+    /// Passing an arena allocator keeps teardown to a single `deinit`.
+    pub fn dupe(self: Config, allocator: std.mem.Allocator) !Config {
+        var out = self;
+        out.network = try self.network.dupe(allocator);
+        out.storage = try self.storage.dupe(allocator);
+        out.authority = try self.authority.dupe(allocator);
+        return out;
     }
 
     /// Save node config to JSON file

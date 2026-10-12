@@ -19,13 +19,26 @@ fn cleanupDataDir(data_dir: []const u8) void {
     std.Io.Dir.cwd().deleteTree(io_mod.io, data_dir) catch {};
 }
 
-fn newTestNode(allocator: std.mem.Allocator, data_dir: []const u8) !struct { node: *Node, cfg: *Config } {
+const TestNode = struct { node: *Node, cfg: *Config };
+
+/// `Node.init` deep-copies the config, so any override must be applied here
+/// rather than on `cfg` after construction.
+fn newTestNode(allocator: std.mem.Allocator, data_dir: []const u8) !TestNode {
+    return newTestNodeWith(allocator, data_dir, null);
+}
+
+fn newTestNodeWith(
+    allocator: std.mem.Allocator,
+    data_dir: []const u8,
+    skip_corrupted: ?bool,
+) !TestNode {
     const cfg = try allocator.create(Config);
     cfg.* = Config.default();
     const seed = @as([32]u8, @splat(0x5D));
     cfg.authority.signing_key = seed;
     cfg.authority.stake = 1_000_000_000;
     cfg.storage.data_dir = data_dir;
+    if (skip_corrupted) |v| cfg.storage.recovery_skip_corrupted = v;
     const node = try Node.init(allocator, cfg, NodeDependencies{});
     return .{ .node = node, .cfg = cfg };
 }
@@ -210,10 +223,9 @@ test "M4 WAL recovery: truncated M4 WAL tail makes restart replay fail closed" {
         try wf.sync(io_mod.io);
     }
 
-    const h2 = try newTestNode(allocator, data_dir);
+    const h2 = try newTestNodeWith(allocator, data_dir, false); // expect fail-closed on corrupt WAL
     defer h2.node.deinit();
     defer allocator.destroy(h2.cfg);
-    h2.cfg.storage.recovery_skip_corrupted = false; // expect fail-closed on corrupt WAL
     const n2 = h2.node;
     try std.testing.expectError(error.ReadFailed, n2.start());
 }

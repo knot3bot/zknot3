@@ -139,6 +139,7 @@ pub const ObjectStore = struct {
     /// Initialize object store
     pub fn init(allocator: std.mem.Allocator, config: ObjectStoreConfig, sst_dir: []const u8) !*Self {
         const self = try allocator.create(Self);
+        errdefer allocator.destroy(self);
         const lsm_config = LSMTree.LSMTreeConfig{
             .sst_dir = sst_dir,
             .memtable_size = config.cache_size,
