@@ -45,9 +45,7 @@ jobs:
           # A test-name filter does not work under the build runner's --listen
           # protocol (a filter matching nothing still reports success), so
           # build a dedicated root that pulls in only this one test file.
-          printf 'comptime { _ = @import("test/integration/m4_adversarial_recovery_test.zig"); }
-' > /tmp/only_m4.zig
-          cp /tmp/only_m4.zig isolate_m4.zig
+          echo 'comptime { _ = @import("test/integration/m4_adversarial_recovery_test.zig"); }' > isolate_m4.zig
           echo "::group::isolated single-file run"
           zig test -Mroot=isolate_m4.zig \
             --dep io_instance -Mio_instance=src/io_instance.zig \
