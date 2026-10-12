@@ -39,6 +39,15 @@ jobs:
       - name: Run integration tests
         run: zig build test-integration -Doptimize=Debug
 
+      - name: Isolate m4_adversarial failure
+        if: failure()
+        run: |
+          echo "::group::isolated run"
+          zig build test-integration -Doptimize=Debug -- "M4 recovery: recoverFromDisk then replayMainnetM4Wal restores M4 totals" || true
+          echo "::endgroup::"
+          ls -la test_tmp/ 2>/dev/null || echo "no test_tmp"
+          ls -laR test_tmp/ 2>/dev/null | head -40
+
       - name: Quorum single-source gate
         run: bash tools/quorum_single_source_gate.sh
 
