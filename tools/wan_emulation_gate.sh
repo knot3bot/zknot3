@@ -102,6 +102,51 @@ trap 'docker compose -f docker-compose-testnet.yml -f docker-compose.wan.yml dow
 wait_healthy 240 || fail "cluster did not become healthy within 240s"
 echo "phase 1 (baseline): all 5 nodes healthy"
 
+# ---------------------------------------------- peer connectivity (gate)
+# Every later phase asserts on a single validator's commit counter. Before the
+# peer-liveness fixes that counter still advanced while `peers` stayed at 0,
+# because each node proposed and voted for itself in isolation. So the gate
+# passed while the "4-validator devnet" was really four disconnected nodes.
+# Assert the cluster is actually meshed before drawing any BFT conclusion.
+wait_peers() { # wait_peers <timeout_s> <min_peers>
+  # Assign in separate statements: on a single `local a=$1 b=$((...+a))` line the
+  # right-hand side expands before the assignment takes effect under `set -u`.
+  local budget=$1
+  local want=$2
+  local deadline=$((SECONDS + budget))
+  local snapshot="" v p all_ok
+  while (( SECONDS < deadline )); do
+    snapshot=""
+    all_ok=1
+    for v in "${VALIDATORS[@]}"; do
+      p=$(metric "$v" peers)
+      [ -n "$p" ] || { all_ok=0; break; }
+      snapshot="${snapshot}${v#zknot3-}=${p} "
+      (( p >= want )) || { all_ok=0; break; }
+    done
+    if (( all_ok )); then
+      echo "  peers after ${SECONDS}s: ${snapshot}"
+      return 0
+    fi
+    sleep 5
+  done
+  fail "validators did not reach ${want}+ peers within ${budget}s (last: ${snapshot:-unreadable})"
+}
+
+wait_peers 180 1 || fail "no P2P connectivity between validators"
+echo "phase 1.5 (peer mesh): every validator holds at least 1 peer"
+
+# A validator that loses all peers mid-gate is no longer testing consensus, so
+# re-check after the impairment phases have finished.
+assert_peers() { # assert_peers <label>
+  local v p bad=""
+  for v in "${VALIDATORS[@]}"; do
+    p=$(metric "$v" peers)
+    if [ -z "$p" ] || (( p < 1 )); then bad="${bad} ${v#zknot3-}=${p:-?}"; fi
+  done
+  [ -z "$bad" ] || fail "$1: validator(s) lost all peers (${bad# })"
+}
+
 # ---------------------------------------------------- WAN impairment soak
 for v in "${VALIDATORS[@]:1}"; do impair "$v" "${DELAY_ARGS[@]}"; done
 impair zknot3-validator-1 "${DELAY_ARGS[@]}"
@@ -114,6 +159,10 @@ wan_blocks=$(metric zknot3-validator-1 blocks_committed_total)
 (( wan_blocks > base_blocks )) || fail "no commits under 80ms/2%loss WAN impairment ($base_blocks -> $wan_blocks)"
 echo "phase 2 (WAN impairment): commits progressed under 80ms±10ms + 2% loss ($base_blocks -> $wan_blocks)"
 
+# Latency and loss must not sever the mesh — that would turn this phase into a
+# second partition test and hide whether consensus tolerates mere impairment.
+assert_peers "after WAN impairment"
+
 # ------------------------------------------------------------- partition
 v4_base=$(metric zknot3-validator-4 blocks_committed_total)
 majority_base=$(metric zknot3-validator-1 blocks_committed_total)
@@ -125,6 +174,20 @@ v4_mid=$(metric zknot3-validator-4 blocks_committed_total)
 (( majority_mid > majority_base )) || fail "majority stalled during partition ($majority_base -> $majority_mid)"
 echo "phase 3 (partition): 3-validator majority kept committing ($majority_base -> $majority_mid); isolated node frozen ($v4_base -> $v4_mid)"
 
+# validator-4 is cut off on purpose, so it is expected to have dropped peers.
+# The majority must NOT: if it also went dark, "the majority kept committing"
+# would only mean three isolated nodes each voting for themselves.
+assert_peers_except() { # assert_peers_except <excluded_validator> <label>
+  local skip=$1 label=$2 v p bad=""
+  for v in "${VALIDATORS[@]}"; do
+    [ "$v" = "$skip" ] && continue
+    p=$(metric "$v" peers)
+    if [ -z "$p" ] || (( p < 1 )); then bad="${bad} ${v#zknot3-}=${p:-?}"; fi
+  done
+  [ -z "$bad" ] || fail "$label: majority validator(s) lost all peers (${bad# })"
+}
+assert_peers_except zknot3-validator-4 "during partition"
+
 # --------------------------------------------------------------- healing
 clear_impair zknot3-validator-4
 stimulate zknot3-validator-2 20
@@ -132,6 +195,14 @@ sleep 60
 v4_healed=$(metric zknot3-validator-4 blocks_committed_total)
 (( v4_healed > v4_mid )) || fail "validator-4 did not resume progress after healing ($v4_mid -> $v4_healed)"
 echo "phase 4 (healing): validator-4 resumed progress ($v4_mid -> $v4_healed)"
+
+# Catch-up is only meaningful over a real network: confirm the healed node
+# actually re-peered rather than resuming on its own.
+v4_peers=$(metric zknot3-validator-4 peers)
+[ -n "$v4_peers" ] || fail "cannot read validator-4 peer count"
+(( v4_peers >= 1 )) || fail "validator-4 advanced blocks without reconnecting to any peer"
+assert_peers "after healing"
+echo "phase 4.5 (reconnect): full mesh restored (validator-4 peers=$v4_peers)"
 
 # ------------------------------------------------------- restart audit
 for v in "${VALIDATORS[@]}"; do

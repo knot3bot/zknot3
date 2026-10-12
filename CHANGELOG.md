@@ -29,6 +29,17 @@ All notable changes to zknot3 are documented here. The format follows
   counts advancing in step, and the WAN gate's commit progression roughly
   doubled (0 -> 16 -> 29 -> 44 before, 0 -> 29 -> 54 -> 87 after).
 
+- **WAN gate could not detect a disconnected cluster** — every phase asserted on
+  a single validator's `blocks_committed_total`, which kept advancing even when
+  `peers` was 0 (each node proposed and voted for itself). The gate therefore
+  stayed green through all three peer-liveness defects above. It now asserts the
+  cluster is actually meshed: a `wait_peers` precondition after the health check,
+  a re-check after WAN impairment (latency/loss must not sever the mesh), a
+  majority-only check during the partition, and a reconnect check after healing
+  so catch-up is proven over a real network rather than in isolation.
+  Verified by reverting the fixes: the gate now fails at phase 1.5 with
+  `validator-1=0`.
+
 - **`ConsensusIntegration.zig` had no tests at all** — it was never referenced
   from `tests_unit.zig`, so 600+ lines of peer-liveness logic went unverified.
   It is now compiled into the unit suite and carries a regression test for the
