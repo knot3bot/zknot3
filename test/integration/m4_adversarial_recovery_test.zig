@@ -125,7 +125,11 @@ test "M4 recovery: recoverFromDisk then replayMainnetM4Wal restores M4 totals" {
     const n2 = h2.node;
 
     try n2.recoverFromDisk();
-    try n2.replayMainnetM4Wal();
+    // No explicit replayMainnetM4Wal() here: recoverFromDisk already replays
+    // the M4 WAL internally (Node.recoverFromDisk -> replayMainnetM4Wal), and
+    // this was the only call site invoking it from outside Node. Calling it a
+    // second time repeated the whole replay against state that had already been
+    // restored.
     try std.testing.expectEqual(@as(u64, 88), n2.getM4ValidatorStake(validator));
 }
 
