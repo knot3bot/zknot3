@@ -58,7 +58,7 @@ fn nextClusterBase() struct { rpc: u16, p2p: u16 } {
     // keeps closed listeners in TIME_WAIT, so a fixed base makes a rerun collide
     // with the previous run's sockets.
     const pid = std.c.getpid();
-    const jitter: u32 = @as(u32, @intCast(pid % 97)) * step;
+    const jitter: u32 = @as(u32, @intCast(@mod(@as(i64, pid), 97))) * step;
     const off = (n * step + jitter) % 4000;
     return .{
         .rpc = base_rpc_port + @as(u16, @intCast(off)),
