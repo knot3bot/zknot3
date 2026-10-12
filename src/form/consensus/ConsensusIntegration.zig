@@ -26,7 +26,19 @@ fn isTransientReadError(err: anyerror) bool {
 /// EOF (a null message) rather than as an error.
 fn isFatalPeerError(err: anyerror) bool {
     return switch (err) {
-        error.EndOfStream, error.BrokenPipe, error.ConnectionResetByPeer => true,
+        error.EndOfStream,
+        error.BrokenPipe,
+        error.ConnectionResetByPeer,
+        // A peer that sends a frame we cannot parse is either broken or hostile.
+        // Either way the stream is no longer trustworthy, so drop it rather than
+        // keep accepting whatever it sends next.
+        error.UnknownMessageType,
+        error.MessageTooShort,
+        error.MessageTooLarge,
+        error.InvalidMessage,
+        error.IncompleteHeader,
+        error.IncompletePayload,
+        => true,
         else => false,
     };
 }
@@ -674,9 +686,17 @@ test "peer read errors: only fatal ones evict a peer" {
     try std.testing.expect(isFatalPeerError(error.BrokenPipe));
     try std.testing.expect(isFatalPeerError(error.ConnectionResetByPeer));
 
-    // Unclassified errors must not evict: the fail-open direction keeps a peer
-    // that could still be healthy, at the cost of retrying a dead one until
-    // the peer itself reports EOF.
-    try std.testing.expect(!isFatalPeerError(error.MessageTooLarge));
-    try std.testing.expect(!isTransientReadError(error.MessageTooLarge));
+    // A frame we cannot parse means the stream is untrustworthy: evict. This is
+    // also the path that keeps `Message.deserialize`'s unknown-type rejection
+    // from turning into an endless stream of garbage from one peer.
+    try std.testing.expect(isFatalPeerError(error.UnknownMessageType));
+    try std.testing.expect(isFatalPeerError(error.MessageTooLarge));
+    try std.testing.expect(isFatalPeerError(error.IncompleteHeader));
+    try std.testing.expect(isFatalPeerError(error.IncompletePayload));
+
+    // Still-unknown errors must not evict: the fail-open direction keeps a peer
+    // that could be healthy, at the cost of retrying a dead one until it
+    // reports EOF itself.
+    try std.testing.expect(!isFatalPeerError(error.OutOfMemory));
+    try std.testing.expect(!isTransientReadError(error.OutOfMemory));
 }

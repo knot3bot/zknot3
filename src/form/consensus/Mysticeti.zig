@@ -135,22 +135,29 @@ pub const Block = struct {
         self.votes.deinit(allocator);
     }
 
-    pub fn hasQuorum(self: Self, _: u128, threshold: u128) bool {
-        var stake_sum: u128 = 0;
+    /// Whether the votes gathered on this block carry quorum weight.
+    ///
+    /// `total_stake` is the active stake the quorum is measured against; it is
+    /// accepted positionally to match the historical signature. The decision
+    /// itself is delegated to `QuorumConfig.accepts` so the commit path
+    /// (`BlockCommit.hasQuorum`), `Mysticeti.hasQuorum` and this helper cannot
+    /// drift apart — they previously disagreed at the boundary, this using
+    /// `>=` where the others required strictly more than two thirds.
+    pub fn hasQuorum(self: Self, total_stake: u128, threshold: u128) bool {
+        _ = threshold; // superseded by total_stake
+        return QuorumConfig.accepts(gatheredStake(self), total_stake);
+    }
+
+    /// Total stake across this block's votes, saturating on overflow so a
+    /// malformed tally cannot wrap down to a small, quorum-passing number.
+    pub fn gatheredStake(self: Self) u128 {
+        var sum: u128 = 0;
         var it = self.votes.iterator();
         while (it.next()) |entry| {
-            stake_sum += entry.value_ptr.stake;
+            sum = std.math.add(u128, sum, entry.value_ptr.stake) catch
+                return std.math.maxInt(u128);
         }
-        // Avoid u128 overflow: stake_sum * 3 >= threshold * 2
-        // Equivalent to stake_sum >= ceil(threshold * 2 / 3) when no overflow,
-        // but we rewrite to use division first to stay safe.
-        // stake_sum * 3 >= threshold * 2  <=>  stake_sum / 2 >= threshold / 3 (not exact for ints)
-        // Safe form: 3 * stake_sum >= 2 * threshold.  Check each side for overflow.
-        if (stake_sum > std.math.maxInt(u128) / 3 or threshold > std.math.maxInt(u128) / 2) {
-            // In overflow territory, use saturated comparison via division
-            return stake_sum >= @divFloor(threshold * 2, 3);
-        }
-        return stake_sum * 3 >= threshold * 2;
+        return sum;
     }
 
     pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
@@ -1039,8 +1046,7 @@ pub const Mysticeti = struct {
 
     /// Check if a block has reached quorum for commit
     pub fn hasQuorum(self: *Self, block: *Block) bool {
-        const stake = computeStake(block);
-        return QuorumConfig.accepts(stake, self.total_stake);
+        return QuorumConfig.accepts(block.gatheredStake(), self.total_stake);
     }
 
     /// Get all blocks that have reached quorum for commit

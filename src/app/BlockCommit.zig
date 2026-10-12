@@ -15,14 +15,9 @@ pub const BlockMap = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block);
 /// replaces the wire value with the local stake pool's weight for the voter, so
 /// a peer cannot inflate its own contribution.
 pub fn gatheredStake(block: *const Mysticeti.Block) u128 {
-    var sum: u128 = 0;
-    var it = block.votes.iterator();
-    while (it.next()) |entry| {
-        // Saturating add: a malformed set of weights must not wrap to a small
-        // total and accidentally satisfy the threshold.
-        sum = std.math.add(u128, sum, entry.value_ptr.stake) catch return std.math.maxInt(u128);
-    }
-    return sum;
+    // Single implementation, owned by `Mysticeti.Block`; this module must not
+    // keep a second tally that can drift from the consensus-side one.
+    return block.gatheredStake();
 }
 
 /// Whether the votes gathered on `block` carry enough stake to commit.

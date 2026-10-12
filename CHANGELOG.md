@@ -29,6 +29,20 @@ All notable changes to zknot3 are documented here. The format follows
   counts advancing in step, and the WAN gate's commit progression roughly
   doubled (0 -> 16 -> 29 -> 44 before, 0 -> 29 -> 54 -> 87 after).
 
+- **A malformed frame could crash any node** — `Message.deserialize` converted
+  the peer-controlled type byte with `@fromBackingInt`, which panics on an
+  unknown value. Values 0 and 8 are unassigned, and anything above 11 was
+  fatal, so a single unauthenticated frame was a remote DoS. Unknown types are
+  now rejected with an error, and a peer that sends an unparseable frame is
+  disconnected rather than tolerated.
+
+- **An interrupted frame desynchronised the stream** — `recvMessage` read the
+  45-byte header and then the payload as two independent socket reads. If the
+  payload read hit `WouldBlock`, the header had already been consumed and was
+  discarded; the next call then parsed payload bytes as a header, permanently
+  misframing the connection. The partial header is now kept on the connection
+  and the read resumes from it.
+
 - **Commit quorum counted ballots, not stake** — `BlockCommit.hasQuorum` was
   `block.votes.count() >= vote_quorum`, so four validators holding 1% each
   cleared the same bar as one holding 90% and the BFT safety argument did not
@@ -58,6 +72,12 @@ All notable changes to zknot3 are documented here. The format follows
 
   Devnet validators now hold 2-3 peers each with committed-block counts tracking
   each other, and the fullnode holds 4.
+
+- **Two `hasQuorum` implementations disagreed at the boundary** — `Block.hasQuorum`
+  accepted `>= 2/3` while the commit path and `Mysticeti.hasQuorum` required
+  strictly more. All three now tally through one saturating
+  `Mysticeti.Block.gatheredStake` and decide through `QuorumConfig.accepts`, so
+  they cannot drift again.
 
 - **WAN gate could not detect a disconnected cluster** — every phase asserted on
   a single validator's `blocks_committed_total`, which kept advancing even when

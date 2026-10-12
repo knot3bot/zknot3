@@ -879,6 +879,14 @@ pub const PeerConnection = struct {
     reputation: i32 = 100,
     latency_ms: u64 = 0,
 
+    /// In-progress frame header. A header and its payload are two separate
+    /// socket reads, and the payload read can return `WouldBlock` after the
+    /// header has already been consumed. Without carrying the header across
+    /// calls the next attempt would parse payload bytes as a header and
+    /// permanently desynchronise the stream. `recvMessage` resumes from here.
+    read_header: [Message.HEADER_SIZE]u8 = undefined,
+    read_header_len: usize = 0,
+
     pub const State = enum {
         handshaking,
         connected,
@@ -1115,18 +1123,33 @@ pub const PeerConnection = struct {
     }
 
     pub fn recvMessage(self: *Self) !?Message {
-        // Read header first (45 bytes)
-        var header_buf: [45]u8 = undefined;
-        const bytes_read = streamReadShort(self.conn, &header_buf) catch |err| {
-            if (err == error.WouldBlock) return error.WouldBlock;
-            return err;
-        };
-        if (bytes_read == 0) return null; // EOF
-        if (bytes_read < 45) return error.IncompleteHeader;
+        // Accumulate a full header, resuming a partial one from a previous call.
+        while (self.read_header_len < Message.HEADER_SIZE) {
+            const n = streamReadShort(
+                self.conn,
+                self.read_header[self.read_header_len..],
+            ) catch |err| {
+                if (err == error.WouldBlock) return error.WouldBlock;
+                // Stream unusable: forget the partial frame.
+                self.read_header_len = 0;
+                return err;
+            };
+            if (n == 0) {
+                self.read_header_len = 0;
+                return null; // EOF
+            }
+            self.read_header_len += n;
+        }
 
+        const header_buf = self.read_header;
         // Parse header to get payload length
         const payload_len = std.mem.readInt(u32, header_buf[41..45], .big);
-        if (payload_len > self.max_message_size) return error.MessageTooLarge;
+        if (payload_len > self.max_message_size) {
+            self.read_header_len = 0;
+            return error.MessageTooLarge;
+        }
+        // The header is fully consumed from here on.
+        self.read_header_len = 0;
 
         // Read payload
         if (payload_len > 0) {

@@ -73,7 +73,25 @@ pub const Message = struct {
 
         var offset: usize = 0;
 
-        const msg_type = @as(MessageType, @fromBackingInt(@intCast(buf[offset])));
+        // A peer controls this byte. `@fromBackingInt` panics on an unknown
+        // value, so a single malformed (or hostile) frame would abort the node
+        // -- a remote DoS that needs no authentication. Zig 0.17 has no
+        // fallible int-to-enum helper, so map explicitly; note 0 and 8 are
+        // deliberately unassigned and must be rejected too.
+        const raw_type: u8 = buf[offset];
+        const msg_type: MessageType = switch (raw_type) {
+            1 => .transaction,
+            2 => .block,
+            3 => .certificate,
+            4 => .consensus,
+            5 => .rpc_request,
+            6 => .rpc_response,
+            7 => .checkpoint,
+            9 => .ping,
+            10 => .pong,
+            11 => .handshake,
+            else => return error.UnknownMessageType,
+        };
         offset += 1;
 
         const sender = buf[offset..][0..32].*;
@@ -392,4 +410,71 @@ test "Transport stats" {
     const stats = transport.stats();
     try std.testing.expect(stats.active_connections == 0);
     try std.testing.expect(stats.total_connections == 0);
+}
+
+test "Message.deserialize rejects unknown message types instead of panicking" {
+    const allocator = std.testing.allocator;
+
+    // Every valid type round-trips with its byte preserved.
+    const valid = [_]MessageType{
+        .transaction,  .block,      .certificate, .consensus, .rpc_request,
+        .rpc_response, .checkpoint, .ping,        .pong,      .handshake,
+    };
+    for (valid) |t| {
+        const msg = Message{
+            .msg_type = t,
+            .sender = @splat(0),
+            .sequence = 0,
+            .payload = &.{},
+        };
+        const bytes = try msg.serialize(allocator);
+        defer allocator.free(bytes);
+        try std.testing.expectEqual(@as(u8, @backingInt(t)), bytes[0]);
+        const back = try Message.deserialize(allocator, bytes);
+        defer allocator.free(back.payload);
+        try std.testing.expectEqual(t, back.msg_type);
+    }
+
+    // A peer controls byte 0. Values outside the assigned set must be refused.
+    // `@fromBackingInt` panics on these, which made a single malformed frame a
+    // remote DoS. 0 and 8 are gaps in the enum, so they must fail as well.
+    const hostile = [_]u8{ 0, 8, 12, 99, 128, 255 };
+    for (hostile) |raw| {
+        var frame: [Message.HEADER_SIZE]u8 = undefined;
+        frame[0] = raw;
+        @memset(frame[1..], 0);
+        try std.testing.expectError(
+            error.UnknownMessageType,
+            Message.deserialize(allocator, &frame),
+        );
+    }
+}
+
+test "partial frame state round-trips through the header buffer" {
+    // `PeerConnection.recvMessage` keeps a partially-read header in
+    // `read_header`/`read_header_len` so an interrupted frame resumes instead of
+    // the stream desynchronising. This exercises the buffer arithmetic those
+    // two fields encode: a header delivered in two TCP segments must reassemble
+    // byte-for-byte.
+    var header: [Message.HEADER_SIZE]u8 = undefined;
+    var have: usize = 0;
+
+    // First segment: 10 bytes.
+    const first = [_]u8{ 2, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    @memcpy(header[have..][0..first.len], &first);
+    have += first.len;
+    try std.testing.expectEqual(@as(usize, 10), have);
+
+    // Second segment completes the header. payload_len lives at [41..45].
+    const second = @as([Message.HEADER_SIZE - 10]u8, @splat(0));
+    @memcpy(header[have..], &second);
+    have = Message.HEADER_SIZE;
+
+    const payload_len = std.mem.readInt(u32, header[41..45], .big);
+    try std.testing.expectEqual(@as(u32, 0), payload_len);
+
+    // The reassembled header must deserialize as a frame.
+    const msg = try Message.deserialize(std.testing.allocator, &header);
+    defer std.testing.allocator.free(msg.payload);
+    try std.testing.expectEqual(MessageType.block, msg.msg_type);
 }
