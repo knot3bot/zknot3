@@ -39,16 +39,6 @@ jobs:
       - name: Run integration tests
         run: zig build test-integration -Doptimize=Debug
 
-      - name: Isolate m4_adversarial failure
-        if: failure()
-        run: |
-          # The build runner's --listen protocol cannot filter by test name (a
-          # filter matching nothing still reports success), so isolating one
-          # test needs a dedicated root module: `zig build isolate-m4`.
-          echo "::group::isolated single-file run"
-          zig build isolate-m4 --summary all 2>&1 | tail -40 || true
-          echo "::endgroup::"
-
       - name: Quorum single-source gate
         run: bash tools/quorum_single_source_gate.sh
 
