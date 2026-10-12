@@ -62,6 +62,7 @@ pub fn tryCommitOne(
     allocator: std.mem.Allocator,
     pending_blocks: *BlockCommit.BlockMap,
     committed_blocks: *BlockCommit.BlockMap,
+    total_stake: u128,
     vote_quorum: usize,
     max_committed_blocks: usize,
     on_quorum_block: OnQuorumBlockFn,
@@ -70,7 +71,7 @@ pub fn tryCommitOne(
     var it = pending_blocks.iterator();
     while (it.next()) |entry| {
         const block = entry.value_ptr.*;
-        if (!BlockCommit.hasQuorum(&block, vote_quorum)) continue;
+        if (!BlockCommit.hasQuorum(&block, total_stake, vote_quorum)) continue;
 
         on_quorum_block(on_quorum_ctx, &block);
 
@@ -108,6 +109,7 @@ pub fn tryCommitBatch(
     allocator: std.mem.Allocator,
     pending_blocks: *BlockCommit.BlockMap,
     committed_blocks: *BlockCommit.BlockMap,
+    total_stake: u128,
     vote_quorum: usize,
     max_committed_blocks: usize,
     on_quorum_block: OnQuorumBlockFn,
@@ -123,6 +125,7 @@ pub fn tryCommitBatch(
             allocator,
             pending_blocks,
             committed_blocks,
+            total_stake,
             vote_quorum,
             max_committed_blocks,
             on_quorum_block,

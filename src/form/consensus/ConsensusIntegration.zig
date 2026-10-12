@@ -222,7 +222,17 @@ pub const ConsensusIntegration = struct {
     }
 
     fn createAndBroadcastVote(self: *Self, block: *const Mysticeti.Block) !void {
-        const stake: u128 = 1000;
+        // Report this validator's real weight rather than a fixed constant, so
+        // the receiving side can tally stake meaningfully. The receiver
+        // overwrites this with its own stake pool anyway -- the wire value is
+        // untrusted -- but sending the true value keeps the value that lands in
+        // local logs and any future BLS-aggregation path honest.
+        const stake_pool = self.node.stake_pool orelse return error.NoStakePool;
+        const voting_power = stake_pool.getVotingPower(self.validator_id);
+        if (voting_power == 0) {
+            Log.warn("No stake for validator {}; refusing to vote", .{self.validator_id[0]});
+            return error.UnknownValidatorStake;
+        }
 
         var message: [40]u8 = undefined;
         std.mem.writeInt(u64, message[0..8], block.round.value, .big);
@@ -233,7 +243,7 @@ pub const ConsensusIntegration = struct {
 
         const vote = Mysticeti.Vote{
             .voter = self.validator_id,
-            .stake = stake,
+            .stake = voting_power,
             .round = block.round,
             .block_digest = block.digest,
             .signature = sig,

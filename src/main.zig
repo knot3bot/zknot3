@@ -388,13 +388,12 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     if (node.getP2PServer()) |p2p| {
-        // Derive validator public key from signing_key seed
         const validator_key = if (config.authority.signing_key) |sk| sk else @as([32]u8, @splat(0));
-        const real_kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(validator_key) catch |err| {
-            Log.err("[ERR] Failed to derive validator key: {}", .{err});
-            return;
-        };
-        const validator_id = real_kp.public_key.toBytes();
+        // Identity must come from the genesis validator table, because that is
+        // what `stake_pool` is keyed by. Deriving it from `signing_key` instead
+        // yielded an id absent from the pool, so the node's own voting weight
+        // read as zero and it never voted.
+        const validator_id = node.selfValidatorId(validator_key);
         const validator_index = config.authority.validator_index;
         consensus_integration = ConsensusIntegration.init(allocator, node, p2p, validator_id, validator_key, validator_index) catch null;
         if (consensus_integration) |_| {

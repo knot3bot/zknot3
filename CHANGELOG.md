@@ -29,6 +29,36 @@ All notable changes to zknot3 are documented here. The format follows
   counts advancing in step, and the WAN gate's commit progression roughly
   doubled (0 -> 16 -> 29 -> 44 before, 0 -> 29 -> 54 -> 87 after).
 
+- **Commit quorum counted ballots, not stake** — `BlockCommit.hasQuorum` was
+  `block.votes.count() >= vote_quorum`, so four validators holding 1% each
+  cleared the same bar as one holding 90% and the BFT safety argument did not
+  hold on the commit path. It now tallies stake against `QuorumConfig`
+  (`> 2/3 of total`), keeping `vote_quorum` as a floor on distinct voters so a
+  single holder cannot commit alone on an under-populated stake table. A missing
+  stake table fails closed. `CommitCertificate.quorum_stake` reports the stake
+  that actually gathered instead of `votes.count() * 1000`.
+
+- **A vote's weight was whatever the sender claimed** — `Vote.stake` travels on
+  the wire and is covered by the vote signature, which proves only *who* sent it,
+  not *how much* they are worth. Any peer could claim an arbitrary weight and
+  manufacture a quorum alone. `receiveVote` now discards the wire value and
+  substitutes the local stake pool's weight for that validator, dropping votes
+  from validators it has no stake for.
+
+- **Validator identity did not match the stake table** — `known_validators[i]
+  .public_key_hex` keys `stake_pool`, but the consensus identity was derived
+  from `authority.signing_key`, so a node's own id was never in the pool: its
+  weight read as zero and it refused to vote. `Node.selfValidatorId` now takes
+  the identity from the genesis table (falling back to the derived key when no
+  genesis table is configured), and the devnet configs list the public keys
+  their signing keys actually derive. The fullnode's `bootstrap_peers` also used
+  Docker service names, which `P2PServer.dial` cannot resolve — it resolves IP
+  literals only — so the fullnode had never dialled anyone; it now uses the
+  pinned addresses.
+
+  Devnet validators now hold 2-3 peers each with committed-block counts tracking
+  each other, and the fullnode holds 4.
+
 - **WAN gate could not detect a disconnected cluster** — every phase asserted on
   a single validator's `blocks_committed_total`, which kept advancing even when
   `peers` was 0 (each node proposed and voted for itself). The gate therefore

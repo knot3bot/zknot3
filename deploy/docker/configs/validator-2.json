@@ -15,22 +15,22 @@
     "max_connections": 256,
     "known_validators": [
       {
-        "public_key_hex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "public_key_hex": "6ee091fd280a9b68554fa73c588125d47d3425c68a26ba236b4dad90f90a8f92",
         "name": "Validator 1",
         "stake": 1000000000000
       },
       {
-        "public_key_hex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "public_key_hex": "41e8fde132ad670e534cd8b275d2cd7eec77733c66f8db48a1cada7fabfc4555",
         "name": "Validator 2",
         "stake": 1000000000000
       },
       {
-        "public_key_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "public_key_hex": "b4740ba4e0f7e0576f11e8149dbbb2529c212213db679831fb5d1b221e84552d",
         "name": "Validator 3",
         "stake": 1000000000000
       },
       {
-        "public_key_hex": "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "public_key_hex": "ed3234b276d4ceda57d59bad14fbaf5a773c0f318c999de3a60d53c5a5b34c05",
         "name": "Validator 4",
         "stake": 1000000000000
       }

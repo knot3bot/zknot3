@@ -294,7 +294,15 @@ pub const TestCluster = struct {
             // the derived validator ids unique.
             // 64 hex digits = 32-byte validator id. `Node.init` parses this as
             // a u256 and writes it big-endian into the id.
-            const hex = try std.fmt.allocPrint(allocator, "{x:0>64}", .{@as(u64, g + 1)});
+            // `known_validators[i].public_key_hex` must be the validator's
+            // actual Ed25519 public key -- that is what `stake_pool` is keyed by
+            // and what `receiveVote` resolves a voter's weight from. Deriving it
+            // from the same seed the validator signs with keeps a single
+            // identity across the genesis table, the stake pool and the votes.
+            const keys = validatorKey(@intCast(g));
+            var hex_buf: [64]u8 = undefined;
+            const written = std.fmt.bufPrint(&hex_buf, "{x}", .{keys.pubkey[0..]}) catch return error.NoSpaceLeft;
+            const hex = try allocator.dupe(u8, written);
             hex_bufs[g] = hex;
             genesis[g] = .{ .public_key_hex = hex, .name = "", .stake = genesis_stake };
         }
@@ -519,13 +527,11 @@ test "cluster: TestNode config satisfies Config.validate" {
 
 /// Deterministic Ed25519 keypair for validator `idx`.
 fn validatorKey(idx: u8) struct { pubkey: [32]u8, privkey: [32]u8 } {
-    var seed: [32]u8 = @splat(0);
-    seed[0] = idx + 1;
-    seed[31] = 0xA5;
-    const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed) catch unreachable;
-    // `SecretKey.bytes` is 64 bytes; the leading 32 are the seed that
-    // `property/Signature.Ed25519.sign` expects.
-    const priv: [32]u8 = kp.secret_key.bytes[0..32].*;
+    // Must match how the test cluster builds its genesis table: seed `i+1`
+    // repeated, whose derived public key is `known_validators[i]`. `Seed` is
+    // `@splat(idx + 1)` so both sides agree.
+    const priv: [32]u8 = @splat(idx + 1);
+    const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(priv) catch unreachable;
     return .{ .pubkey = kp.public_key.toBytes(), .privkey = priv };
 }
 
@@ -575,11 +581,16 @@ test "cluster: 4 validators start on distinct ports with distinct identities" {
 /// Build a signed vote for `block` from validator `idx`, using the same
 /// signing message and 96-byte field convention as `Mysticeti.createVote`.
 fn makeVote(
-    idx: u8,
-    stake: u128,
+    node: *TestNode,
+    idx: usize,
     block: *const Mysticeti.Block,
 ) !Mysticeti.Vote {
-    const keys = validatorKey(idx);
+    // The voter id must be the genesis id: `receiveVote` now resolves each
+    // voter's weight from the stake pool, which is keyed by
+    // `known_validators[i].public_key_hex`. A freshly derived keypair id would
+    // carry zero weight and be dropped.
+    const voter = node.node.genesisValidatorId(idx) orelse return error.TestUnexpectedResult;
+    const keys = validatorKey(@intCast(idx));
     const message = Mysticeti.QuorumCertificate.signedMessage(block.round, block.digest);
     // Sign through the project's own Ed25519 wrapper -- the same primitive
     // `Vote.verifySignature` checks against.
@@ -587,8 +598,8 @@ fn makeVote(
     var wide: [96]u8 = @splat(0);
     @memcpy(wide[0..64], &ed);
     return Mysticeti.Vote{
-        .voter = keys.pubkey,
-        .stake = stake,
+        .voter = voter,
+        .stake = 0, // overwritten by the receiver with the authoritative weight
         .round = block.round,
         .block_digest = block.digest,
         .signature = wide,
@@ -624,7 +635,7 @@ test "cluster: a block proposed and voted by 3 of 4 validators reaches quorum" {
     var accepted: usize = 0;
     var rejected: usize = 0;
     for (0..3) |i| {
-        const vote = try makeVote(@intCast(i), stake_each, block);
+        const vote = try makeVote(proposer, i, block);
         // Must pass the node's own signature check.
         try std.testing.expect(vote.verifySignature());
 
@@ -707,7 +718,7 @@ test "cluster: a vote from an unknown signature is rejected by every node" {
     }
 
     // Forge a vote: correct shape, valid stake, but signed by the wrong key.
-    var forged = try makeVote(0, 1000, block);
+    var forged = try makeVote(proposer, 0, block);
     forged.voter = @splat(0xEE);
     // Self-check must fail: the signature does not match the claimed voter.
     try std.testing.expect(!forged.verifySignature());
@@ -757,11 +768,10 @@ test "cluster: an equivocating voter yields equivocation evidence" {
     try proposer.node.receiveBlock(b_bytes);
 
     // The same validator signs both forks in the same round.
-    const stake: u128 = 1000;
-    const vote_a = try makeVote(0, stake, block_a);
+    const vote_a = try makeVote(proposer, 0, block_a);
     const a_vote = try vote_a.serialize(node_allocator);
     defer node_allocator.free(a_vote);
-    const vote_b = try makeVote(0, stake, &block_b);
+    const vote_b = try makeVote(proposer, 0, &block_b);
     const b_vote = try vote_b.serialize(node_allocator);
     defer node_allocator.free(b_vote);
 

@@ -240,6 +240,9 @@ pub const Node = struct {
 
         self_ptr.epoch_manager = epoch_manager;
         self_ptr.stake_pool = stake_pool;
+        // Publish the pool so `votingPowerOf` (a free function, required by the
+        // ingress API) can resolve authoritative vote weights.
+        active_stake_pool = stake_pool;
         self_ptr.quorum = quorum;
         self_ptr.epoch_bridge = epoch_bridge;
         self_ptr.deps.epoch_bridge = epoch_bridge;
@@ -281,6 +284,7 @@ pub const Node = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (active_stake_pool == self.stake_pool) active_stake_pool = null;
         self.state = .shutting_down;
         if (self.object_store) |store| {
             store.deinit();
@@ -609,8 +613,22 @@ pub const Node = struct {
             &self.pending_blocks,
             &self.committed_blocks,
             vote_data,
+            &votingPowerOf,
         );
     }
+
+    /// Authoritative voting weight for a validator id, read from the genesis
+    /// stake pool. Passed to vote ingress so a vote's weight comes from local
+    /// state rather than from the wire.
+    fn votingPowerOf(validator: [32]u8) u128 {
+        const pool = active_stake_pool orelse return 0;
+        return pool.getVotingPower(validator);
+    }
+
+    /// Set by `Node.init` so `votingPowerOf` (a free function, as the ingress
+    /// API requires) can reach this node's stake pool. A process hosts exactly
+    /// one node, so a single pointer is unambiguous.
+    threadlocal var active_stake_pool: ?*StakePool = null;
 
     pub fn tryCommitBlocks(self: *Self) !?Mysticeti.CommitCertificate {
         if (self.state != .running) return error.NotRunning;
@@ -650,6 +668,7 @@ pub const Node = struct {
             self.allocator,
             &self.pending_blocks,
             &self.committed_blocks,
+            self.totalStakeForQuorum(),
             self.config.consensus.vote_quorum,
             self.config.consensus.max_committed_blocks,
             onQuorumBlock,
@@ -666,6 +685,41 @@ pub const Node = struct {
     /// `on_cert` for each committed certificate. Returns the number of blocks
     /// committed. Used by the adaptive commit loop to avoid one-by-one
     /// drain + scheduler hops under bursty load.
+    /// Resolve the canonical id for the i-th genesis validator.
+    ///
+    /// Vote weights and `stake_pool` keys are both derived from
+    /// `known_validators[i].public_key_hex`. The validator identity used by
+    /// consensus must therefore come from the same place -- deriving it from
+    /// `authority.signing_key` instead produced an id that was never in the
+    /// stake pool, so the node's own weight looked like zero and it refused to
+    /// vote. Returns null when the index is out of range or the hex is invalid.
+    pub fn genesisValidatorId(self: *const Self, index: usize) ?[32]u8 {
+        const kv = self.config.network.known_validators;
+        if (index >= kv.len) return null;
+        const pk = std.fmt.parseInt(u256, kv[index].public_key_hex, 16) catch return null;
+        var id: [32]u8 = undefined;
+        std.mem.writeInt(u256, &id, pk, .big);
+        return id;
+    }
+
+    /// The id this node should vote as: the genesis entry that matches its own
+    /// configured `validator_index`, falling back to the id derived from its
+    /// signing key when no genesis table is configured.
+    pub fn selfValidatorId(self: *const Self, signing_key: [32]u8) [32]u8 {
+        if (self.genesisValidatorId(self.config.authority.validator_index)) |id| return id;
+        const kp = std.crypto.sign.Ed25519.KeyPair.generateDeterministic(signing_key) catch
+            return @as([32]u8, @splat(0));
+        return kp.public_key.toBytes();
+    }
+
+    /// Total stake the quorum threshold is measured against. Read from the
+    /// genesis-backed stake pool; 0 means "no stake table", which makes every
+    /// stake-weighted quorum check fail closed.
+    pub fn totalStakeForQuorum(self: *const Self) u128 {
+        const pool = self.stake_pool orelse return 0;
+        return pool.getTotalStake();
+    }
+
     pub fn tryCommitBlocksBatch(
         self: *Self,
         max_batch: usize,
@@ -722,6 +776,7 @@ pub const Node = struct {
             self.allocator,
             &self.pending_blocks,
             &self.committed_blocks,
+            self.totalStakeForQuorum(),
             self.config.consensus.vote_quorum,
             self.config.consensus.max_committed_blocks,
             onQuorumBlock,
