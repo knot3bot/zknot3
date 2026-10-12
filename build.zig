@@ -72,6 +72,23 @@ pub fn build(b: *std.Build) void {
     });
     const run_all_tests = b.addRunArtifact(all_tests);
 
+    // Single-file isolation for the m4_adversarial recovery test. The build
+    // runner's --listen protocol cannot filter by test name (a filter that
+    // matches nothing still reports success), so isolating a test requires a
+    // dedicated root module. Wired through build.zig rather than a hand-written
+    // `zig test` command so the anonymous imports match the main suite.
+    const isolate_m4_module = b.createModule(.{
+        .root_source_file = b.path("isolate_m4.zig"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    WireImports.attach(isolate_m4_module, b, blst_mod);
+    const isolate_m4 = b.addTest(.{ .root_module = isolate_m4_module });
+    const run_isolate_m4 = b.addRunArtifact(isolate_m4);
+    const isolate_m4_step = b.step("isolate-m4", "Run only the m4_adversarial recovery test");
+    isolate_m4_step.dependOn(&run_isolate_m4.step);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_all_tests.step);
 

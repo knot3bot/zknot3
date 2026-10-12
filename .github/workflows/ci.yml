@@ -42,16 +42,11 @@ jobs:
       - name: Isolate m4_adversarial failure
         if: failure()
         run: |
-          # A test-name filter does not work under the build runner's --listen
-          # protocol (a filter matching nothing still reports success), so
-          # build a dedicated root that pulls in only this one test file.
-          echo 'comptime { _ = @import("test/integration/m4_adversarial_recovery_test.zig"); }' > isolate_m4.zig
+          # The build runner's --listen protocol cannot filter by test name (a
+          # filter matching nothing still reports success), so isolating one
+          # test needs a dedicated root module: `zig build isolate-m4`.
           echo "::group::isolated single-file run"
-          zig test -Mroot=isolate_m4.zig \
-            --dep io_instance -Mio_instance=src/io_instance.zig \
-            --dep blst -Mblst=zig-pkg/blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts/bindings/zig/blst.zig \
-            -lc 2>&1 | tail -30 || true
-          rm -f isolate_m4.zig
+          zig build isolate-m4 --summary all 2>&1 | tail -40 || true
           echo "::endgroup::"
 
       - name: Quorum single-source gate
