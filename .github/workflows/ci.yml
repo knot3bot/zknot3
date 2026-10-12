@@ -42,11 +42,19 @@ jobs:
       - name: Isolate m4_adversarial failure
         if: failure()
         run: |
-          echo "::group::isolated run"
-          zig build test-integration -Doptimize=Debug -- "M4 recovery: recoverFromDisk then replayMainnetM4Wal restores M4 totals" || true
+          # A test-name filter does not work under the build runner's --listen
+          # protocol (a filter matching nothing still reports success), so
+          # build a dedicated root that pulls in only this one test file.
+          printf 'comptime { _ = @import("test/integration/m4_adversarial_recovery_test.zig"); }
+' > /tmp/only_m4.zig
+          cp /tmp/only_m4.zig isolate_m4.zig
+          echo "::group::isolated single-file run"
+          zig test -Mroot=isolate_m4.zig \
+            --dep io_instance -Mio_instance=src/io_instance.zig \
+            --dep blst -Mblst=zig-pkg/blst-0.3.16-fvxk1cQ7MADXoMijmUkSjmt0wXV-piV7weQEgHI-K_ts/bindings/zig/blst.zig \
+            -lc 2>&1 | tail -30 || true
+          rm -f isolate_m4.zig
           echo "::endgroup::"
-          ls -la test_tmp/ 2>/dev/null || echo "no test_tmp"
-          ls -laR test_tmp/ 2>/dev/null | head -40
 
       - name: Quorum single-source gate
         run: bash tools/quorum_single_source_gate.sh
