@@ -353,8 +353,8 @@ pub const P2PServer = struct {
         const peer_id = self.next_peer_id;
         self.next_peer_id += 1;
 
-        // Set short read timeout BEFORE handshake so a stalled peer doesn't freeze the loop
-        setPeerTimeout(conn);
+        // Handshake needs a multi-RTT budget; publishPeer restores the short one.
+        setHandshakeTimeout(conn);
 
         const peer_conn = PeerConnection.init(self.allocator, peer_id, conn) catch |err| {
             conn.close(@import("io_instance").io);
@@ -443,6 +443,10 @@ pub const P2PServer = struct {
         }
 
         const peer_key = peer_conn.peer_key;
+        // Handshake is done: the long handshake budget must not linger, or a
+        // silent peer would keep the socket blocked for seconds instead of
+        // letting the event loop reap it promptly.
+        setPeerTimeout(peer_conn.conn);
         try self.peers.put(self.allocator, peer_key, peer_conn);
         errdefer _ = self.peers.swapRemove(peer_key);
         try self.peer_rate_states.put(self.allocator, peer_key, .{});
@@ -759,8 +763,8 @@ pub const P2PServer = struct {
             const stream = try resolved_addr.connect(@import("io_instance").io, .{ .mode = .stream });
             const conn = stream;
 
-            // Set short read timeout BEFORE handshake
-            setPeerTimeout(conn);
+            // Handshake needs a multi-RTT budget; publishPeer restores the short one.
+            setHandshakeTimeout(conn);
 
             const peer_conn = PeerConnection.init(self.allocator, self.next_peer_id, conn) catch |err| {
                 conn.close(@import("io_instance").io);
@@ -791,11 +795,21 @@ pub const P2PServer = struct {
         try self.dial(address, peer_key);
     }
 
-    fn setPeerTimeout(stream: std.Io.net.Stream) void {
+    /// Steady-state socket timeout for a published peer: short enough that the
+    /// event loop notices a dead peer promptly.
+    const PEER_IO_TIMEOUT_US: u32 = 100_000; // 100ms
+
+    /// Timeout for a connection still running its handshake. The handshake is
+    /// three sequential round-trips, so it needs a budget that survives a WAN
+    /// link: the WAN gate injects 80ms +/- 10ms one-way delay, and the 100ms
+    /// peer timeout expired mid-handshake, failing every link with `Unexpected`.
+    const HANDSHAKE_IO_TIMEOUT_US: u32 = 5_000_000; // 5s
+
+    fn setSocketTimeout(stream: std.Io.net.Stream, us: u32) void {
         const timeout: std.posix.timeval = if (@hasField(std.posix.timeval, "tv_sec"))
-            .{ .tv_sec = 0, .tv_usec = 100000 } // 100ms
+            .{ .tv_sec = @intCast(us / 1_000_000), .tv_usec = @intCast(us % 1_000_000) }
         else
-            .{ .sec = 0, .usec = 100000 };
+            .{ .sec = @intCast(us / 1_000_000), .usec = @intCast(us % 1_000_000) };
         std.posix.setsockopt(
             stream.socket.handle,
             std.posix.SOL.SOCKET,
@@ -812,6 +826,16 @@ pub const P2PServer = struct {
         ) catch |err| {
             Log.warn("[WARN] P2PServer failed to set send timeout: {}", .{err});
         };
+    }
+
+    fn setPeerTimeout(stream: std.Io.net.Stream) void {
+        setSocketTimeout(stream, PEER_IO_TIMEOUT_US);
+    }
+
+    /// Applied while a handshake is in flight; the peer drops back to
+    /// `setPeerTimeout` once it is published.
+    fn setHandshakeTimeout(stream: std.Io.net.Stream) void {
+        setSocketTimeout(stream, HANDSHAKE_IO_TIMEOUT_US);
     }
 
     fn isPeerConnectedByAddress(self: *Self, address: []const u8) bool {
