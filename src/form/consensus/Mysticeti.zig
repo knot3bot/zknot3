@@ -161,6 +161,8 @@ pub const Block = struct {
     }
 
     pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        if (self.payload.len > std.math.maxInt(u32) or self.parents.len > std.math.maxInt(u32)) return error.BlockTooLarge;
+
         var buf = try std.ArrayList(u8).initCapacity(allocator, 256);
         errdefer buf.deinit(allocator);
 
@@ -202,21 +204,26 @@ pub const Block = struct {
 
         const payload_len = std.mem.readInt(u32, data[offset..][0..4], .big);
         offset += 4;
-        if (offset + payload_len > data.len) return error.InvalidFormat;
+        const payload_end = std.math.add(usize, offset, payload_len) catch return error.InvalidFormat;
+        if (payload_end > data.len) return error.InvalidFormat;
         const payload = try allocator.dupe(u8, data[offset..][0..payload_len]);
-        offset += payload_len;
+        errdefer allocator.free(payload);
+        offset = payload_end;
 
         if (offset + 4 > data.len) return error.InvalidFormat;
         const parents_len = std.mem.readInt(u32, data[offset..][0..4], .big);
         offset += 4;
-        if (offset + parents_len * 8 > data.len) return error.InvalidFormat;
+        const parents_bytes = std.math.mul(usize, parents_len, 8) catch return error.InvalidFormat;
+        const parents_end = std.math.add(usize, offset, parents_bytes) catch return error.InvalidFormat;
+        const digest_end = std.math.add(usize, parents_end, 32) catch return error.InvalidFormat;
+        if (digest_end > data.len) return error.InvalidFormat;
         const parents = try allocator.alloc(Round, parents_len);
+        errdefer allocator.free(parents);
         for (0..parents_len) |i| {
             parents[i] = Round{ .value = std.mem.readInt(u64, data[offset..][0..8], .big) };
             offset += 8;
         }
 
-        if (offset + 32 > data.len) return error.InvalidFormat;
         const digest = data[offset..][0..32].*;
 
         return Self{
@@ -308,8 +315,10 @@ pub const EquivocationEvidence = struct {
 
     const Self = @This();
 
+    pub const wire_magic = "k3eq01";
+
     pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        var buf = try std.ArrayList(u8).initCapacity(allocator, 232);
+        var buf = try std.ArrayList(u8).initCapacity(allocator, 296);
         try buf.appendSlice(allocator, &self.voter);
         var round_bytes: [8]u8 = undefined;
         std.mem.writeInt(u64, &round_bytes, self.round.value, .big);
@@ -322,7 +331,8 @@ pub const EquivocationEvidence = struct {
     }
 
     pub fn deserialize(_: std.mem.Allocator, data: []const u8) !Self {
-        if (data.len < 232) return error.InvalidFormat;
+        // 32 + 8 + 32 + 32 + 96 + 96. Both signatures are the full vote field.
+        if (data.len < 296) return error.InvalidFormat;
         var offset: usize = 0;
         const voter = data[offset..][0..32].*;
         offset += 32;
@@ -332,9 +342,9 @@ pub const EquivocationEvidence = struct {
         offset += 32;
         const conflicting_block_digest = data[offset..][0..32].*;
         offset += 32;
-        const first_signature = data[offset..][0..64].*;
-        offset += 64;
-        const conflicting_signature = data[offset..][0..64].*;
+        const first_signature = data[offset..][0..96].*;
+        offset += 96;
+        const conflicting_signature = data[offset..][0..96].*;
         return .{
             .voter = voter,
             .round = round,
@@ -343,6 +353,37 @@ pub const EquivocationEvidence = struct {
             .first_signature = first_signature,
             .conflicting_signature = conflicting_signature,
         };
+    }
+
+    pub fn serializeWire(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        const body = try self.serialize(allocator);
+        defer allocator.free(body);
+        var out = try std.ArrayList(u8).initCapacity(allocator, wire_magic.len + body.len);
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, wire_magic);
+        try out.appendSlice(allocator, body);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn deserializeWire(_: std.mem.Allocator, data: []const u8) !Self {
+        if (data.len < wire_magic.len + 296) return error.InvalidFormat;
+        if (!std.mem.eql(u8, data[0..wire_magic.len], wire_magic)) return error.InvalidFormat;
+        return deserialize(undefined, data[wire_magic.len..]);
+    }
+
+    /// Both votes must be Ed25519 signatures by `voter` over different blocks.
+    pub fn signaturesHold(self: Self) bool {
+        if (std.mem.eql(u8, &self.first_block_digest, &self.conflicting_block_digest)) return false;
+        return ed25519Vote(self.voter, self.round, self.first_block_digest, self.first_signature) and
+            ed25519Vote(self.voter, self.round, self.conflicting_block_digest, self.conflicting_signature);
+    }
+
+    fn ed25519Vote(voter: [32]u8, round: Round, block_digest: [32]u8, signature: [96]u8) bool {
+        const Ed25519 = @import("../../property/Signature.zig").Ed25519;
+        const message = QuorumCertificate.signedMessage(round, block_digest);
+        var ed_sig: [64]u8 = undefined;
+        @memcpy(&ed_sig, signature[0..64]);
+        return Ed25519.verify(voter, &message, ed_sig);
     }
 };
 
@@ -773,6 +814,7 @@ pub const Mysticeti = struct {
 
     pub fn receiveVote(self: *Self, vote: Vote) !void {
         if (!self.verifyIncomingVote(&vote)) return;
+        if (self.memberIsSuspended(vote.voter)) return;
         if (self.lookupBlock(vote.block_digest)) |blk| {
             // Check for equivocation: same voter, same round, different block
             if (blk.votes.get(vote.voter)) |existing| {
@@ -786,6 +828,7 @@ pub const Mysticeti = struct {
 
     pub fn processVote(self: *Self, vote: Vote) !void {
         if (!self.verifyIncomingVote(&vote)) return;
+        if (self.memberIsSuspended(vote.voter)) return;
         if (self.lookupBlock(vote.block_digest)) |blk| {
             if (blk.votes.get(vote.voter)) |_| return;
             try blk.votes.put(self.allocator, vote.voter, vote);
@@ -795,6 +838,15 @@ pub const Mysticeti = struct {
 
     /// Signature check for an incoming vote: BLS under the voter's
     /// registered key when operating in aggregation mode, Ed25519 otherwise.
+    /// A known quorum member with `is_active == false` is jailed. Unknown ids
+    /// are left to the existing signature check.
+    fn memberIsSuspended(self: *const Self, id: [32]u8) bool {
+        for (self.quorum.members.items) |member| {
+            if (std.mem.eql(u8, &member.id, &id)) return !member.is_active;
+        }
+        return false;
+    }
+
     fn verifyIncomingVote(self: *Self, vote: *const Vote) bool {
         const bls_pk: ?Bls.PublicKey = if (self.use_bls_aggregation) self.bls_keys.get(vote.voter) else null;
         return vote.verifySignatureWith(bls_pk);
@@ -890,8 +942,7 @@ pub const Mysticeti = struct {
         };
 
         // Skip the stalled round and enter the next view.
-        self.current_round.value += 1;
-        self.current_round.view += 1;
+        try self.bumpRound(true);
         self.round_start_time = 0;
         self.timeout_votes.clearRetainingCapacity();
         return cert;
@@ -1018,9 +1069,19 @@ pub const Mysticeti = struct {
         return null;
     }
 
-    pub fn advanceRound(self: *Self) void {
-        self.current_round.value += 1;
+    pub fn advanceRound(self: *Self) error{ArithmeticOverflow}!void {
+        try self.bumpRound(false);
         self.timeout_votes.clearRetainingCapacity();
+    }
+
+    fn bumpRound(self: *Self, bump_view: bool) error{ArithmeticOverflow}!void {
+        const next_value = std.math.add(u64, self.current_round.value, 1) catch return error.ArithmeticOverflow;
+        const next_view = if (bump_view)
+            std.math.add(u64, self.current_round.view, 1) catch return error.ArithmeticOverflow
+        else
+            self.current_round.view;
+        self.current_round.value = next_value;
+        self.current_round.view = next_view;
     }
 
     pub fn highestCommittedRound(self: Self) ?Round {
@@ -1175,9 +1236,7 @@ pub const Mysticeti = struct {
                 if (self.round_start_time == 0) {
                     self.round_start_time = now;
                 } else if (now - self.round_start_time > timeout_secs) {
-                    // Timeout reached — advance to next round and increment view
-                    self.current_round.value += 1;
-                    self.current_round.view += 1;
+                    self.bumpRound(true) catch return;
                     self.round_start_time = 0;
                     self.timeout_votes.clearRetainingCapacity();
                 }
@@ -1189,8 +1248,7 @@ pub const Mysticeti = struct {
             if (self.round_start_time == 0) {
                 self.round_start_time = now;
             } else if (now - self.round_start_time > timeout_secs) {
-                self.current_round.value += 1;
-                self.current_round.view += 1;
+                self.bumpRound(true) catch return;
                 self.round_start_time = 0;
                 self.timeout_votes.clearRetainingCapacity();
             }
@@ -1352,6 +1410,28 @@ test "Mysticeti block creation" {
 
     try consensus.addBlock(block);
     try std.testing.expect(consensus.dag.contains(.{ .value = 2 }));
+}
+
+test "Mysticeti refuses to wrap the current round" {
+    const allocator = std.testing.allocator;
+    var quorum = try Quorum.Quorum.init(allocator);
+    defer quorum.deinit();
+    for (0..4) |i| {
+        try quorum.addValidator(@as([32]u8, @splat(@intCast(i + 1))), 1000);
+    }
+    var consensus = try Mysticeti.init(allocator, quorum);
+    defer consensus.deinit();
+
+    consensus.current_round.value = std.math.maxInt(u64);
+    try std.testing.expectError(error.ArithmeticOverflow, consensus.advanceRound());
+    try std.testing.expectEqual(std.math.maxInt(u64), consensus.current_round.value);
+    try std.testing.expectEqual(@as(u64, 0), consensus.current_round.view);
+
+    consensus.current_round.value = 4;
+    consensus.current_round.view = std.math.maxInt(u64);
+    try std.testing.expectError(error.ArithmeticOverflow, consensus.bumpRound(true));
+    try std.testing.expectEqual(@as(u64, 4), consensus.current_round.value);
+    try std.testing.expectEqual(std.math.maxInt(u64), consensus.current_round.view);
 }
 
 test "Mysticeti quorum commit" {
@@ -1637,4 +1717,80 @@ test "block author signature: valid signed blocks accepted, forged rejected" {
     var tampered = signed;
     tampered.round = .{ .value = 5 };
     try std.testing.expect(!tampered.verifyAuthorSignature());
+}
+
+test "equivocation evidence wire roundtrip checks both signatures" {
+    const allocator = std.testing.allocator;
+    const seed = @as([32]u8, @splat(9));
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed);
+    const voter = kp.public_key.toBytes();
+    const round = Round{ .value = 4 };
+    const first = @as([32]u8, @splat(0x11));
+    const second = @as([32]u8, @splat(0x22));
+    const Ed25519 = @import("../../property/Signature.zig").Ed25519;
+    const msg1 = QuorumCertificate.signedMessage(round, first);
+    const msg2 = QuorumCertificate.signedMessage(round, second);
+    var sig1: [96]u8 = @splat(0);
+    var sig2: [96]u8 = @splat(0);
+    const raw1 = try Ed25519.sign(seed, &msg1);
+    const raw2 = try Ed25519.sign(seed, &msg2);
+    @memcpy(sig1[0..64], &raw1);
+    @memcpy(sig2[0..64], &raw2);
+
+    const evidence = EquivocationEvidence{
+        .voter = voter,
+        .round = round,
+        .first_block_digest = first,
+        .conflicting_block_digest = second,
+        .first_signature = sig1,
+        .conflicting_signature = sig2,
+    };
+    try std.testing.expect(evidence.signaturesHold());
+    const wire = try evidence.serializeWire(allocator);
+    defer allocator.free(wire);
+    const decoded = try EquivocationEvidence.deserializeWire(allocator, wire);
+    try std.testing.expect(decoded.signaturesHold());
+    try std.testing.expect(std.mem.eql(u8, &decoded.voter, &voter));
+
+    var forged = evidence;
+    forged.conflicting_signature = @splat(0);
+    try std.testing.expect(!forged.signaturesHold());
+}
+
+test "block serialize rejects a payload that does not fit in its length field" {
+    const allocator = std.testing.allocator;
+    const payload: []const u8 = @as([*]const u8, @ptrFromInt(0x1000))[0 .. @as(usize, std.math.maxInt(u32)) + 1];
+    const block = Block{
+        .author = @splat(1),
+        .round = .{ .value = 1 },
+        .payload = payload,
+        .parents = &.{},
+        .votes = .empty,
+        .digest = @splat(0),
+    };
+    try std.testing.expectError(error.BlockTooLarge, block.serialize(allocator));
+}
+
+test "block deserialize rejects a parent count whose byte length wraps" {
+    const allocator = std.testing.allocator;
+    var data: [52]u8 = @splat(0);
+    std.mem.writeInt(u32, data[40..44], 4, .big);
+    data[44] = 'a';
+    data[45] = 'b';
+    data[46] = 'c';
+    data[47] = 'd';
+    std.mem.writeInt(u32, data[48..52], 0x20000000, .big);
+    try std.testing.expectError(error.InvalidFormat, Block.deserialize(allocator, &data));
+}
+
+test "network block decode rejects a parent count whose byte length wraps" {
+    const allocator = std.testing.allocator;
+    var data: [52]u8 = @splat(0);
+    std.mem.writeInt(u32, data[40..44], 4, .big);
+    data[44] = 'a';
+    data[45] = 'b';
+    data[46] = 'c';
+    data[47] = 'd';
+    std.mem.writeInt(u32, data[48..52], 0x20000000, .big);
+    try std.testing.expectError(error.InvalidFormat, MysticetiSerialization.deserializeBlock(&data, allocator));
 }

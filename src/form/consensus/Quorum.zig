@@ -73,6 +73,25 @@ pub const Quorum = struct {
         }
     }
 
+    /// Drop or restore a member's stake in the active total. `total_stake` moves
+    /// with them so a jailed equivocator does not freeze the quorum threshold.
+    pub fn setMemberActive(self: *Self, id: [32]u8, active: bool) void {
+        for (self.members.items) |*member| {
+            if (!std.mem.eql(u8, &member.id, &id)) continue;
+            if (member.is_active == active) return;
+            if (active) {
+                member.is_active = true;
+                self.active_stake += member.stake;
+                self.total_stake += member.stake;
+            } else {
+                self.active_stake = std.math.sub(u128, self.active_stake, member.stake) catch 0;
+                self.total_stake = std.math.sub(u128, self.total_stake, member.stake) catch 0;
+                member.is_active = false;
+            }
+            return;
+        }
+    }
+
     /// Update validator stake (add if not present, update if present, remove if stake=0)
     pub fn updateValidatorStake(self: *Self, id: [32]u8, stake: u128) !void {
         for (self.members.items, 0..) |v, i| {
@@ -244,6 +263,28 @@ test "Quorum removeValidator updates total_stake" {
     quorum.removeValidator(vid);
     try std.testing.expectEqual(@as(u128, 0), quorum.activeStake());
     try std.testing.expectEqual(@as(u128, 0), quorum.totalStake());
+}
+
+test "jailing a member removes their stake from the quorum total" {
+    const allocator = std.testing.allocator;
+    var quorum = try Quorum.init(allocator);
+    defer quorum.deinit();
+
+    const jailed = @as([32]u8, @splat(1));
+    const honest = @as([32]u8, @splat(2));
+    try quorum.addValidator(jailed, 1000);
+    try quorum.addValidator(honest, 1000);
+    quorum.setMemberActive(jailed, false);
+    try std.testing.expectEqual(@as(u128, 1000), quorum.totalStake());
+    try std.testing.expectEqual(@as(u128, 1000), quorum.activeStake());
+
+    // A later stake sync must not double-count, and re-jailing clears it again.
+    try quorum.updateValidatorStake(jailed, 900);
+    try std.testing.expectEqual(@as(u128, 1900), quorum.totalStake());
+    quorum.setMemberActive(jailed, false);
+    try std.testing.expectEqual(@as(u128, 1000), quorum.totalStake());
+    quorum.setMemberActive(jailed, true);
+    try std.testing.expectEqual(@as(u128, 1900), quorum.totalStake());
 }
 
 // Structural assertion: the quorum API must expose the Byzantine bound and the

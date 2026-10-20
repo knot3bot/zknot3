@@ -83,6 +83,8 @@ pub const KNOT3_RPC_METHODS = &[_]RPCMethod{
     .{ .name = "knot3_submitStakeOperation", .params = &.{ "validator", "delegator", "amount", "action", "metadata" }, .return_type = "StakeOperationReceipt", .object_params = true, .param_json = &.{ .string, .string, .integer, .string, .string } },
     .{ .name = "knot3_submitGovernanceProposal", .params = &.{ "proposer", "title", "description", "kind", "activation_epoch" }, .return_type = "GovernanceProposalReceipt", .object_params = true, .param_json = &.{ .string, .string, .string, .string, .optional_integer } },
     .{ .name = "knot3_getCheckpointProof", .params = &.{ "sequence", "objectId" }, .return_type = "CheckpointProof", .object_params = true, .param_json = &.{ .integer, .string } },
+    .{ .name = "knot3_creditGas", .params = &.{ "address", "amount" }, .return_type = "GasBalance", .object_params = true, .param_json = &.{ .string, .integer } },
+    .{ .name = "knot3_getGasBalance", .params = &.{"address"}, .return_type = "GasBalance", .object_params = true, .param_json = &.{.string} },
 };
 
 comptime {
@@ -279,6 +281,10 @@ fn generateTypeScript(sdk: *ClientSDK) ![]const u8 {
     try buf.appendSlice("    blsSignature: string;\n");
     try buf.appendSlice("    blsSignerBitmap: string;\n");
     try buf.appendSlice("}\n\n");
+    try buf.appendSlice("/** In-memory gas ledger balance (not gas-coin objects). creditGas is admin-write. */\n");
+    try buf.appendSlice("export interface GasBalance {\n");
+    try buf.appendSlice("    balance: number;\n");
+    try buf.appendSlice("}\n\n");
 
     return buf.toOwnedSlice();
 }
@@ -336,6 +342,10 @@ fn generatePython(sdk: *ClientSDK) ![]const u8 {
     try buf.appendSlice("    signatures: str\n\n");
     try buf.appendSlice("    blsSignature: str\n");
     try buf.appendSlice("    blsSignerBitmap: str\n\n");
+
+    try buf.appendSlice("@dataclass\n");
+    try buf.appendSlice("class GasBalance:\n");
+    try buf.appendSlice("    balance: int\n\n");
 
     // Client class
     try buf.appendSlice("class Knot3Client:\n");

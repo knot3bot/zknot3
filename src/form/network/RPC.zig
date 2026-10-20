@@ -253,6 +253,10 @@ pub const RPCServer = struct {
             return try handleSubmitGovernanceProposal(self.context, params);
         } else if (std.mem.eql(u8, method, "knot3_getCheckpointProof")) {
             return try handleGetCheckpointProof(self.context, params);
+        } else if (std.mem.eql(u8, method, "knot3_creditGas")) {
+            return try handleCreditGas(self.context, params);
+        } else if (std.mem.eql(u8, method, "knot3_getGasBalance")) {
+            return try handleGetGasBalance(self.context, params);
         } else {
             return RPCResponse.makeError(null, .method_not_found, "Method not found");
         }
@@ -414,6 +418,34 @@ fn handleSubmitGovernanceProposal(ctx: *RPCContext, params: ?std.json.Value) !RP
     return RPCResponse.success(null, body);
 }
 
+fn handleCreditGas(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const node_ptr = ctx.user_data orelse {
+        return RPCResponse.makeError(null, .internal_error, "Node not initialized");
+    };
+    const node: *Node = @ptrCast(@alignCast(node_ptr));
+    const input = M4RpcParams.parseCreditGasParams(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_creditGas params");
+    };
+    const balance = node.creditGas(input.address, input.amount) catch |err| {
+        return RPCResponse.makeError(null, .internal_error, @errorName(err));
+    };
+    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"balance\":{d}}}", .{balance});
+    return RPCResponse.success(null, body);
+}
+
+fn handleGetGasBalance(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const node_ptr = ctx.user_data orelse {
+        return RPCResponse.makeError(null, .internal_error, "Node not initialized");
+    };
+    const node: *Node = @ptrCast(@alignCast(node_ptr));
+    const input = M4RpcParams.parseGetGasBalanceParams(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getGasBalance params");
+    };
+    const balance = node.getGasBalance(input.address);
+    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"balance\":{d}}}", .{balance});
+    return RPCResponse.success(null, body);
+}
+
 fn handleGetCheckpointProof(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
     const node_ptr = ctx.user_data orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
@@ -524,4 +556,23 @@ test "RPC m4 methods call node mainnet hooks" {
     defer if (proof.result) |r| allocator.free(r.success);
     try std.testing.expect(proof.result != null);
     try std.testing.expect(std.mem.indexOf(u8, proof.result.?.success, "\"sequence\":7") != null);
+
+    const gas_addr = "1111111111111111111111111111111111111111111111111111111111111111";
+    const credit_body = try std.fmt.allocPrint(allocator, "{{\"address\":\"0x{s}\",\"amount\":42}}", .{gas_addr});
+    defer allocator.free(credit_body);
+    var credit_params = try std.json.parseFromSlice(std.json.Value, allocator, credit_body, .{ .ignore_unknown_fields = true });
+    defer credit_params.deinit();
+    const credited = try handleCreditGas(&ctx, credit_params.value);
+    defer if (credited.result) |r| allocator.free(r.success);
+    try std.testing.expect(credited.result != null);
+    try std.testing.expect(std.mem.indexOf(u8, credited.result.?.success, "\"balance\":42") != null);
+
+    const bal_body = try std.fmt.allocPrint(allocator, "{{\"address\":\"0x{s}\"}}", .{gas_addr});
+    defer allocator.free(bal_body);
+    var bal_params = try std.json.parseFromSlice(std.json.Value, allocator, bal_body, .{ .ignore_unknown_fields = true });
+    defer bal_params.deinit();
+    const bal = try handleGetGasBalance(&ctx, bal_params.value);
+    defer if (bal.result) |r| allocator.free(r.success);
+    try std.testing.expect(bal.result != null);
+    try std.testing.expect(std.mem.indexOf(u8, bal.result.?.success, "\"balance\":42") != null);
 }

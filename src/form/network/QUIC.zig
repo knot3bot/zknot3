@@ -35,6 +35,8 @@
 
 const std = @import("std");
 const core = @import("../../core.zig");
+const quic_udp_enabled = @import("quic_options").enabled;
+const httpz_quic = if (quic_udp_enabled) @import("httpz_quic") else struct {};
 
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
     var writer = stream.writer(@import("io_instance").io, &.{});
@@ -55,6 +57,8 @@ pub const QUICConfig = struct {
     connection_window: u64 = 16 * 1024 * 1024,
     idle_timeout_secs: u64 = 30,
     max_stream_data: u64 = 1024 * 1024,
+    /// Use the vendored httpz/ngtcp2 UDP engine. Requires `zig build -Dquic`.
+    real_udp: bool = false,
 };
 
 pub const QUICConnectionID = struct {
@@ -187,6 +191,8 @@ pub const QUICConnection = struct {
     /// Set after Noise XX handshake completes; send/recv encrypt/decrypt
     /// payloads through the NoiseSession's CipherState before framing.
     noise_session: ?*anyopaque = null,
+    /// `*httpz_quic.Peer` when this connection rides the UDP engine.
+    udp_peer: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator, connection_id: QUICConnectionID) !*Self {
         const self = try allocator.create(Self);
@@ -222,7 +228,38 @@ pub const QUICConnection = struct {
         if (self.tcp_connection) |conn| {
             conn.close(@import("io_instance").io);
         }
+        if (comptime quic_udp_enabled) {
+            if (self.udp_peer) |raw| {
+                const peer: *httpz_quic.Peer = @ptrCast(@alignCast(raw));
+                peer.deinit();
+            }
+        }
         self.allocator.destroy(self);
+    }
+
+    pub fn deliver(self: *Self, data: []const u8) !void {
+        if (comptime quic_udp_enabled) {
+            if (self.udp_peer) |raw| {
+                const peer: *httpz_quic.Peer = @ptrCast(@alignCast(raw));
+                try peer.writeAll(data);
+                return;
+            }
+        }
+        const stream_id = try self.openStream();
+        const stream = self.getStream(stream_id) orelse return error.StreamNotFound;
+        try stream.write(data);
+    }
+
+    pub fn takePayload(self: *Self, buf: []u8) !?usize {
+        if (comptime !quic_udp_enabled) return null;
+        const raw = self.udp_peer orelse return null;
+        const peer: *httpz_quic.Peer = @ptrCast(@alignCast(raw));
+        peer.pump();
+        const frame = peer.popFrame() orelse return null;
+        defer peer.allocator.free(frame);
+        if (frame.len > buf.len) return error.MessageTooLarge;
+        @memcpy(buf[0..frame.len], frame);
+        return frame.len;
     }
 
     /// Set the TCP connection for this QUIC connection
@@ -342,6 +379,7 @@ pub const QUICTransport = struct {
     config: QUICConfig,
     connections: std.AutoArrayHashMapUnmanaged(QUICConnectionID, *QUICConnection),
     listener: ?std.Io.net.Server,
+    udp_listener: ?*anyopaque = null,
     is_running: bool,
     next_connection_id: u64,
 
@@ -352,6 +390,7 @@ pub const QUICTransport = struct {
             .config = config,
             .connections = std.AutoArrayHashMapUnmanaged(QUICConnectionID, *QUICConnection).empty,
             .listener = null,
+            .udp_listener = null,
             .is_running = false,
             .next_connection_id = 0,
         };
@@ -365,11 +404,37 @@ pub const QUICTransport = struct {
             entry.value_ptr.*.deinit();
         }
         self.connections.deinit(self.allocator);
+        if (comptime quic_udp_enabled) self.closeUdpListener();
         self.allocator.destroy(self);
+    }
+
+    fn closeUdpListener(self: *Self) void {
+        if (comptime !quic_udp_enabled) return;
+        const raw = self.udp_listener orelse return;
+        const listener: *httpz_quic.Listener = @ptrCast(@alignCast(raw));
+        listener.deinit();
+        self.allocator.destroy(listener);
+        self.udp_listener = null;
+    }
+
+    pub fn udpReadable(self: *Self) bool {
+        if (comptime !quic_udp_enabled) return false;
+        if (!self.config.real_udp) return false;
+        const raw = self.udp_listener orelse return false;
+        const listener: *httpz_quic.Listener = @ptrCast(@alignCast(raw));
+        var fds = [_]std.posix.pollfd{
+            .{ .fd = listener.socket, .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        const n = std.posix.poll(&fds, 0) catch return false;
+        if (n <= 0) return false;
+        return (fds[0].revents & std.posix.POLL.IN) != 0;
     }
 
     pub fn listen(self: *Self) !void {
         if (self.is_running) return error.AlreadyListening;
+        if (comptime quic_udp_enabled) {
+            if (self.config.real_udp) return self.listenUdp();
+        }
 
         var parts = std.mem.splitScalar(u8, self.config.bind_address, ':');
         const host = parts.next() orelse "0.0.0.0";
@@ -379,6 +444,71 @@ pub const QUICTransport = struct {
         const addr = try std.Io.net.IpAddress.parseIp4(host, port);
         self.listener = try addr.listen(@import("io_instance").io, .{ .reuse_address = true });
         self.is_running = true;
+    }
+
+    fn listenUdp(self: *Self) !void {
+        if (comptime !quic_udp_enabled) return error.NotListening;
+        const cert_pem = @embedFile("../../../vendor/httpz/src/h3/test_cert.pem");
+        const key_pem = @embedFile("../../../vendor/httpz/src/h3/test_key.pem");
+        try httpz_quic.setServerCert(cert_pem, key_pem);
+
+        var parts = std.mem.splitScalar(u8, self.config.bind_address, ':');
+        _ = parts.next();
+        const port_str = parts.next() orelse "8083";
+        const port = try std.fmt.parseInt(u16, port_str, 10);
+        self.closeUdpListener();
+        const listener = try self.allocator.create(httpz_quic.Listener);
+        errdefer self.allocator.destroy(listener);
+        listener.* = try httpz_quic.Listener.init(self.allocator, port);
+        self.udp_listener = listener;
+        self.is_running = true;
+    }
+
+    fn acceptUdp(self: *Self) !*QUICConnection {
+        if (comptime !quic_udp_enabled) return error.NotListening;
+        if (!self.is_running or self.udp_listener == null) return error.NotListening;
+        if (!self.udpReadable()) return error.WouldBlock;
+        const listener: *httpz_quic.Listener = @ptrCast(@alignCast(self.udp_listener.?));
+        const peer = try httpz_quic.acceptLocal(self.allocator, listener);
+        const cid = QUICConnectionID.generate();
+        const quic_conn = QUICConnection.init(self.allocator, cid) catch |err| {
+            peer.deinit();
+            return err;
+        };
+        quic_conn.udp_peer = peer;
+        quic_conn.state = .connected;
+        try self.connections.put(self.allocator, cid, quic_conn);
+        return quic_conn;
+    }
+
+    fn dialUdp(self: *Self, address: []const u8) !*QUICConnection {
+        if (comptime !quic_udp_enabled) return error.NotListening;
+        var parts = std.mem.splitScalar(u8, address, ':');
+        const host = parts.next() orelse return error.InvalidAddress;
+        const port_str = parts.next() orelse return error.InvalidAddress;
+        const port = try std.fmt.parseInt(u16, port_str, 10);
+        const peer = try httpz_quic.dialV4(self.allocator, try ipv4SockAddr(host), port);
+        const cid = QUICConnectionID.generate();
+        const quic_conn = QUICConnection.init(self.allocator, cid) catch |err| {
+            peer.deinit();
+            return err;
+        };
+        errdefer quic_conn.deinit();
+        quic_conn.udp_peer = peer;
+        quic_conn.state = .connected;
+        try self.connections.put(self.allocator, cid, quic_conn);
+        return quic_conn;
+    }
+
+    fn ipv4SockAddr(host: []const u8) !u32 {
+        var it = std.mem.splitScalar(u8, host, '.');
+        var raw: [4]u8 = undefined;
+        for (&raw) |*octet| {
+            const part = it.next() orelse return error.InvalidAddress;
+            octet.* = std.fmt.parseInt(u8, part, 10) catch return error.InvalidAddress;
+        }
+        if (it.next() != null) return error.InvalidAddress;
+        return std.mem.readInt(u32, &raw, .little);
     }
 
     pub fn stop(self: *Self) void {
@@ -391,6 +521,9 @@ pub const QUICTransport = struct {
 
     /// Accept an incoming QUIC connection
     pub fn accept(self: *Self) !*QUICConnection {
+        if (comptime quic_udp_enabled) {
+            if (self.config.real_udp) return self.acceptUdp();
+        }
         if (self.listener) |_| {
             const tcp_conn = try self.listener.?.accept(@import("io_instance").io);
             const cid = QUICConnectionID.generate();
@@ -404,6 +537,9 @@ pub const QUICTransport = struct {
 
     /// Dial a remote QUIC endpoint
     pub fn dial(self: *Self, address: []const u8) !*QUICConnection {
+        if (comptime quic_udp_enabled) {
+            if (self.config.real_udp) return self.dialUdp(address);
+        }
         var parts = std.mem.splitScalar(u8, address, ':');
         const host = parts.next() orelse return error.InvalidAddress;
         const port_str = parts.next() orelse return error.InvalidAddress;
@@ -493,6 +629,18 @@ test "QUICTransport listen and connection" {
     // Stop listening
     transport.stop();
     try std.testing.expect(!transport.is_running);
+}
+
+test {
+    if (comptime quic_udp_enabled) _ = @import("httpz_quic");
+}
+
+test "vendored httpz QUIC loads the bundled certificate" {
+    if (comptime !quic_udp_enabled) return;
+    const cert_pem = @embedFile("../../../vendor/httpz/src/h3/test_cert.pem");
+    const key_pem = @embedFile("../../../vendor/httpz/src/h3/test_key.pem");
+    try httpz_quic.setServerCert(cert_pem, key_pem);
+    try httpz_quic.proveLoopback();
 }
 
 test "QUICConnection stores TCP connection" {

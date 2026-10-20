@@ -150,14 +150,15 @@ pub const MemTable = struct {
     }
 
     pub fn put(self: *Self, key: []const u8, value: []const u8, seq: u64) !void {
-        const entry_size = key.len + value.len + 24;
-        if (self.size + entry_size > self.max_size) {
-            return error.MemTableFull;
-        }
+        const payload = std.math.add(usize, key.len, value.len) catch return error.MemTableFull;
+        const entry_size = std.math.add(usize, payload, 24) catch return error.MemTableFull;
+        const new_size = std.math.add(usize, self.size, entry_size) catch return error.MemTableFull;
+        if (new_size > self.max_size) return error.MemTableFull;
 
         const duped_key = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(duped_key);
         const duped_value = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(duped_value);
         try self.entries.append(self.allocator, .{
             .key = duped_key,
             .value = duped_value,
@@ -165,7 +166,7 @@ pub const MemTable = struct {
             .deleted = false,
         });
         self.bloom.add(key);
-        self.size += entry_size;
+        self.size = new_size;
         self.sorted = false;
     }
 
@@ -179,18 +180,22 @@ pub const MemTable = struct {
         self.sorted = true;
     }
 
-    pub fn get(self: *Self, key: []const u8) ?[]const u8 {
-        // Bloom filter check first
-        if (!self.bloom.contains(key)) return null;
+    pub const Lookup = union(enum) {
+        missing,
+        deleted,
+        value: []const u8,
+    };
+
+    pub fn lookup(self: *Self, key: []const u8) Lookup {
+        if (!self.bloom.contains(key)) return .missing;
 
         self.ensureSorted();
 
-        // Binary search for efficiency
         var low: usize = 0;
         var high: usize = self.entries.items.len;
 
         while (low < high) {
-            const mid = (low + high) / 2;
+            const mid = searchMidpoint(low, high);
             const entry = self.entries.items[mid];
             const cmp = std.mem.lessThan(u8, entry.key, key);
 
@@ -202,14 +207,19 @@ pub const MemTable = struct {
         }
 
         if (low < self.entries.items.len and std.mem.eql(u8, self.entries.items[low].key, key)) {
-            // Entries with same key are sorted by seq descending (newest first),
-            // so entries[low] is the latest version.
             const latest = self.entries.items[low];
-            if (latest.deleted) return null;
-            return latest.value;
+            if (latest.deleted) return .deleted;
+            return .{ .value = latest.value };
         }
 
-        return null;
+        return .missing;
+    }
+
+    pub fn get(self: *Self, key: []const u8) ?[]const u8 {
+        return switch (self.lookup(key)) {
+            .missing, .deleted => null,
+            .value => |value| value,
+        };
     }
 
     pub fn delete(self: *Self, key: []const u8, seq: u64) !void {
@@ -232,13 +242,20 @@ pub const MemTable = struct {
     }
 
     pub fn clear(self: *Self) !void {
+        const fresh = try self.allocator.create(BloomFilter);
+        errdefer self.allocator.destroy(fresh);
+        fresh.* = try BloomFilter.init(self.allocator, 1000000, 10);
+        errdefer fresh.deinit(self.allocator);
+
+        for (self.entries.items) |entry| {
+            self.allocator.free(entry.key);
+            self.allocator.free(entry.value);
+        }
         self.entries.clearRetainingCapacity();
-        self.bloom.deinit(self.allocator);
-        self.allocator.destroy(self.bloom);
-        // Re-create bloom filter for fresh use
-        self.bloom = try self.allocator.create(BloomFilter);
-        errdefer self.allocator.destroy(self.bloom);
-        self.bloom.* = try BloomFilter.init(self.allocator, 1000000, 10);
+        const old = self.bloom;
+        self.bloom = fresh;
+        old.deinit(self.allocator);
+        self.allocator.destroy(old);
         self.size = 0;
         self.sorted = true;
     }
@@ -261,6 +278,12 @@ pub const SSTableIndexEntry = struct {
     }
 };
 
+/// Midpoint of a half-open range. Adding the endpoints first wraps when both
+/// sit in the top half of `usize`.
+fn searchMidpoint(low: usize, high: usize) usize {
+    return low + (high - low) / 2;
+}
+
 /// Index structure with binary search optimization
 pub const SSTableIndex = struct {
     entries: []const SSTableIndexEntry,
@@ -274,7 +297,7 @@ pub const SSTableIndex = struct {
         var high: usize = self.entries.len;
 
         while (low < high) {
-            const mid = (low + high) / 2;
+            const mid = searchMidpoint(low, high);
             const entry = self.entries[mid];
 
             if (std.mem.lessThan(u8, entry.key, key)) {
@@ -296,26 +319,27 @@ pub const SSTableIndex = struct {
 const IoFile = struct {
     io: std.Io,
     file: std.Io.File,
+    /// Cursor for positional reads. Each fresh reader used to start at offset 0,
+    /// so a seek was discarded before the next read.
+    pos: u64 = 0,
 
     pub fn close(self: IoFile) void {
         self.file.close(self.io);
     }
 
-    pub fn seekTo(self: IoFile, offset: u64) !void {
-        var reader = self.file.reader(self.io, &.{});
-        try reader.seekTo(offset);
+    pub fn seekTo(self: *IoFile, offset: u64) !void {
+        self.pos = offset;
     }
 
-    pub fn writeAll(self: IoFile, bytes: []const u8) !void {
+    pub fn writeAll(self: *IoFile, bytes: []const u8) !void {
         try self.file.writeStreamingAll(self.io, bytes);
+        self.pos += bytes.len;
     }
 
-    pub fn readAll(self: IoFile, buf: []u8) !usize {
-        var reader = self.file.reader(self.io, &.{});
-        return reader.interface.readSliceShort(buf) catch |err| switch (err) {
-            error.ReadFailed => return reader.err orelse error.StreamReadFailed,
-            else => |e| return e,
-        };
+    pub fn readAll(self: *IoFile, buf: []u8) !usize {
+        const n = try self.file.readPositionalAll(self.io, buf, self.pos);
+        self.pos += n;
+        return n;
     }
 };
 /// Simple RLE compression for repetitive blockchain data.
@@ -365,11 +389,13 @@ pub const SSTable = struct {
     level: usize,
     min_key: []const u8,
     max_key: []const u8,
+    /// Exclusive end of the record bytes. The index and footer sit after this.
+    data_end: ?u64 = null,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8, level: usize) !Self {
         const io = @import("io_instance").io;
         const file = std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_write }) catch
-            try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = false });
+            try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = false });
 
         var self = Self{
             .allocator = allocator,
@@ -380,9 +406,11 @@ pub const SSTable = struct {
             .level = level,
             .min_key = &.{},
             .max_key = &.{},
+            .data_end = null,
         };
         errdefer self.deinit();
 
+        self.data_end = self.footerDataEnd() catch null;
         // Rebuild index from file for crash recovery.
         // For new (empty) files this is a no-op.
         self.bloom.* = try BloomFilter.init(allocator, 1_000_000, 10);
@@ -408,9 +436,7 @@ pub const SSTable = struct {
 
         var data_offset: u64 = 0;
         for (entries) |entry| {
-            const key_len: u32 = @intCast(entry.key.len);
-            const val_len: u32 = @intCast(entry.value.len);
-            const record_size: u32 = 12 + key_len + val_len + 1 + 8;
+            const record_size = try checkedRecordSize(entry.key.len, entry.value.len);
 
             try self.index.append(rebuild_allocator, .{
                 .key = try rebuild_allocator.dupe(u8, entry.key),
@@ -427,10 +453,10 @@ pub const SSTable = struct {
         var data_offset: u64 = 0;
 
         for (entries) |entry| {
+            const record_size = try checkedRecordSize(entry.key.len, entry.value.len);
             const key_len: u32 = @intCast(entry.key.len);
             const val_len: u32 = @intCast(entry.value.len);
             const deleted_flag: u8 = if (entry.deleted) 1 else 0;
-            const record_size: u32 = 4 + key_len + 4 + val_len + 1 + 8;
 
             // Use dynamic buffer only if entry exceeds inline threshold
             const inline_threshold = 1024;
@@ -491,18 +517,43 @@ pub const SSTable = struct {
             data_offset += record_size;
         }
 
-        // Write index at end
+        // Write index at end, then a footer naming where the records stop.
         try self.writeIndex();
+        var tail: [12]u8 = undefined;
+        std.mem.writeInt(u64, tail[0..8], data_offset, .big);
+        @memcpy(tail[8..12], "SST1");
+        try self.file.writeAll(&tail);
+    }
+
+    /// Header, key, value length, deleted flag, and sequence must fit in one u32.
+    fn checkedRecordSize(key_len: usize, value_len: usize) error{RecordTooLarge}!u32 {
+        if (key_len > std.math.maxInt(u32) or value_len > std.math.maxInt(u32)) return error.RecordTooLarge;
+        const key_u: u32 = @intCast(key_len);
+        const val_u: u32 = @intCast(value_len);
+        const body = std.math.add(u32, key_u, val_u) catch return error.RecordTooLarge;
+        return std.math.add(u32, body, 17) catch return error.RecordTooLarge;
+    }
+
+    fn footerDataEnd(self: *Self) !?u64 {
+        const len = try self.file.file.length(self.file.io);
+        if (len < 12) return null;
+        var tail: [12]u8 = undefined;
+        if (try self.file.file.readPositionalAll(self.file.io, &tail, len - 12) != 12) return null;
+        if (!std.mem.eql(u8, tail[8..12], "SST1")) return null;
+        return std.mem.readInt(u64, tail[0..8], .big);
     }
 
     fn writeIndex(self: *Self) !void {
         // Index format: [count u32][key_len u32][key bytes][offset u64][size u32]...
+        if (self.index.items.len > std.math.maxInt(u32)) return error.IndexTooLarge;
         const count: u32 = @intCast(self.index.items.len);
 
         // Pre-compute total buffer size: count(4) + per_entry(4 + key.len + 8 + 4)
         var total: usize = 4;
         for (self.index.items) |entry| {
-            total += 4 + entry.key.len + 8 + 4;
+            if (entry.key.len > std.math.maxInt(u32)) return error.IndexTooLarge;
+            const entry_size = std.math.add(usize, entry.key.len, 16) catch return error.IndexTooLarge;
+            total = std.math.add(usize, total, entry_size) catch return error.IndexTooLarge;
         }
         var buf = try self.allocator.alloc(u8, total);
         defer self.allocator.free(buf);
@@ -526,40 +577,40 @@ pub const SSTable = struct {
         try self.file.writeAll(buf);
     }
 
-    pub fn read(self: *Self, key: []const u8) !?[]const u8 {
-        // Bloom pre-filter: fast negative without touching index
-        if (!self.bloom.contains(key)) return null;
+    const Probe = union(enum) {
+        missing,
+        deleted,
+        value: []u8,
+    };
+
+    /// A tombstone is distinct from a missing key so a newer table can hide older ones.
+    pub fn probe(self: *Self, key: []const u8) !Probe {
+        if (!self.bloom.contains(key)) return .missing;
 
         const index = SSTableIndex{
             .entries = self.index.items,
             .sorted = true,
         };
-
-        if (index.binarySearch(key)) |idx| {
-            const idx_entry = self.index.items[idx];
-
-            // Seek and read value
-            try self.file.seekTo(idx_entry.offset);
-
-            // Read header (key_len + val_len + deleted)
-            var header_buf: [12]u8 = undefined;
-            _ = try self.file.readAll(&header_buf);
-
-            const val_len = std.mem.readInt(u32, header_buf[4..8], .big);
-            _ = header_buf[8]; // deleted flag
-            if (val_len > 10 * 1024 * 1024) return error.CorruptSSTable;
-
-            // Read value (allocate exactly what we need)
-            const value_buf = try self.allocator.alloc(u8, val_len);
-            errdefer self.allocator.free(value_buf);
-            _ = try self.file.readAll(value_buf);
-            return value_buf;
+        const idx = index.binarySearch(key) orelse return .missing;
+        const record = (try self.readRecord(self.allocator, self.index.items[idx].offset)) orelse return error.CorruptSSTable;
+        self.allocator.free(record.key);
+        if (record.deleted) {
+            self.allocator.free(record.value);
+            return .deleted;
         }
-
-        return null;
+        return .{ .value = record.value };
     }
 
-    /// Read all entries from SSTable for compaction
+    /// Caller owns the returned value bytes.
+    pub fn read(self: *Self, key: []const u8) !?[]u8 {
+        return switch (try self.probe(key)) {
+            .missing, .deleted => null,
+            .value => |value| value,
+        };
+    }
+
+    /// Read all entries from SSTable for compaction.
+    /// The on-disk record is key length, key, value length, value, deleted flag, sequence.
     pub fn readAllEntries(self: *Self, allocator: std.mem.Allocator) ![]KeyValue {
         var entries = std.ArrayList(KeyValue).empty;
         errdefer {
@@ -570,49 +621,105 @@ pub const SSTable = struct {
             entries.deinit(allocator);
         }
 
-        try self.file.seekTo(0);
-
-        while (true) {
-            // Read record header — must be exactly 12 bytes
-            var header_buf: [12]u8 = undefined;
-            const bytes_read = try self.file.readAll(&header_buf);
-            if (bytes_read == 0) break;
-            if (bytes_read < 12) break; // truncated record at end of file
-
-            const key_len = std.mem.readInt(u32, header_buf[0..4], .big);
-            const val_len = std.mem.readInt(u32, header_buf[4..8], .big);
-            // Sanity: reject impossibly large allocations (max 64MB per key/value)
-            if (key_len > 64 * 1024 * 1024 or val_len > 64 * 1024 * 1024) break;
-            const deleted = header_buf[8] == 1;
-
-            // Read key
-            const key_buf = try allocator.alloc(u8, key_len);
-            errdefer allocator.free(key_buf);
-            _ = try self.file.readAll(key_buf);
-
-            // Read value
-            const value_buf = try allocator.alloc(u8, val_len);
-            errdefer allocator.free(value_buf);
-            _ = try self.file.readAll(value_buf);
-
-            // Read seq (8 bytes)
-            var seq_buf: [8]u8 = undefined;
-            _ = try self.file.readAll(&seq_buf);
-            const seq = std.mem.readInt(u64, &seq_buf, .big);
-
-            try entries.append(allocator, .{
-                .key = key_buf,
-                .value = value_buf,
-                .seq = seq,
-                .deleted = deleted,
-            });
+        if (self.index.items.len > 0) {
+            for (self.index.items) |idx| {
+                const record = (try self.readRecord(allocator, idx.offset)) orelse return error.CorruptSSTable;
+                entries.append(allocator, record) catch |err| {
+                    allocator.free(record.key);
+                    allocator.free(record.value);
+                    return err;
+                };
+            }
+        } else {
+            try self.file.seekTo(0);
+            while (try self.readRecord(allocator, null)) |entry| {
+                entries.append(allocator, entry) catch |err| {
+                    allocator.free(entry.key);
+                    allocator.free(entry.value);
+                    return err;
+                };
+            }
         }
 
         return entries.toOwnedSlice(allocator);
     }
 
+    /// `at` seeks to a known record. Null scans the next record and returns null at a short read.
+    fn readRecord(self: *Self, allocator: std.mem.Allocator, at: ?u64) !?KeyValue {
+        if (at) |offset| {
+            try self.file.seekTo(offset);
+        } else if (self.data_end) |end| {
+            if (self.file.pos >= end) return null;
+        }
+        var len_buf: [4]u8 = undefined;
+        const key_len_bytes = try self.file.readAll(&len_buf);
+        if (key_len_bytes == 0) return null;
+        if (key_len_bytes != 4) {
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+        const key_len = std.mem.readInt(u32, &len_buf, .big);
+        if (key_len > 64 * 1024 * 1024) {
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+
+        const key_buf = try allocator.alloc(u8, key_len);
+        if (try self.file.readAll(key_buf) != key_len) {
+            allocator.free(key_buf);
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+
+        if (try self.file.readAll(&len_buf) != 4) {
+            allocator.free(key_buf);
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+        const val_len = std.mem.readInt(u32, &len_buf, .big);
+        if (val_len > 64 * 1024 * 1024) {
+            allocator.free(key_buf);
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+
+        const value_buf = allocator.alloc(u8, val_len) catch |err| {
+            allocator.free(key_buf);
+            return err;
+        };
+        if (try self.file.readAll(value_buf) != val_len) {
+            allocator.free(key_buf);
+            allocator.free(value_buf);
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+
+        var flag: [1]u8 = undefined;
+        if (try self.file.readAll(&flag) != 1) {
+            allocator.free(key_buf);
+            allocator.free(value_buf);
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+        var seq_buf: [8]u8 = undefined;
+        if (try self.file.readAll(&seq_buf) != 8) {
+            allocator.free(key_buf);
+            allocator.free(value_buf);
+            if (at == null) return null;
+            return error.CorruptSSTable;
+        }
+
+        return .{
+            .key = key_buf,
+            .value = value_buf,
+            .seq = std.mem.readInt(u64, &seq_buf, .big),
+            .deleted = flag[0] == 1,
+        };
+    }
+
     pub fn deinit(self: *Self) void {
         self.file.close();
+        for (self.index.items) |entry| self.allocator.free(entry.key);
         self.index.deinit(self.allocator);
         self.bloom.deinit(self.allocator);
         self.allocator.free(self.path);
@@ -643,11 +750,10 @@ pub const CompactionManager = struct {
         };
     }
 
+    /// Drops the level lists. The `*SSTable` values are borrowed; `LSMTree`
+    /// or the standalone caller closes them.
     pub fn deinit(self: *Self) void {
         for (self.levels.items) |*level| {
-            for (level.items) |sst| {
-                sst.deinit();
-            }
             level.deinit(self.allocator);
         }
         self.levels.deinit(self.allocator);
@@ -668,8 +774,11 @@ pub const CompactionManager = struct {
 
     /// Compact two adjacent levels
     /// Merges SSTables, handles overwrites/deletes, writes to next level
-    pub fn compact(self: *Self, level: usize, allocator: std.mem.Allocator, sst_dir: []const u8, next_sst_id: *u64) !void {
+    pub fn compact(self: *Self, level: usize, allocator: std.mem.Allocator, sst_dir: []const u8, next_sst_id: *u64, owned: ?*std.ArrayList(*SSTable)) !void {
         if (level >= self.levels.items.len or self.levels.items[level].items.len == 0) return;
+        // The last level has nowhere to put a merged table. Destroying it
+        // here would drop the only copy of those records.
+        if (level + 1 >= self.levels.items.len) return;
 
         const sstables = self.levels.items[level].items;
         if (sstables.len == 0) return;
@@ -684,7 +793,7 @@ pub const CompactionManager = struct {
         }
 
         for (sstables) |sst| {
-            const entries = sst.readAllEntries(allocator) catch continue;
+            const entries = try sst.readAllEntries(allocator);
             defer {
                 for (entries) |entry| {
                     allocator.free(entry.key);
@@ -714,22 +823,12 @@ pub const CompactionManager = struct {
 
         // Deduplicate by key: keep highest sequence number per key
         var deduped = std.ArrayList(KeyValue).empty;
-        defer {
-            for (deduped.items) |entry| {
-                allocator.free(entry.key);
-                allocator.free(entry.value);
-            }
-            deduped.deinit(allocator);
-        }
+        defer deduped.deinit(allocator);
 
-        // Deduplicate: process in reverse to keep highest-seq entries
-        var i: usize = all_entries.items.len;
-        while (i > 0) {
-            i -= 1;
-            const entry = all_entries.items[i];
-            // Check if we already have an entry for this key in deduped
+        // `lessThan` orders a higher sequence first, so the first copy of a key is the newest.
+        for (all_entries.items) |entry| {
             var found = false;
-            for (deduped.items) |*existing| {
+            for (deduped.items) |existing| {
                 if (std.mem.eql(u8, existing.key, entry.key)) {
                     found = true;
                     break;
@@ -743,8 +842,10 @@ pub const CompactionManager = struct {
 
         const new_level = level + 1;
         if (new_level < self.levels.items.len) {
+            const sst_id = next_sst_id.*;
+            next_sst_id.* = std.math.add(u64, sst_id, 1) catch return error.ArithmeticOverflow;
             const path = try std.fmt.allocPrint(allocator, "{s}/L{d}_{d}.sst", .{
-                sst_dir, new_level, next_sst_id.*,
+                sst_dir, new_level, sst_id,
             });
             defer allocator.free(path);
 
@@ -756,17 +857,29 @@ pub const CompactionManager = struct {
             }
 
             try new_sst.write(deduped.items);
+            errdefer if (owned) |list| forgetOwnedSSTable(list, new_sst);
+            if (owned) |list| try list.append(allocator, new_sst);
             try self.levels.items[new_level].append(allocator, new_sst);
-            next_sst_id.* += 1;
         }
 
         for (sstables) |old_sst| {
+            if (owned) |list| forgetOwnedSSTable(list, old_sst);
             // Delete the SSTable file from disk after compaction merges it
             std.Io.Dir.cwd().deleteFile(@import("io_instance").io, old_sst.path) catch {};
             old_sst.deinit();
             allocator.destroy(old_sst);
         }
         self.levels.items[level].clearRetainingCapacity();
+    }
+
+    fn forgetOwnedSSTable(list: *std.ArrayList(*SSTable), sst: *SSTable) void {
+        var i: usize = 0;
+        while (i < list.items.len) : (i += 1) {
+            if (list.items[i] == sst) {
+                _ = list.orderedRemove(i);
+                return;
+            }
+        }
     }
 
     /// Calculate compaction score for a given level (ratio of current SST count to allowed threshold)
@@ -812,19 +925,32 @@ pub const WriteBatch = struct {
         self.operations.deinit(allocator);
     }
     pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
-        try self.operations.append(self.allocator, .{
+        const owned_key = try self.allocator.dupe(u8, key);
+        const owned_value = self.allocator.dupe(u8, value) catch |err| {
+            self.allocator.free(owned_key);
+            return err;
+        };
+        self.operations.append(self.allocator, .{
             .op = .put,
-            .key = try self.allocator.dupe(u8, key),
-            .value = try self.allocator.dupe(u8, value),
-        });
+            .key = owned_key,
+            .value = owned_value,
+        }) catch |err| {
+            self.allocator.free(owned_key);
+            self.allocator.free(owned_value);
+            return err;
+        };
     }
 
     pub fn delete(self: *Self, key: []u8) !void {
-        try self.operations.append(self.allocator, .{
+        const owned_key = try self.allocator.dupe(u8, key);
+        self.operations.append(self.allocator, .{
             .op = .delete,
-            .key = try self.allocator.dupe(u8, key),
+            .key = owned_key,
             .value = &.{},
-        });
+        }) catch |err| {
+            self.allocator.free(owned_key);
+            return err;
+        };
     }
 
     pub fn clear(self: *Self) void {
@@ -889,6 +1015,7 @@ pub const LSMTree = struct {
         self.memtable.deinit();
         for (self.sstables.items) |sst| {
             sst.deinit();
+            self.allocator.destroy(sst);
         }
         self.sstables.deinit(self.allocator);
         self.compaction.deinit();
@@ -913,11 +1040,11 @@ pub const LSMTree = struct {
                     const s = @as(*State, @ptrCast(@alignCast(ctx)));
                     switch (op) {
                         .insert => {
-                            const seq = s.lsm.nextSequence();
+                            const seq = try s.lsm.nextSequence();
                             try s.lsm.memtable.put(key, value.?, seq);
                         },
                         .delete => {
-                            const seq = s.lsm.nextSequence();
+                            const seq = try s.lsm.nextSequence();
                             try s.lsm.memtable.delete(key, seq);
                         },
                         .commit, .abort => {
@@ -932,6 +1059,8 @@ pub const LSMTree = struct {
                         .m4_state_snapshot,
                         .m4_epoch_advance,
                         .m4_validator_set_rotate,
+                        .m4_gas_balance,
+                        .m4_gas_snapshot,
                         => {
                             // M4 records must never be interleaved into the LSM WAL.
                         },
@@ -949,17 +1078,18 @@ pub const LSMTree = struct {
         return self.recoverWithOptions(.{});
     }
 
-    pub fn nextSequence(self: *Self) u64 {
+    pub fn nextSequence(self: *Self) error{ArithmeticOverflow}!u64 {
         const seq = self.sequence;
-        self.sequence += 1;
+        self.sequence = std.math.add(u64, seq, 1) catch return error.ArithmeticOverflow;
         return seq;
     }
     pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
+        if (self.sequence == std.math.maxInt(u64)) return error.ArithmeticOverflow;
         // Log to WAL first for durability
         if (self.wal) |*w| {
             try w.logInsert(key, value);
         }
-        const seq = self.nextSequence();
+        const seq = try self.nextSequence();
         try self.memtable.put(key, value, seq);
 
         if (self.memtable.needsFlush()) {
@@ -967,18 +1097,23 @@ pub const LSMTree = struct {
         }
     }
 
-    pub fn get(self: *Self, key: []const u8) !?[]const u8 {
-        // Check memtable first
-        if (self.memtable.get(key)) |value| {
-            return value;
+    /// Caller owns the returned bytes. A memtable or newer-table tombstone
+    /// hides older SSTable values. Memtable hits are copied; SSTable hits keep
+    /// the buffer from `probe`.
+    pub fn get(self: *Self, key: []const u8) !?[]u8 {
+        switch (self.memtable.lookup(key)) {
+            .deleted => return null,
+            .value => |value| return try self.allocator.dupe(u8, value),
+            .missing => {},
         }
 
-        // Check SSTables (newest first) with optimized index
-        for (self.sstables.items) |sst| {
-            if (sst.bloom.contains(key)) {
-                if (try sst.read(key)) |value| {
-                    return value;
-                }
+        var i = self.sstables.items.len;
+        while (i > 0) {
+            i -= 1;
+            switch (try self.sstables.items[i].probe(key)) {
+                .deleted => return null,
+                .value => |value| return value,
+                .missing => {},
             }
         }
 
@@ -986,11 +1121,12 @@ pub const LSMTree = struct {
     }
 
     pub fn delete(self: *Self, key: []const u8) !void {
+        if (self.sequence == std.math.maxInt(u64)) return error.ArithmeticOverflow;
         // Log to WAL first for durability
         if (self.wal) |*w| {
             try w.logDelete(key);
         }
-        const seq = self.nextSequence();
+        const seq = try self.nextSequence();
         try self.memtable.delete(key, seq);
 
         if (self.memtable.needsFlush()) {
@@ -1013,16 +1149,21 @@ pub const LSMTree = struct {
         const sst = try self.allocator.create(SSTable);
         sst.* = try SSTable.open(self.allocator, path, level);
         errdefer {
+            std.Io.Dir.cwd().deleteFile(@import("io_instance").io, sst.path) catch {};
             sst.deinit();
             self.allocator.destroy(sst);
         }
         try sst.write(entries);
 
         try self.sstables.append(self.allocator, sst);
+        errdefer _ = self.sstables.orderedRemove(self.sstables.items.len - 1);
 
         // Register with compaction manager so it can be selected for compaction.
         // Levels are pre-allocated in CompactionManager.init, so index is safe.
         try self.compaction.levels.items[level].append(self.allocator, sst);
+        errdefer _ = self.compaction.levels.items[level].orderedRemove(
+            self.compaction.levels.items[level].items.len - 1,
+        );
 
         // Clear memtable after successful flush to prevent unbounded growth
         try self.memtable.clear();
@@ -1032,23 +1173,137 @@ pub const LSMTree = struct {
         return WriteBatch.init(allocator);
     }
 
+    /// Applies operations from the front. An operation stays in the batch until
+    /// it lands in the tree, so a later failure can be retried without repeating
+    /// the ones that already succeeded.
     pub fn batchCommit(self: *Self, batch: *WriteBatch) !void {
-        for (batch.operations.items) |op| {
+        while (batch.operations.items.len > 0) {
+            const op = batch.operations.items[0];
             switch (op.op) {
                 .put => try self.put(op.key, op.value),
                 .delete => try self.delete(op.key),
             }
+            batch.allocator.free(op.key);
+            batch.allocator.free(op.value);
+            _ = batch.operations.orderedRemove(0);
         }
-        // Log commit to WAL after all operations
         if (self.wal) |*w| {
             try w.logCommit();
             try w.syncAll();
         }
-        batch.clear();
     }
 
     pub fn count(self: Self) usize {
         return self.memtable.entries.items.len + self.sstables.items.len;
+    }
+
+    /// Live key/value pairs across the memtable and every SSTable.
+    /// The newest sequence wins. Tombstones are omitted. Caller owns the
+    /// returned keys and values.
+    pub fn collectLive(self: *Self, allocator: std.mem.Allocator) ![]KeyValue {
+        const Live = struct {
+            value: []u8,
+            seq: u64,
+            deleted: bool,
+        };
+        var map = std.StringHashMapUnmanaged(Live).empty;
+        errdefer {
+            var it = map.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.value);
+            }
+            map.deinit(allocator);
+        }
+
+        const consider = struct {
+            fn apply(
+                alloc: std.mem.Allocator,
+                m: *std.StringHashMapUnmanaged(Live),
+                key: []const u8,
+                value: []const u8,
+                seq: u64,
+                deleted: bool,
+            ) !void {
+                if (m.getPtr(key)) |existing| {
+                    if (seq < existing.seq) return;
+                    if (seq == existing.seq and deleted and !existing.deleted) return;
+                    const owned_value = try alloc.dupe(u8, value);
+                    alloc.free(existing.value);
+                    existing.value = owned_value;
+                    existing.seq = seq;
+                    existing.deleted = deleted;
+                    return;
+                }
+                const owned_key = try alloc.dupe(u8, key);
+                errdefer alloc.free(owned_key);
+                const owned_value = try alloc.dupe(u8, value);
+                errdefer alloc.free(owned_value);
+                try m.put(alloc, owned_key, .{
+                    .value = owned_value,
+                    .seq = seq,
+                    .deleted = deleted,
+                });
+            }
+        };
+
+        for (self.memtable.getEntries()) |entry| {
+            try consider.apply(allocator, &map, entry.key, entry.value, entry.seq, entry.deleted);
+        }
+        for (self.sstables.items) |sst| {
+            const rows = try sst.readAllEntries(allocator);
+            defer {
+                for (rows) |row| {
+                    allocator.free(row.key);
+                    allocator.free(row.value);
+                }
+                allocator.free(rows);
+            }
+            for (rows) |row| {
+                try consider.apply(allocator, &map, row.key, row.value, row.seq, row.deleted);
+            }
+        }
+
+        var out = std.ArrayList(KeyValue).empty;
+        errdefer {
+            for (out.items) |entry| {
+                allocator.free(entry.key);
+                allocator.free(entry.value);
+            }
+            out.deinit(allocator);
+        }
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.deleted) continue;
+            const key = try allocator.dupe(u8, entry.key_ptr.*);
+            const value = allocator.dupe(u8, entry.value_ptr.value) catch |err| {
+                allocator.free(key);
+                return err;
+            };
+            out.append(allocator, .{
+                .key = key,
+                .value = value,
+                .seq = entry.value_ptr.seq,
+                .deleted = false,
+            }) catch |err| {
+                allocator.free(key);
+                allocator.free(value);
+                return err;
+            };
+        }
+        std.mem.sort(KeyValue, out.items, {}, struct {
+            fn lessThan(_: void, a: KeyValue, b: KeyValue) bool {
+                return std.mem.lessThan(u8, a.key, b.key);
+            }
+        }.lessThan);
+        const owned = try out.toOwnedSlice(allocator);
+        var cleanup = map.iterator();
+        while (cleanup.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.value);
+        }
+        map.deinit(allocator);
+        return owned;
     }
 
     /// Trigger compaction if needed (sync path — may block).
@@ -1057,7 +1312,7 @@ pub const LSMTree = struct {
         if (!self.compaction.needsCompaction()) return;
         for (self.compaction.levels.items, 0..) |level_ssts, level| {
             if (level_ssts.items.len > 3) {
-                try self.compaction.compact(level, self.allocator, self.config.sst_dir, &self.sequence);
+                try self.compaction.compact(level, self.allocator, self.config.sst_dir, &self.sequence, &self.sstables);
             }
         }
     }
@@ -1075,7 +1330,7 @@ pub const LSMTree = struct {
             if (!tree.compaction.needsCompaction()) continue;
             for (tree.compaction.levels.items, 0..) |level_ssts, level| {
                 if (level_ssts.items.len > 3) {
-                    tree.compaction.compact(level, tree.allocator, tree.config.sst_dir, &tree.sequence) catch continue;
+                    tree.compaction.compact(level, tree.allocator, tree.config.sst_dir, &tree.sequence, &tree.sstables) catch continue;
                 }
             }
         }
@@ -1091,8 +1346,460 @@ test "LSMTree basic operations" {
 
     try tree.put("key1", "value1");
     const val = try tree.get("key1");
+    defer if (val) |owned| allocator.free(owned);
     try std.testing.expect(val != null);
     try std.testing.expect(std.mem.eql(u8, val.?, "value1"));
+}
+
+test "LSMTree flush closes each SSTable once" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_flush_once";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var tree = try LSMTree.init(allocator, .{ .sst_dir = dir });
+    defer tree.deinit();
+    try tree.put("key1", "value1");
+    try tree.flushMemtable();
+    try tree.compaction.compact(0, allocator, dir, &tree.sequence, &tree.sstables);
+
+    const val = try tree.get("key1");
+    defer if (val) |owned| allocator.free(owned);
+    try std.testing.expect(val != null);
+    try std.testing.expect(std.mem.eql(u8, val.?, "value1"));
+    try std.testing.expectEqual(@as(usize, 1), tree.sstables.items.len);
+}
+
+test "LSMTree delete hides a value already flushed" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_delete_hides";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var tree = try LSMTree.init(allocator, .{ .sst_dir = dir });
+    defer tree.deinit();
+    try tree.put("key1", "value1");
+    try tree.flushMemtable();
+    try tree.delete("key1");
+    try std.testing.expect((try tree.get("key1")) == null);
+
+    try tree.put("key1", "value2");
+    const val = try tree.get("key1");
+    defer if (val) |owned| allocator.free(owned);
+    try std.testing.expect(val != null);
+    try std.testing.expect(std.mem.eql(u8, val.?, "value2"));
+}
+
+test "LSMTree refuses to wrap its sequence" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    var tree = try LSMTree.init(allocator, .{ .sst_dir = "/tmp/lsm_seq_overflow" });
+    defer tree.deinit();
+    tree.sequence = std.math.maxInt(u64);
+    try std.testing.expectError(error.ArithmeticOverflow, tree.put("k", "v"));
+    try std.testing.expectError(error.ArithmeticOverflow, tree.delete("k"));
+    try std.testing.expectEqual(std.math.maxInt(u64), tree.sequence);
+    try std.testing.expect((try tree.get("k")) == null);
+}
+
+test "compaction frees each merged entry once" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_compact_once";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var mgr = try CompactionManager.init(allocator, .{});
+    const path = try std.fmt.allocPrint(allocator, "{s}/L0_seed.sst", .{dir});
+    defer allocator.free(path);
+    const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    created.close(std.testing.io);
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    const key = try allocator.dupe(u8, "k");
+    defer allocator.free(key);
+    const value = try allocator.dupe(u8, "v");
+    defer allocator.free(value);
+    const entries = [_]KeyValue{.{ .key = key, .value = value, .seq = 1 }};
+    try sst.write(&entries);
+    try mgr.levels.items[0].append(allocator, sst);
+
+    var next_id: u64 = 7;
+    try mgr.compact(0, allocator, dir, &next_id, null);
+    const produced = if (mgr.levels.items[1].items.len == 1) mgr.levels.items[1].items[0] else null;
+    if (produced) |out| {
+        out.deinit();
+        allocator.destroy(out);
+    }
+    mgr.deinit();
+
+    try std.testing.expectEqual(@as(u64, 8), next_id);
+}
+
+test "compaction keeps the last level" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_compact_last_level";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var mgr = try CompactionManager.init(allocator, .{ .max_levels = 1 });
+    const path = try std.fmt.allocPrint(allocator, "{s}/L0_seed.sst", .{dir});
+    defer allocator.free(path);
+    const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    created.close(std.testing.io);
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    const key = try allocator.dupe(u8, "k");
+    defer allocator.free(key);
+    const value = try allocator.dupe(u8, "v");
+    defer allocator.free(value);
+    try sst.write(&[_]KeyValue{.{ .key = key, .value = value, .seq = 1 }});
+    try mgr.levels.items[0].append(allocator, sst);
+
+    var next_id: u64 = 7;
+    try mgr.compact(0, allocator, dir, &next_id, null);
+    try std.testing.expectEqual(@as(u64, 7), next_id);
+    try std.testing.expectEqual(@as(usize, 1), mgr.levels.items[0].items.len);
+
+    const got = try sst.read(key);
+    defer if (got) |owned| allocator.free(owned);
+    try std.testing.expect(got != null);
+    try std.testing.expect(std.mem.eql(u8, got.?, "v"));
+
+    sst.deinit();
+    allocator.destroy(sst);
+    mgr.deinit();
+}
+
+test "compaction leaves every source table when one record cannot be read" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_compact_corrupt";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var mgr = try CompactionManager.init(allocator, .{});
+    const key = try allocator.dupe(u8, "k");
+    defer allocator.free(key);
+    const value = try allocator.dupe(u8, "v");
+    defer allocator.free(value);
+    const entries = [_]KeyValue{.{ .key = key, .value = value, .seq = 1 }};
+
+    const good_path = try std.fmt.allocPrint(allocator, "{s}/good.sst", .{dir});
+    defer allocator.free(good_path);
+    const bad_path = try std.fmt.allocPrint(allocator, "{s}/bad.sst", .{dir});
+    defer allocator.free(bad_path);
+    const good_file = try std.Io.Dir.cwd().createFile(std.testing.io, good_path, .{ .truncate = true });
+    good_file.close(std.testing.io);
+    const bad_file = try std.Io.Dir.cwd().createFile(std.testing.io, bad_path, .{ .truncate = true });
+    bad_file.close(std.testing.io);
+
+    const good = try allocator.create(SSTable);
+    good.* = try SSTable.open(allocator, good_path, 0);
+    try good.write(&entries);
+    const bad = try allocator.create(SSTable);
+    bad.* = try SSTable.open(allocator, bad_path, 0);
+    try bad.write(&entries);
+    bad.index.items[0].offset = 1024 * 1024;
+
+    try mgr.levels.items[0].append(allocator, good);
+    try mgr.levels.items[0].append(allocator, bad);
+
+    var next_id: u64 = 3;
+    try std.testing.expectError(error.CorruptSSTable, mgr.compact(0, allocator, dir, &next_id, null));
+    try std.testing.expectEqual(@as(u64, 3), next_id);
+    try std.testing.expectEqual(@as(usize, 2), mgr.levels.items[0].items.len);
+
+    const got = try good.read(key);
+    defer if (got) |owned| allocator.free(owned);
+    try std.testing.expect(got != null);
+    try std.testing.expect(std.mem.eql(u8, got.?, "v"));
+
+    good.deinit();
+    allocator.destroy(good);
+    bad.deinit();
+    allocator.destroy(bad);
+    mgr.deinit();
+}
+
+test "compaction keeps the newest value for each key" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_compact_newest";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var mgr = try CompactionManager.init(allocator, .{});
+    const key_a = try allocator.dupe(u8, "a");
+    defer allocator.free(key_a);
+    const old_value = try allocator.dupe(u8, "old");
+    defer allocator.free(old_value);
+    const new_value = try allocator.dupe(u8, "new");
+    defer allocator.free(new_value);
+    const key_b = try allocator.dupe(u8, "b");
+    defer allocator.free(key_b);
+    const kept = try allocator.dupe(u8, "keep");
+    defer allocator.free(kept);
+    const tomb = try allocator.dupe(u8, "");
+    defer allocator.free(tomb);
+
+    const older_path = try std.fmt.allocPrint(allocator, "{s}/older.sst", .{dir});
+    defer allocator.free(older_path);
+    const newer_path = try std.fmt.allocPrint(allocator, "{s}/newer.sst", .{dir});
+    defer allocator.free(newer_path);
+    const older_file = try std.Io.Dir.cwd().createFile(std.testing.io, older_path, .{ .truncate = true });
+    older_file.close(std.testing.io);
+    const newer_file = try std.Io.Dir.cwd().createFile(std.testing.io, newer_path, .{ .truncate = true });
+    newer_file.close(std.testing.io);
+
+    const older = try allocator.create(SSTable);
+    older.* = try SSTable.open(allocator, older_path, 0);
+    try older.write(&[_]KeyValue{
+        .{ .key = key_a, .value = old_value, .seq = 1 },
+        .{ .key = key_b, .value = kept, .seq = 1 },
+    });
+    const newer = try allocator.create(SSTable);
+    newer.* = try SSTable.open(allocator, newer_path, 0);
+    try newer.write(&[_]KeyValue{
+        .{ .key = key_a, .value = new_value, .seq = 2 },
+        .{ .key = key_b, .value = tomb, .seq = 2, .deleted = true },
+    });
+    try mgr.levels.items[0].append(allocator, older);
+    try mgr.levels.items[0].append(allocator, newer);
+
+    var next_id: u64 = 4;
+    try mgr.compact(0, allocator, dir, &next_id, null);
+    try std.testing.expectEqual(@as(u64, 5), next_id);
+    try std.testing.expectEqual(@as(usize, 1), mgr.levels.items[1].items.len);
+    const produced = mgr.levels.items[1].items[0];
+
+    const got_a = try produced.read(key_a);
+    defer if (got_a) |owned| allocator.free(owned);
+    try std.testing.expect(got_a != null);
+    try std.testing.expect(std.mem.eql(u8, got_a.?, "new"));
+    try std.testing.expect((try produced.read(key_b)) == null);
+
+    produced.deinit();
+    allocator.destroy(produced);
+    mgr.deinit();
+}
+
+test "compaction refuses to wrap the sstable id" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_sst_id_overflow";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    var mgr = try CompactionManager.init(allocator, .{});
+    const path = try std.fmt.allocPrint(allocator, "{s}/L0_seed.sst", .{dir});
+    defer allocator.free(path);
+    const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    created.close(std.testing.io);
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    const key = try allocator.dupe(u8, "k");
+    defer allocator.free(key);
+    const value = try allocator.dupe(u8, "v");
+    defer allocator.free(value);
+    try sst.write(&[_]KeyValue{.{ .key = key, .value = value, .seq = 1 }});
+    try mgr.levels.items[0].append(allocator, sst);
+
+    var next_id: u64 = std.math.maxInt(u64);
+    try std.testing.expectError(error.ArithmeticOverflow, mgr.compact(0, allocator, dir, &next_id, null));
+    try std.testing.expectEqual(std.math.maxInt(u64), next_id);
+    try std.testing.expectEqual(@as(usize, 1), mgr.levels.items[0].items.len);
+    try std.testing.expectEqual(@as(usize, 0), mgr.levels.items[1].items.len);
+    sst.deinit();
+    mgr.deinit();
+    allocator.destroy(sst);
+}
+
+test "SSTable read returns the stored value" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_sst_read";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/point.sst", .{dir});
+    defer allocator.free(path);
+    const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    created.close(std.testing.io);
+
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    defer {
+        sst.deinit();
+        allocator.destroy(sst);
+    }
+
+    const live_key = try allocator.dupe(u8, "alpha");
+    defer allocator.free(live_key);
+    const live_value = try allocator.dupe(u8, "kept");
+    defer allocator.free(live_value);
+    const dead_key = try allocator.dupe(u8, "beta");
+    defer allocator.free(dead_key);
+    const dead_value = try allocator.dupe(u8, "gone");
+    defer allocator.free(dead_value);
+    const entries = [_]KeyValue{
+        .{ .key = live_key, .value = live_value, .seq = 1 },
+        .{ .key = dead_key, .value = dead_value, .seq = 2, .deleted = true },
+    };
+    try sst.write(&entries);
+
+    const got = try sst.read(live_key);
+    defer if (got) |value| allocator.free(value);
+    try std.testing.expect(got != null);
+    try std.testing.expect(std.mem.eql(u8, got.?, "kept"));
+    try std.testing.expect((try sst.read(dead_key)) == null);
+    try std.testing.expect((try sst.read("missing")) == null);
+}
+
+test "SSTable write rejects a record that does not fit in its length field" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_sst_record_size";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/huge.sst", .{dir});
+    defer allocator.free(path);
+    const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    created.close(std.testing.io);
+
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    defer {
+        sst.deinit();
+        allocator.destroy(sst);
+    }
+
+    const key: []u8 = @as([*]u8, @ptrFromInt(0x1000))[0 .. @as(usize, std.math.maxInt(u32)) + 1];
+    var value = [_]u8{'v'};
+    const entries = [_]KeyValue{
+        .{ .key = key, .value = &value, .seq = 1 },
+    };
+    try std.testing.expectError(error.RecordTooLarge, sst.write(&entries));
+    try std.testing.expectEqual(@as(usize, 0), sst.index.items.len);
+}
+
+test "SSTable index write rejects more entries than its count field can hold" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_sst_index_count";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/index.sst", .{dir});
+    defer allocator.free(path);
+    const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
+    created.close(std.testing.io);
+
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    defer {
+        sst.deinit();
+        allocator.destroy(sst);
+    }
+
+    const saved = sst.index;
+    defer sst.index = saved;
+    sst.index.items = @as([*]SSTableIndexEntry, @ptrFromInt(0x1000))[0 .. @as(usize, std.math.maxInt(u32)) + 1];
+    try std.testing.expectError(error.IndexTooLarge, sst.writeIndex());
+}
+
+test "SSTable opened for creation stays readable" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_sst_create";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/created.sst", .{dir});
+    defer allocator.free(path);
+    const sst = try allocator.create(SSTable);
+    sst.* = try SSTable.open(allocator, path, 0);
+    defer {
+        sst.deinit();
+        allocator.destroy(sst);
+    }
+
+    const key = try allocator.dupe(u8, "k");
+    defer allocator.free(key);
+    const value = try allocator.dupe(u8, "v");
+    defer allocator.free(value);
+    const entries = [_]KeyValue{.{ .key = key, .value = value, .seq = 1 }};
+    try sst.write(&entries);
+
+    const got = try sst.read(key);
+    defer if (got) |owned| allocator.free(owned);
+    try std.testing.expect(got != null);
+    try std.testing.expect(std.mem.eql(u8, got.?, "v"));
+}
+
+test "SSTable reopen finds every stored key" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+    const dir = "/tmp/lsm_sst_reopen";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+    try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/reopen.sst", .{dir});
+    defer allocator.free(path);
+
+    const first_key = try allocator.dupe(u8, "alpha");
+    defer allocator.free(first_key);
+    const first_value = try allocator.dupe(u8, "one");
+    defer allocator.free(first_value);
+    const second_key = try allocator.dupe(u8, "mu");
+    defer allocator.free(second_key);
+    const second_value = try allocator.dupe(u8, "two");
+    defer allocator.free(second_value);
+
+    {
+        const sst = try allocator.create(SSTable);
+        sst.* = try SSTable.open(allocator, path, 0);
+        defer {
+            sst.deinit();
+            allocator.destroy(sst);
+        }
+        try sst.write(&[_]KeyValue{
+            .{ .key = first_key, .value = first_value, .seq = 1 },
+            .{ .key = second_key, .value = second_value, .seq = 2 },
+        });
+    }
+
+    const reopened = try allocator.create(SSTable);
+    reopened.* = try SSTable.open(allocator, path, 0);
+    defer {
+        reopened.deinit();
+        allocator.destroy(reopened);
+    }
+    const first = try reopened.read(first_key);
+    defer if (first) |owned| allocator.free(owned);
+    const second = try reopened.read(second_key);
+    defer if (second) |owned| allocator.free(owned);
+    try std.testing.expect(first != null);
+    try std.testing.expect(std.mem.eql(u8, first.?, "one"));
+    try std.testing.expect(second != null);
+    try std.testing.expect(std.mem.eql(u8, second.?, "two"));
 }
 
 test "LSMTree write batch" {
@@ -1108,8 +1815,55 @@ test "LSMTree write batch" {
     try batch.put("key2", "value2");
     try tree.batchCommit(&batch);
 
-    try std.testing.expect((try tree.get("key1")) != null);
-    try std.testing.expect((try tree.get("key2")) != null);
+    const first = try tree.get("key1");
+    defer if (first) |owned| allocator.free(owned);
+    const second = try tree.get("key2");
+    defer if (second) |owned| allocator.free(owned);
+    try std.testing.expect(first != null);
+    try std.testing.expect(second != null);
+}
+
+test "LSMTree batch commit drops only the operations that landed" {
+    const allocator = std.testing.allocator;
+    @import("io_instance").io = std.testing.io;
+
+    var tree = try LSMTree.init(allocator, .{ .sst_dir = "/tmp/lsm_batch_partial" });
+    defer tree.deinit();
+
+    var batch = WriteBatch.init(allocator);
+    defer batch.deinit(allocator);
+    try batch.put("key1", "value1");
+    try batch.put("key2", "value2");
+    tree.sequence = std.math.maxInt(u64) - 1;
+
+    try std.testing.expectError(error.ArithmeticOverflow, tree.batchCommit(&batch));
+    try std.testing.expectEqual(@as(usize, 1), batch.operations.items.len);
+    try std.testing.expect(std.mem.eql(u8, batch.operations.items[0].key, "key2"));
+
+    const first = try tree.get("key1");
+    defer if (first) |owned| allocator.free(owned);
+    try std.testing.expect(first != null);
+    try std.testing.expect(std.mem.eql(u8, first.?, "value1"));
+    try std.testing.expect((try tree.get("key2")) == null);
+}
+
+test "MemTable refuses a write that would wrap its byte count" {
+    const allocator = std.testing.allocator;
+    var table = try MemTable.init(allocator, std.math.maxInt(usize));
+    defer table.deinit();
+
+    table.size = std.math.maxInt(usize) - 8;
+    try std.testing.expectError(error.MemTableFull, table.put("hello", "world", 1));
+    try std.testing.expectEqual(@as(usize, 0), table.entries.items.len);
+    try std.testing.expectEqual(std.math.maxInt(usize) - 8, table.size);
+}
+
+test "search midpoint stays inside a range at the top of usize" {
+    const low = std.math.maxInt(usize) - 4;
+    const high = std.math.maxInt(usize) - 1;
+    const mid = searchMidpoint(low, high);
+    try std.testing.expect(mid >= low);
+    try std.testing.expect(mid < high);
 }
 
 test "Bloom filter" {
@@ -1143,8 +1897,12 @@ test "LSMTree + WAL recover after crash" {
         try tree.put("key3", "value3");
 
         // Verify data is there before crash
-        try std.testing.expect((try tree.get("key1")) != null);
-        try std.testing.expect((try tree.get("key2")) != null);
+        const before_1 = try tree.get("key1");
+        defer if (before_1) |owned| allocator.free(owned);
+        const before_2 = try tree.get("key2");
+        defer if (before_2) |owned| allocator.free(owned);
+        try std.testing.expect(before_1 != null);
+        try std.testing.expect(before_2 != null);
 
         // Simulate crash - no checkpoint, no proper close
         // (deinit will close WAL but data should be durable)
@@ -1159,14 +1917,17 @@ test "LSMTree + WAL recover after crash" {
         _ = try tree.recover();
         // Verify all data is restored from WAL
         const val1 = try tree.get("key1");
+        defer if (val1) |owned| allocator.free(owned);
         try std.testing.expect(val1 != null);
         try std.testing.expect(std.mem.eql(u8, val1.?, "value1"));
 
         const val2 = try tree.get("key2");
+        defer if (val2) |owned| allocator.free(owned);
         try std.testing.expect(val2 != null);
         try std.testing.expect(std.mem.eql(u8, val2.?, "value2"));
 
         const val3 = try tree.get("key3");
+        defer if (val3) |owned| allocator.free(owned);
         try std.testing.expect(val3 != null);
         try std.testing.expect(std.mem.eql(u8, val3.?, "value3"));
     }

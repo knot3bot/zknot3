@@ -31,15 +31,15 @@ comptime {
     _ = @import("test/property/byzantine_simulation_test.zig");
     _ = @import("test/fuzz/fuzz_framework.zig");
     _ = @import("test/fuzz/ObjectIDFuzzTests.zig");
+    _ = @import("test/fuzz/interpreter_fuzz.zig");
     _ = @import("test/unit/performance_bench_test.zig");
     _ = @import("src/form/network/P2PServer.zig");
     _ = @import("src/property/move_vm/stdlib.zig");
     _ = @import("src/property/move_vm/License.zig");
     _ = @import("src/property/crypto/ZkLogin.zig");
+    _ = @import("src/property/crypto/Merkle.zig");
     _ = @import("src/property/move_vm/agent_registry.zig");
     _ = @import("src/property/move_vm/marketplace.zig");
     _ = @import("src/property/move_vm/agent_messaging.zig");
     _ = @import("src/test/e2e_test.zig");
 }
-
-

@@ -5,6 +5,7 @@
 bind_address = "0.0.0.0"
 rpc_port = 9003
 p2p_enabled = true
+transport = "tcp"
 p2p_address = "0.0.0.0"
 p2p_port = 8083
 max_connections = 1024
@@ -19,6 +20,7 @@ min_validators = 4
 target_validators = 100
 max_validators = 500
 epoch_duration_secs = 86400
+epoch_reward = 0
 quorum_threshold = 200
 vote_quorum = 3
 round_interval_secs = 2

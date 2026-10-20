@@ -40,6 +40,11 @@ pub const NetworkConfig = struct {
     p2p_enabled: bool = false,
     /// P2P listen address
     p2p_address: []const u8 = "0.0.0.0:8083",
+    /// Public dialable `host:port` advertised in authenticated P2P handshake
+    /// listen trailer (signed response/ack via Blake3 listen_commitment).
+    /// When empty, `resolveP2pAdvertiseAddress` falls back to `p2p_address`
+    /// if that is dialable (not a wildcard bind like `0.0.0.0`).
+    p2p_advertise_address: []const u8 = "",
     /// P2P port
     p2p_port: u16 = 8083,
     /// Local peer ID for P2P
@@ -66,6 +71,23 @@ pub const NetworkConfig = struct {
     p2p_peer_score_ban_threshold: i32 = -100,
     /// Temporary peer ban duration in seconds
     p2p_peer_ban_seconds: i64 = 300,
+    /// Most TCP peers accepted from one IPv4 /16. Zero disables the cap.
+    p2p_max_peers_per_16: usize = 8,
+    /// Most TCP peers accepted from one IPv6 /48. Zero disables the cap.
+    p2p_max_peers_per_48: usize = 8,
+    /// Peer-table slots held for outbound dials (eclipse recovery). Zero disables.
+    p2p_reserved_outbound_slots: usize = 8,
+    /// Force-replace the oldest eligible peer every N seconds (eclipse
+    /// resistance). Zero disables periodic rotation. Default 600 (10 minutes).
+    p2p_peer_rotation_interval_secs: i64 = 600,
+    /// Inbound peer share (percent, 0–100) that pauses new inbound accepts
+    /// and leaves the node outbound-only. Zero disables. Default 80.
+    p2p_inbound_ratio_limit: u8 = 80,
+    /// `tcp` is the frozen mainnet transport. `quic` is refused unless the
+    /// binary was built with `-Dquic`.
+    transport: []const u8 = "tcp",
+    /// Path of a `k3gen01` genesis file. Empty means the all-zero digest.
+    genesis_path: []const u8 = "",
     /// Maximum HTTP request body size in bytes
     max_request_body_size: usize = 1024 * 1024, // 1MB
     /// Maximum concurrent HTTP connections
@@ -76,16 +98,27 @@ pub const NetworkConfig = struct {
     tls_key_path: ?[]const u8 = null,
     known_validators: []const KnownValidator = &.{},
 
+    /// Dial string to put in the handshake listen trailer, or empty when none.
+    /// Prefer explicit `p2p_advertise_address`; else `p2p_address` when dialable.
+    pub fn resolveP2pAdvertiseAddress(self: NetworkConfig) []const u8 {
+        if (self.p2p_advertise_address.len > 0) return self.p2p_advertise_address;
+        if (isDialableP2pAddress(self.p2p_address)) return self.p2p_address;
+        return "";
+    }
+
     /// Deep-copy every string and slice field into `allocator`.
     pub fn dupe(self: NetworkConfig, allocator: std.mem.Allocator) !NetworkConfig {
         var out = self;
         out.bind_address = try allocator.dupe(u8, self.bind_address);
         out.admin_token = try allocator.dupe(u8, self.admin_token);
         out.p2p_address = try allocator.dupe(u8, self.p2p_address);
+        out.p2p_advertise_address = try allocator.dupe(u8, self.p2p_advertise_address);
         out.local_peer_id = try allocator.dupe(u8, self.local_peer_id);
         out.metrics_address = try allocator.dupe(u8, self.metrics_address);
         out.tls_cert_path = try dupeOpt(u8, self.tls_cert_path, allocator);
         out.tls_key_path = try dupeOpt(u8, self.tls_key_path, allocator);
+        out.transport = try allocator.dupe(u8, self.transport);
+        out.genesis_path = try allocator.dupe(u8, self.genesis_path);
         out.bootstrap_peers = try dupeSliceOfSlices(self.bootstrap_peers, allocator);
         if (self.known_validators.len > 0) {
             const kvs = try allocator.alloc(KnownValidator, self.known_validators.len);
@@ -105,6 +138,21 @@ pub const NetworkConfig = struct {
 /// Returns true if TLS is configured (both cert and key paths are set).
 pub fn tlsEnabled(config: NetworkConfig) bool {
     return config.tls_cert_path != null and config.tls_key_path != null;
+}
+
+/// True when `addr` looks like a dialable `host:port` (not wildcard bind).
+fn isDialableP2pAddress(addr: []const u8) bool {
+    if (addr.len == 0) return false;
+    if (std.mem.startsWith(u8, addr, "0.0.0.0")) return false;
+    if (std.mem.eql(u8, addr, "*") or std.mem.startsWith(u8, addr, "*:")) return false;
+    // IPv6 unspecified bind forms.
+    if (std.mem.eql(u8, addr, "::") or std.mem.startsWith(u8, addr, ":::") or std.mem.startsWith(u8, addr, "[::]")) return false;
+    const colon = std.mem.lastIndexOfScalar(u8, addr, ':') orelse return false;
+    if (colon == 0) return false;
+    const port = addr[colon + 1 ..];
+    if (port.len == 0) return false;
+    _ = std.fmt.parseInt(u16, port, 10) catch return false;
+    return true;
 }
 
 fn dupeOpt(comptime T: type, src: ?[]const T, allocator: std.mem.Allocator) !?[]T {
@@ -133,6 +181,9 @@ pub const ConsensusConfig = struct {
     max_validators: usize = 500,
     /// Epoch duration in seconds
     epoch_duration_secs: u64 = 86400, // 24 hours
+    /// Stake units minted at each epoch boundary and split pro-rata across
+    /// delegations. Zero disables minting.
+    epoch_reward: u64 = 0,
     /// Quorum stake threshold (fraction of total)
     quorum_threshold: u64 = 200, // basis points (2%)
     /// Backup quorum threshold
@@ -199,6 +250,11 @@ pub const StorageConfig = struct {
     compaction_interval_secs: u64 = 3600,
     /// Skip corrupted WAL records during recovery (default: true for resilience)
     recovery_skip_corrupted: bool = true,
+    /// Seconds between periodic `m4_gas_snapshot` WAL appends during runtime.
+    /// Complements per-op `m4_gas_balance` durability so crash recovery can
+    /// skip replaying long balance tails. `0` disables periodic snapshots
+    /// (clean shutdown still writes one snapshot). Default 300 (5 minutes).
+    gas_snapshot_interval_secs: i64 = 300,
 
     /// Deep-copy every string field into `allocator`.
     pub fn dupe(self: StorageConfig, allocator: std.mem.Allocator) !StorageConfig {
@@ -222,6 +278,13 @@ pub const VMConfig = struct {
     base_instruction_gas: u64 = 1,
     /// Storage gas per byte
     storage_gas_per_byte: u64 = 10,
+    /// When true, Executor requires gas_payer balance >= gas_budget and deducts
+    /// gas_used after execution. Default false so existing Node/e2e paths stay free-gas.
+    enforce_gas_payment: bool = false,
+    /// Seed amount applied to local authority identity (when available) and each
+    /// `authority.gas_station_allowlist` entry when `enforce_gas_payment` is enabled.
+    /// Pragmatic ledger only — not genesis coin objects.
+    initial_gas_balance: u64 = 1_000_000_000,
 };
 
 /// Authority/validator configuration
@@ -246,6 +309,10 @@ pub const AuthorityConfig = struct {
     validator_index: usize = 0,
     /// Extra Ed25519 seeds for M4 `buildCheckpointProof` signatures, appended after `signing_key` (same message, distinct validator ids).
     checkpoint_proof_extra_signing_seeds: []const [32]u8 = &.{},
+    /// Hex seed file. Used when `signing_key` is null. The file is not logged.
+    signing_key_path: []const u8 = "",
+    /// Environment variable holding the 64-char hex seed. Preferred over the file.
+    signing_key_env: []const u8 = "",
     /// Optional BLS signing seed used for aggregated checkpoint signature payloads.
     bls_signing_seed: ?[32]u8 = null,
     /// Extra BLS seeds aggregated together with `bls_signing_seed`.
@@ -255,6 +322,8 @@ pub const AuthorityConfig = struct {
     pub fn dupe(self: AuthorityConfig, allocator: std.mem.Allocator) !AuthorityConfig {
         var out = self;
         out.address = try allocator.dupe(u8, self.address);
+        out.signing_key_path = try allocator.dupe(u8, self.signing_key_path);
+        out.signing_key_env = try allocator.dupe(u8, self.signing_key_env);
         out.name = try allocator.dupe(u8, self.name);
         out.description = try allocator.dupe(u8, self.description);
         out.gas_station_allowlist = try allocator.dupe([32]u8, self.gas_station_allowlist);
@@ -304,6 +373,7 @@ pub const Config = struct {
         if (self.network.p2p_max_messages_per_peer_per_second == 0 or
             self.network.p2p_max_messages_per_type_per_second == 0) return error.InvalidP2PRateLimit;
         if (self.network.p2p_peer_ban_seconds <= 0) return error.InvalidP2PBanWindow;
+        if (self.network.p2p_inbound_ratio_limit > 100) return error.InvalidP2PInboundRatioLimit;
         if (self.consensus.max_messages_per_tick == 0) return error.InvalidConsensusMessageBudget;
         // Port conflict: RPC and P2P must use different ports
         if (self.network.rpc_port == self.network.p2p_port) return error.PortConflict;
@@ -311,6 +381,35 @@ pub const Config = struct {
         if (!self.is_dev and self.storage.data_dir.len == 0) return error.MissingDataDir;
         // Unauthenticated P2P is forbidden in production environment
         if (!self.is_dev and self.allow_unauthenticated_p2p) return error.UnauthenticatedP2PForbiddenInProduction;
+        if (!std.mem.eql(u8, self.network.transport, "tcp") and !std.mem.eql(u8, self.network.transport, "quic")) {
+            return error.InvalidTransport;
+        }
+        if (std.mem.eql(u8, self.network.transport, "quic") and !@import("quic_options").enabled) {
+            return error.QuicTransportRequiresBuildFlag;
+        }
+        if (self.consensus.validator_enabled) {
+            if (self.authority.stake == 0) return error.InvalidValidatorStake;
+            if (!self.network.p2p_enabled) return error.ValidatorRequiresP2P;
+        }
+    }
+
+    /// Fill `signing_key` from the environment variable or a hex file.
+    /// An already-set key is left in place. Nothing about the seed is logged.
+    pub fn resolveSigningKey(authority: *AuthorityConfig, allocator: std.mem.Allocator) !void {
+        if (authority.signing_key != null) return;
+        if (authority.signing_key_env.len > 0) {
+            var name: [128]u8 = undefined;
+            if (authority.signing_key_env.len >= name.len) return error.InvalidSigningKey;
+            @memcpy(name[0..authority.signing_key_env.len], authority.signing_key_env);
+            name[authority.signing_key_env.len] = 0;
+            const raw = std.c.getenv(name[0..authority.signing_key_env.len :0]) orelse return error.MissingSigningKey;
+            authority.signing_key = try @import("Genesis.zig").parseHex32(std.mem.span(raw));
+            return;
+        }
+        if (authority.signing_key_path.len == 0) return;
+        const bytes = std.Io.Dir.cwd().readFileAlloc(@import("io_instance").io, authority.signing_key_path, allocator, std.Io.Limit.limited(128)) catch return error.InvalidSigningKey;
+        defer allocator.free(bytes);
+        authority.signing_key = try @import("Genesis.zig").parseHex32(bytes);
     }
 
     /// Builder pattern: chainable config construction.
@@ -535,6 +634,23 @@ pub const Metrics = struct {
     }
 };
 
+test "NetworkConfig.resolveP2pAdvertiseAddress prefers explicit then dialable bind" {
+    var net = NetworkConfig{};
+    net.p2p_address = "0.0.0.0:8083";
+    net.p2p_advertise_address = "";
+    try std.testing.expectEqualStrings("", net.resolveP2pAdvertiseAddress());
+
+    net.p2p_address = "127.0.0.1:8083";
+    try std.testing.expectEqualStrings("127.0.0.1:8083", net.resolveP2pAdvertiseAddress());
+
+    net.p2p_advertise_address = "203.0.113.9:8083";
+    try std.testing.expectEqualStrings("203.0.113.9:8083", net.resolveP2pAdvertiseAddress());
+
+    net.p2p_address = "0.0.0.0";
+    net.p2p_advertise_address = "";
+    try std.testing.expectEqualStrings("", net.resolveP2pAdvertiseAddress());
+}
+
 test "Config.validate rejects port conflict" {
     var cfg = Config{};
     cfg.network.rpc_port = 9003;
@@ -552,7 +668,44 @@ test "Config.validate requires data_dir for non-dev" {
 test "Config default passes validation" {
     var cfg = Config.default();
     cfg.is_dev = true;
+    try std.testing.expectEqual(@as(u8, 80), cfg.network.p2p_inbound_ratio_limit);
     try cfg.validate();
+}
+
+test "Config.validate rejects inbound ratio above 100" {
+    var cfg = Config.default();
+    cfg.is_dev = true;
+    cfg.network.p2p_inbound_ratio_limit = 101;
+    try std.testing.expectError(error.InvalidP2PInboundRatioLimit, cfg.validate());
+    cfg.network.p2p_inbound_ratio_limit = 0;
+    try cfg.validate();
+}
+
+test "Config.validate rejects quic unless the binary links ngtcp2" {
+    var cfg = Config.default();
+    cfg.is_dev = true;
+    cfg.network.transport = "quic";
+    if (@import("quic_options").enabled) {
+        try cfg.validate();
+    } else {
+        try std.testing.expectError(error.QuicTransportRequiresBuildFlag, cfg.validate());
+    }
+}
+
+test "Config.resolveSigningKey reads a hex file and ignores an existing key" {
+    const io = @import("io_instance").io;
+    const path = "signing-key-test.hex";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n" });
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    var authority = AuthorityConfig{ .signing_key_path = path };
+    try Config.resolveSigningKey(&authority, std.testing.allocator);
+    try std.testing.expect(authority.signing_key != null);
+    try std.testing.expectEqual(@as(u8, 0x00), authority.signing_key.?[0]);
+    try std.testing.expectEqual(@as(u8, 0xff), authority.signing_key.?[31]);
+
+    authority.signing_key = @splat(0xAB);
+    try Config.resolveSigningKey(&authority, std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 0xAB), authority.signing_key.?[0]);
 }
 
 test "Config.validate rejects unauthenticated P2P in non-dev" {
@@ -560,4 +713,61 @@ test "Config.validate rejects unauthenticated P2P in non-dev" {
     cfg.is_dev = false;
     cfg.allow_unauthenticated_p2p = true;
     try std.testing.expectError(error.UnauthenticatedP2PForbiddenInProduction, cfg.validate());
+}
+
+test "StorageConfig gas snapshot interval defaults to 300s" {
+    const storage = StorageConfig{};
+    try std.testing.expectEqual(@as(i64, 300), storage.gas_snapshot_interval_secs);
+
+    var cfg = Config.default();
+    try std.testing.expectEqual(@as(i64, 300), cfg.storage.gas_snapshot_interval_secs);
+
+    // Missing JSON field keeps the default.
+    const parsed = try std.json.parseFromSlice(
+        Config,
+        std.testing.allocator,
+        \\{"is_dev":true,"storage":{"data_dir":"./data"}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 300), parsed.value.storage.gas_snapshot_interval_secs);
+
+    cfg.storage.gas_snapshot_interval_secs = 0;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const duped = try cfg.dupe(arena.allocator());
+    try std.testing.expectEqual(@as(i64, 0), duped.storage.gas_snapshot_interval_secs);
+}
+
+test "VMConfig gas payment defaults stay off" {
+    const vm = VMConfig{};
+    try std.testing.expectEqual(false, vm.enforce_gas_payment);
+    try std.testing.expectEqual(@as(u64, 1_000_000_000), vm.initial_gas_balance);
+
+    var cfg = Config.default();
+    try std.testing.expectEqual(false, cfg.vm.enforce_gas_payment);
+    try std.testing.expectEqual(@as(u64, 1_000_000_000), cfg.vm.initial_gas_balance);
+
+    // Missing JSON fields must keep defaults (ignore_unknown + struct defaults).
+    const parsed = try std.json.parseFromSlice(
+        Config,
+        std.testing.allocator,
+        \\{"is_dev":true,"vm":{"max_gas_budget":42}}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u64, 42), parsed.value.vm.max_gas_budget);
+    try std.testing.expectEqual(false, parsed.value.vm.enforce_gas_payment);
+    try std.testing.expectEqual(@as(u64, 1_000_000_000), parsed.value.vm.initial_gas_balance);
+
+    // Config.dupe value-copies VMConfig (no owned slices on that sub-struct).
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    cfg.vm.enforce_gas_payment = true;
+    cfg.vm.initial_gas_balance = 123;
+    const duped = try cfg.dupe(arena.allocator());
+    try std.testing.expectEqual(true, duped.vm.enforce_gas_payment);
+    try std.testing.expectEqual(@as(u64, 123), duped.vm.initial_gas_balance);
 }

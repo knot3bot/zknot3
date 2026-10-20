@@ -32,6 +32,7 @@ pub fn nativeEmit(interpreter: *Interpreter, args: []const Value) NativeError!Va
             // Convert vector of Values (each u8 as integer) into a byte slice
             const vec = arg.data.vector;
             const bytes = interpreter.allocator.alloc(u8, vec.len) catch return NativeError.OutOfMemory;
+            errdefer interpreter.allocator.free(bytes);
             for (vec, 0..) |v, i| {
                 if (v.tag != .integer) return NativeError.TypeMismatch;
                 bytes[i] = @intCast(v.data.int & 0xFF);

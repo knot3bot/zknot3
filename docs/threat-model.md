@@ -58,16 +58,21 @@ occupying all its peer slots with malicious nodes.
 - Bootstrap seed peers: configurable list of trusted initial peers
 - `p2p_peer_ban_seconds`: automatic ban for rate-limit violators
 - Connection pool reuse: limits churn, makes eclipse harder
+- TCP accept and dial refuse a new peer when its IPv4 /16 already has `p2p_max_peers_per_16` connections (default 8; 0 disables the cap)
+- TCP accept and dial refuse a new peer when its IPv6 /48 already has `p2p_max_peers_per_48` connections (default 8; 0 disables the cap); IPv4-mapped addresses share the IPv4 /16 budget
+- Kademlia bucket selection enforces prefix diversity: at most `MAX_PEERS_PER_PREFIX` (default 4) peers per IPv4 /16, IPv6 /48, or the shared unresolved (hostname / unparseable) prefix inside each KBucket (`error.PrefixDiversityLimit`); IPv4-mapped addresses share the IPv4 /16 budget
+- Reserved outbound-only slots (`p2p_reserved_outbound_slots`, default 8): inbound accept stops at `max_connections - reserved` so dials can still open recovery peers; outbound dial uses the full `max_connections` budget (0 disables)
+- Periodic peer rotation (`p2p_peer_rotation_interval_secs`, default 600): force-disconnect the lowest-quality eligible peer (inbound preferred; quality = `reputation - min(latency_ms/10, 50)`, then oldest `connected_at`; last outbound / bootstrap address-hash protected when bootstrap is configured); zero disables
+- Peer quality scoring for rotation preference: live `PeerConnection.reputation` / `latency_ms` (rate-limit drops lower reputation; admitted traffic recovers toward the ceiling)
+- Outbound quality-weighted dial: on disconnect, remember `{address, reputation, latency_ms}` (cap 64, LRU); `maintainBootstrapConnections` fills leftover outbound slots by dialing the highest-`peerRotationQuality` remembered peer that is not connected and passes subnet caps; bootstrap list still has dial priority
+- Dial / quality-memory hostname resolve: `resolveDialAddress` turns `hostname:port` into canonical `a.b.c.d:port` / `[v6]:port` via DNS when possible so TCP /16·/48 caps and quality-memory keys match numeric peers; Kademlia `PeerManager.addPeer` stores the resolved form when resolve succeeds
+- Outbound-only fallback (`p2p_inbound_ratio_limit`, percent 0–100, default 80; 0 disables): the inbound side is published inbound TCP+QUIC peers plus in-flight inbound handshake workers (outbound dials are not included). When that inbound side plus published outbound peers is ≥ 4 and `inbound * 100 > total * limit`, new inbound TCP accepts and QUIC inbound connections are rejected (`error.InboundPaused`). Outbound `dial` still uses the reserved-slot budget, and `maintainBootstrapConnections` keeps dialing bootstrap peers and quality-weighted remembered peers
+- Authenticated handshake listen trailer: optional `u16_be len` + UTF-8 `host:port` after the signed response (responder) and ack (initiator) cores (`network.p2p_advertise_address`, else dialable `p2p_address`); outbound dial string wins when both are present. An advertised dial string is quality-remembered only when the signer's Ed25519 public key is in `network.known_validators` (empty list stores none). A dial string this node opened is remembered on disconnect regardless. Ed25519 covers `listen_commitment = Blake3(advertise_utf8)` (or 32 zero bytes when empty); verifier rebuilds commitment from trailer bytes. Unsigned request does not carry authoritative advertise. Authenticated path context `zknot3_p2p_handshake_v3` (breaking vs v2 signed transcript; unauthenticated handshake unchanged).
 
 **Current Limitations**:
-- No peer rotation enforcement (long-lived connections favored)
-- No outbound-only connection mode for eclipse recovery
-- No IP diversity requirement (attacker with /16 can fill many buckets)
-
-**Planned Mitigations**:
-- Periodic peer rotation (force-replace oldest peer every N minutes)
-- Outbound-only fallback mode when inbound ratio suspicious
-- IP prefix diversity check in Kademlia bucket selection
+- Hostname dial/subnet now apply after DNS resolve; residual is weaker than before but still present without DNSSEC (spoofed answers can steer peers) and unresolved/unparseable names still share one Kademlia unknown-prefix budget (not geo-diverse)
+- Nodes binding `0.0.0.0` without `p2p_advertise_address` still advertise nothing (inbound quality memory stays empty for those peers)
+- Handshake-advertised dial strings enter quality memory only when the peer's Ed25519 public key is in `network.known_validators`. An empty set remembers none of them. A listed validator can still sign an arbitrary dial string. Addresses this node itself dialed are remembered on disconnect regardless.
 
 ---
 
@@ -98,7 +103,7 @@ block) and re-sends it later to cause duplicate processing.
 **Description**: A Byzantine validator signs two different blocks (or votes)
 at the same round, attempting to create a fork.
 
-**Severity**: HIGH (detected, not yet punished)
+**Severity**: HIGH (detected and punished on every node that accepts the evidence)
 
 **Execution**:
 1. Validator V proposes block B₁ at round r, signs and broadcasts
@@ -114,19 +119,25 @@ existing votes. If a different block_digest is found for the same `(voter, round
 ```
 
 **Current Mitigations**:
-- Equivocation evidence is logged
+- Equivocation evidence is logged and broadcast on the certificate channel
 - Conflicting votes are both rejected (neither counts toward quorum)
-- Honest validators see both votes and can detect
+- The observing node slashes current M4 stake on a fixed curve: 10% on the
+  first offense, 25% on the second, 50% on the third, 100% after that
+- The loss is split pro-rata across that validator's delegations, and the
+  resulting stake is copied into the local voting-power pool
+- The same evidence digest is applied once
+- Gossip on the certificate channel is applied only when both votes are
+  Ed25519 signatures by the named voter over different block digests (`k3eq01`)
+- After a slash the validator is jailed for 2 epochs on the first offense,
+  3 on the second, and 5 after that. While jailed, its stake leaves both the
+  active total and the quorum total, so the >2/3 threshold can still be met.
+  Jail state is stored in the M4 snapshot tail (`m4jl`) and rebuilt when a
+  slash record is replayed
 
 **Current Limitations**:
-- No automatic slashing (evidence logged, penalty not enforced)
-- No automatic evidence gossip to other validators
-- Equivocating validator retains stake and can equivocate again
-
-**Planned Mitigations**:
-- Automatic slashing: equivocation evidence → stake penalty
-- Evidence gossip: detected equivocation broadcast to all validators
-- Equivocation jail: validator banned from consensus for N epochs
+- A node that never sees the evidence does not slash. Agreement depends on
+  every honest validator observing the same evidence
+- The slash is not a separately finalized cross-validator transaction
 
 ---
 
@@ -194,16 +205,17 @@ exhaust the node's connection slots and prevent honest peers from connecting.
 - Ban on rate-limit violation (24h default)
 - Connection pool reuse (reduces handshake overhead)
 - Per-peer message budgets
+- IPv4 /16 cap on TCP accept and dial (`p2p_max_peers_per_16`, default 8)
+- IPv6 /48 cap on TCP accept and dial (`p2p_max_peers_per_48`, default 8); IPv4-mapped addresses share the IPv4 /16 budget
+- Reserved outbound-only slots (`p2p_reserved_outbound_slots`, default 8) so inbound flood cannot exhaust the peer table
+- Periodic peer rotation (`p2p_peer_rotation_interval_secs`, default 600) force-replaces the lowest-quality eligible peer (`reputation - min(latency_ms/10, 50)`, age tiebreak) so surplus long-lived / low-quality inbound slots churn
+- Peer quality scoring feeds rotation preference and outbound quality-weighted redial of remembered peers
+- Handshake-advertised listen dial string (signature-bound trailer on authenticated response/ack via Blake3 listen_commitment) enters quality memory only when the peer public key is in the configured known-validator set (`advertise_address` / dialable `p2p_address` is what this node advertises)
+- Outbound-only fallback when the inbound share (published inbound peers plus in-flight inbound handshakes) exceeds `p2p_inbound_ratio_limit` (default 80, minimum 4 peers; 0 disables): inbound TCP/QUIC accepts return `error.InboundPaused` while outbound dial, bootstrap maintenance, and quality redial continue
 
 **Current Limitations**:
-- No IP-based connection limits (attacker with many IPs can fill all 50 slots)
-- No peer quality scoring (all peers treated equally)
-- No inbound/outbound ratio enforcement
-
-**Planned Mitigations**:
-- IP prefix diversity requirement (max N peers from same /16)
-- Peer quality scoring (uptime, message validity ratio, response time)
-- Reserve outbound-only slots for eclipse recovery
+- After DNS resolve, hostname peers hit the same TCP /16·/48 and Kademlia IP-prefix caps as numeric peers; unresolved names still share one unknown-prefix budget. Residual: no DNSSEC, so poisoned DNS can still cluster peers
+- Quality redial remembers a signed listen advertise only for peers in the configured known-validator set (empty set: advertised addresses are not remembered). Outbound dials this node initiated stay rememberable. Set a real public `p2p_advertise_address` so known peers can redial this node. A known validator can still advertise any dial string it signs.
 
 ---
 
@@ -235,6 +247,7 @@ exhaust the node's connection slots and prevent honest peers from connecting.
 - Bytecode verifier: all code verified before execution (opcode validity, stack height, type checking)
 - Gas metering: every instruction costs gas, preventing infinite loops
 - Resource linearity: resources cannot be leaked across transaction boundaries
+- Signer check on `move_to_sender`, `move_from`, `borrow_global`, `delete_resource`, `public_transfer`, `share_object`, and `freeze_object`: a resource with an owner must belong to `TxContext.sender`, and a load of an unowned resource is refused unless the storage address is the signer. A transfer records the recipient on the execution result
 - Stack depth limit: `max_depth` prevents stack overflow
 - Locals bound: maximum 256 locals per function
 - Vector size limit: `MAX_VEC_PACK = 4096`
@@ -242,8 +255,9 @@ exhaust the node's connection slots and prevent honest peers from connecting.
 
 **Current Limitations**:
 - No formal verification of the Move VM implementation
-- No fuzzing harness for the bytecode interpreter
+- Bytecode fuzz is a bounded in-process suite (`test/fuzz/interpreter_fuzz.zig`), not a continuous AFL/libFuzzer job
 - Bytecode verifier is worklist-based (has not been formally proven correct)
+- Unknown opcodes are rejected before the enum cast, so a hole in the opcode space does not panic the process
 
 **Planned Mitigations**:
 - Differential fuzzing against reference Move VM (diem/aptos)
@@ -274,12 +288,12 @@ alternative chain, and presents it to new nodes.
 
 | Attack | Severity | Detected | Mitigated | Residual Risk |
 |--------|----------|----------|-----------|---------------|
-| Eclipse | HIGH | Partial | Partial | **MEDIUM** — IP diversity needed |
+| Eclipse | HIGH | Partial | Partial | **MEDIUM** — TCP /16+/48 + reserved outbound slots + inbound-ratio outbound-only fallback (`p2p_inbound_ratio_limit` default 80, min 4 peers) + Kademlia prefix diversity + quality-aware rotation/redial incl. signature-bound listen trailer remembered only for configured known validators; hostname dial/subnet after DNS resolve (residual: no DNSSEC / unresolved unknown-prefix) |
 | Replay | MEDIUM | Yes | Yes | LOW |
-| Equivocation | HIGH | Yes | Partial | **MEDIUM** — slashing not enforced |
+| Equivocation | HIGH | Yes | Yes, on every node that verifies the evidence | **MEDIUM** — jailed locally; unseen evidence is not slashed |
 | Invalid DAG | MEDIUM | Yes | Yes | LOW |
 | Spam/Resource | MEDIUM | Yes | Yes | LOW-MEDIUM |
-| Peer Flooding | MEDIUM | Yes | Partial | **MEDIUM** — no IP diversity |
+| Peer Flooding | MEDIUM | Yes | Partial | **LOW-MEDIUM** — TCP /16+/48 + reserved outbound slots + inbound-ratio outbound-only fallback (`p2p_inbound_ratio_limit` default 80, min 4 peers) + Kademlia prefix/unresolved caps + quality-aware rotation/redial incl. signature-bound listen trailer remembered only for configured known validators; hostname dial/subnet after DNS resolve (residual: no DNSSEC / unresolved unknown-prefix) |
 | State Corruption | LOW | Yes | Yes | LOW |
 | VM Sandbox Escape | CRITICAL | Partial | Partial | **LOW** — defense in depth |
 | Long-Range | LOW | N/A | Partial | LOW |

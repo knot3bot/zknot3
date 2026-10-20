@@ -51,15 +51,23 @@ pub const Checkpoint = struct {
         changes: []const ObjectChange,
         allocator: std.mem.Allocator,
     ) !Self {
+        return createAt(sequence, previous_digest, changes, 0, allocator);
+    }
+
+    /// `timestamp` is the epoch start in seconds. The digest covers it, so a
+    /// host clock must not be used here.
+    pub fn createAt(
+        sequence: u64,
+        previous_digest: [32]u8,
+        changes: []const ObjectChange,
+        timestamp: i64,
+        allocator: std.mem.Allocator,
+    ) !Self {
         const state_root = try computeStateRoot(changes, allocator);
 
         return .{
             .sequence = sequence,
-            .timestamp = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            },
+            .timestamp = timestamp,
             .previous_digest = previous_digest,
             .object_changes = try allocator.dupe(ObjectChange, changes),
             .state_root = state_root,
@@ -68,6 +76,8 @@ pub const Checkpoint = struct {
     }
 
     pub fn serialize(self: Self, allocator: std.mem.Allocator) ![]u8 {
+        if (self.object_changes.len > std.math.maxInt(u32)) return error.TooManyChanges;
+
         var buf = std.ArrayList(u8).empty;
         errdefer buf.deinit(allocator);
 
@@ -329,13 +339,13 @@ pub const CheckpointSequence = struct {
         };
     }
 
-    pub fn next(self: *Self, checkpoint: Checkpoint) void {
-        self.current = checkpoint.sequence + 1;
+    pub fn next(self: *Self, checkpoint: Checkpoint) error{ArithmeticOverflow}!void {
+        self.current = std.math.add(u64, checkpoint.sequence, 1) catch return error.ArithmeticOverflow;
     }
 
-    pub fn advance(self: *Self) u64 {
+    pub fn advance(self: *Self) error{ArithmeticOverflow}!u64 {
         const seq = self.current;
-        self.current += 1;
+        self.current = std.math.add(u64, seq, 1) catch return error.ArithmeticOverflow;
         return seq;
     }
 
@@ -411,6 +421,30 @@ test "Checkpoint creation" {
     defer allocator.free(serialized);
 
     try std.testing.expect(serialized.len > 0);
+}
+
+test "Checkpoint digest ignores the host clock" {
+    const allocator = std.testing.allocator;
+    const changes = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("obj1"),
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
+            .status = .created,
+        },
+    };
+    var first = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes, allocator);
+    defer first.deinit(allocator);
+    var second = try Checkpoint.create(1, @as([32]u8, @splat(0)), &changes, allocator);
+    defer second.deinit(allocator);
+    var dated = try Checkpoint.createAt(1, @as([32]u8, @splat(0)), &changes, 1_700_000_000, allocator);
+    defer dated.deinit(allocator);
+
+    try std.testing.expectEqual(@as(i64, 0), first.timestamp);
+    const digest_a = try first.digest(allocator);
+    const digest_b = try second.digest(allocator);
+    const digest_dated = try dated.digest(allocator);
+    try std.testing.expectEqualSlices(u8, &digest_a, &digest_b);
+    try std.testing.expect(!std.mem.eql(u8, &digest_a, &digest_dated));
 }
 
 test "Checkpoint digest" {
@@ -628,6 +662,16 @@ test "CheckpointSequence load missing file returns init" {
     try std.testing.expectEqual(@as(u64, 0), loaded.current);
 }
 
+test "CheckpointSequence advance refuses to wrap" {
+    var seq = CheckpointSequence.init();
+    seq.current = std.math.maxInt(u64) - 1;
+    const issued = try seq.advance();
+    try std.testing.expectEqual(std.math.maxInt(u64) - 1, issued);
+    try std.testing.expectEqual(std.math.maxInt(u64), seq.getLatestSequence());
+    try std.testing.expectError(error.ArithmeticOverflow, seq.advance());
+    try std.testing.expectEqual(std.math.maxInt(u64), seq.getLatestSequence());
+}
+
 test "Checkpoint state root determinism" {
     const allocator = std.testing.allocator;
     const changes = [_]Checkpoint.ObjectChange{
@@ -640,4 +684,18 @@ test "Checkpoint state root determinism" {
     const root2 = try verifyStateRoot(&changes, allocator);
     try std.testing.expect(std.mem.eql(u8, &root1, &root2));
     try std.testing.expect(!std.mem.eql(u8, &root1, &(@as([32]u8, @splat(0)))));
+}
+
+test "Checkpoint serialize rejects more changes than its count field can hold" {
+    const allocator = std.testing.allocator;
+    const changes: []const Checkpoint.ObjectChange = @as([*]const Checkpoint.ObjectChange, @ptrFromInt(0x1000))[0 .. @as(usize, std.math.maxInt(u32)) + 1];
+    const cp = Checkpoint{
+        .sequence = 1,
+        .timestamp = 0,
+        .previous_digest = @splat(0),
+        .object_changes = changes,
+        .state_root = @splat(0),
+        .signatures = .empty,
+    };
+    try std.testing.expectError(error.TooManyChanges, cp.serialize(allocator));
 }

@@ -77,3 +77,48 @@ test "M4 parseGovernanceProposalFromPlainArgs rejects empty title" {
     };
     try std.testing.expectError(error.EmptyString, M4RpcParams.parseGovernanceProposalFromPlainArgs(&plain));
 }
+
+test "M4 parseCreditGasParams accepts address and amount" {
+    const allocator = std.testing.allocator;
+    const hex_ab = "abababababababababababababababababababababababababababababababab";
+    const json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"address\":\"0x{s}\",\"amount\":12345}}",
+        .{hex_ab},
+    );
+    defer allocator.free(json);
+    var parsed = try parseJsonValue(allocator, json);
+    defer parsed.deinit();
+
+    const input = try M4RpcParams.parseCreditGasParams(parsed.value);
+    try std.testing.expectEqual(@as(u64, 12345), input.amount);
+    try std.testing.expectEqual(@as(u8, 0xab), input.address[0]);
+}
+
+test "M4 parseCreditGasParams rejects negative amount" {
+    const allocator = std.testing.allocator;
+    const json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"address\":\"{s}\",\"amount\":-1}}",
+        .{hex64_zeros},
+    );
+    defer allocator.free(json);
+    var parsed = try parseJsonValue(allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.InvalidAmount, M4RpcParams.parseCreditGasParams(parsed.value));
+}
+
+test "M4 parseGetGasBalanceParams requires address" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseJsonValue(allocator, "{}");
+    defer parsed.deinit();
+    try std.testing.expectError(error.MissingField, M4RpcParams.parseGetGasBalanceParams(parsed.value));
+
+    const json = try std.fmt.allocPrint(allocator, "{{\"address\":\"{s}\"}}", .{hex64_zeros});
+    defer allocator.free(json);
+    var ok = try parseJsonValue(allocator, json);
+    defer ok.deinit();
+    const input = try M4RpcParams.parseGetGasBalanceParams(ok.value);
+    try std.testing.expectEqual(@as(u8, 0), input.address[0]);
+}

@@ -9,7 +9,8 @@
 const std = @import("std");
 const Transport = @import("Transport.zig");
 const Message = Transport.Message;
-const P2PServer = @import("P2PServer.zig").P2PServer;
+const P2PServer_module = @import("P2PServer.zig");
+const P2PServer = P2PServer_module.P2PServer;
 const Kademlia = @import("Kademlia.zig");
 const NodeKey = @import("NodeKey.zig").NodeKey;
 
@@ -86,8 +87,16 @@ pub const PeerManager = struct {
         }
         try self.peers.put(self.allocator, peer.id, peer);
 
-        // Also add to Kademlia routing table for DHT-based discovery
-        try self.routing_table.addPeer(peer.id, peer.address, peer.port);
+        // Resolve hostname → IP when possible so Kademlia /16·/48 prefix
+        // diversity applies; unresolved hosts still share the unknown budget.
+        var dial_buf: [128]u8 = undefined;
+        const dial_str = if (P2PServer_module.splitDialHostPort(peer.address) != null)
+            peer.address
+        else
+            std.fmt.bufPrint(&dial_buf, "{s}:{d}", .{ peer.address, peer.port }) catch peer.address;
+        const resolved = try P2PServer_module.resolveDialAddress(self.allocator, dial_str);
+        defer self.allocator.free(resolved);
+        try self.routing_table.addPeer(peer.id, resolved, peer.port);
     }
 
     pub fn removePeer(self: *@This(), peer_id: [32]u8) void {
@@ -121,7 +130,7 @@ pub const PeerManager = struct {
 
     /// Refresh routing table by removing stale peers (no message in 120s).
     pub fn refreshRoutingTable(self: *@This()) void {
-        const all_peers = self.routing_table.getAllPeers();
+        const all_peers = self.routing_table.getAllPeers() catch return;
         defer self.allocator.free(all_peers);
 
         var ts: std.c.timespec = undefined;
@@ -139,7 +148,7 @@ pub const PeerManager = struct {
     }
 
     /// Discover new peers using Kademlia DHT
-    pub fn discoverPeers(self: *@This(), target_id: [32]u8) []const [32]u8 {
+    pub fn discoverPeers(self: *@This(), target_id: [32]u8) ![]const [32]u8 {
         return self.routing_table.getClosestPeers(target_id, Kademlia.MAX_BUCKET_SIZE);
     }
 };
@@ -270,7 +279,7 @@ pub const P2PNode = struct {
     }
 
     /// Discover peers closest to a target using Kademlia DHT
-    pub fn discoverPeers(self: *Self, target_id: [32]u8) []const [32]u8 {
+    pub fn discoverPeers(self: *Self, target_id: [32]u8) ![]const [32]u8 {
         return self.peer_manager.discoverPeers(target_id);
     }
 

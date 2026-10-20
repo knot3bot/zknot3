@@ -12,29 +12,29 @@ const CommitCertificate = Mysticeti.CommitCertificate;
 /// Optimized block serialization for network transmission
 pub fn serializeBlock(block: Block, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, 256 + block.payload.len);
-    errdefer buf.deinit();
+    errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(&block.author);
+    try buf.appendSlice(allocator,&block.author);
     var round_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &round_bytes, block.round.value, .big);
-    try buf.appendSlice(&round_bytes);
+    try buf.appendSlice(allocator,&round_bytes);
     const payload_len: u32 = @intCast(block.payload.len);
     var len_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &len_bytes, payload_len, .big);
-    try buf.appendSlice(&len_bytes);
-    try buf.appendSlice(block.payload);
+    try buf.appendSlice(allocator,&len_bytes);
+    try buf.appendSlice(allocator,block.payload);
     const parents_len: u32 = @intCast(block.parents.len);
     var parents_len_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &parents_len_bytes, parents_len, .big);
-    try buf.appendSlice(&parents_len_bytes);
+    try buf.appendSlice(allocator,&parents_len_bytes);
     for (block.parents) |parent| {
         var parent_bytes: [8]u8 = undefined;
         std.mem.writeInt(u64, &parent_bytes, parent.value, .big);
-        try buf.appendSlice(&parent_bytes);
+        try buf.appendSlice(allocator,&parent_bytes);
     }
-    try buf.appendSlice(&block.digest);
+    try buf.appendSlice(allocator,&block.digest);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Optimized block deserialization from network transmission
@@ -50,19 +50,24 @@ pub fn deserializeBlock(data: []const u8, allocator: std.mem.Allocator) !Block {
     const round = Round{ .value = round_value };
     const payload_len = std.mem.readInt(u32, data[offset..][0..4], .big);
     offset += 4;
-    if (offset + payload_len > data.len) return error.InvalidFormat;
+    const payload_end = std.math.add(usize, offset, payload_len) catch return error.InvalidFormat;
+    if (payload_end > data.len) return error.InvalidFormat;
     const payload = try allocator.dupe(u8, data[offset..][0..payload_len]);
-    offset += payload_len;
+    errdefer allocator.free(payload);
+    offset = payload_end;
     if (offset + 4 > data.len) return error.InvalidFormat;
     const parents_len = std.mem.readInt(u32, data[offset..][0..4], .big);
     offset += 4;
-    if (offset + parents_len * 8 > data.len) return error.InvalidFormat;
+    const parents_bytes = std.math.mul(usize, parents_len, 8) catch return error.InvalidFormat;
+    const parents_end = std.math.add(usize, offset, parents_bytes) catch return error.InvalidFormat;
+    const digest_end = std.math.add(usize, parents_end, 32) catch return error.InvalidFormat;
+    if (digest_end > data.len) return error.InvalidFormat;
     const parents = try allocator.alloc(Round, parents_len);
+    errdefer allocator.free(parents);
     for (0..parents_len) |i| {
         parents[i] = Round{ .value = std.mem.readInt(u64, data[offset..][0..8], .big) };
         offset += 8;
     }
-    if (offset + 32 > data.len) return error.InvalidFormat;
     const digest = data[offset..][0..32].*;
 
     return Block{
@@ -78,22 +83,22 @@ pub fn deserializeBlock(data: []const u8, allocator: std.mem.Allocator) !Block {
 /// Serialize multiple blocks for batch transmission
 pub fn serializeBlocksBatch(blocks: []const Block, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, blocks.len * 512);
-    errdefer buf.deinit();
+    errdefer buf.deinit(allocator);
 
     var count_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &count_bytes, @as(u32, @intCast(blocks.len)), .big);
-    try buf.appendSlice(&count_bytes);
+    try buf.appendSlice(allocator,&count_bytes);
 
     for (blocks) |block| {
         const serialized = try serializeBlock(block, allocator);
         defer allocator.free(serialized);
         var size_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &size_bytes, @as(u32, @intCast(serialized.len)), .big);
-        try buf.appendSlice(&size_bytes);
-        try buf.appendSlice(serialized);
+        try buf.appendSlice(allocator,&size_bytes);
+        try buf.appendSlice(allocator,serialized);
     }
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Deserialize multiple blocks from batch transmission
@@ -105,7 +110,7 @@ pub fn deserializeBlocksBatch(data: []const u8, allocator: std.mem.Allocator) ![
     offset += 4;
 
     var blocks = try std.ArrayList(Block).initCapacity(allocator, count);
-    errdefer blocks.deinit();
+    errdefer blocks.deinit(allocator);
 
     for (0..count) |_| {
         if (offset + 4 > data.len) return error.InvalidBatchFormat;
@@ -116,28 +121,28 @@ pub fn deserializeBlocksBatch(data: []const u8, allocator: std.mem.Allocator) ![
         const block = try deserializeBlock(data[offset..][0..size], allocator);
         offset += size;
 
-        try blocks.append(block);
+        try blocks.append(allocator, block);
     }
 
-    return blocks.toOwnedSlice();
+    return blocks.toOwnedSlice(allocator);
 }
 
 /// Optimized vote serialization for network transmission
 pub fn serializeVote(vote: Vote, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, 128);
-    errdefer buf.deinit();
+    errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(&vote.voter);
+    try buf.appendSlice(allocator,&vote.voter);
     var stake_bytes: [16]u8 = undefined;
     std.mem.writeInt(u128, &stake_bytes, vote.stake, .big);
-    try buf.appendSlice(&stake_bytes);
+    try buf.appendSlice(allocator,&stake_bytes);
     var round_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &round_bytes, vote.round.value, .big);
-    try buf.appendSlice(&round_bytes);
-    try buf.appendSlice(&vote.block_digest);
-    try buf.appendSlice(&vote.signature);
+    try buf.appendSlice(allocator,&round_bytes);
+    try buf.appendSlice(allocator,&vote.block_digest);
+    try buf.appendSlice(allocator,&vote.signature);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Optimized vote deserialization from network transmission
@@ -154,7 +159,9 @@ pub fn deserializeVote(data: []const u8, allocator: std.mem.Allocator) !Vote {
     offset += 8;
     const block_digest = data[offset..][0..32].*;
     offset += 32;
-    const signature = data[offset..][0..64].*;
+    const signature_prefix = data[offset..][0..64].*;
+    var signature: [96]u8 = @splat(0);
+    @memcpy(signature[0..64], &signature_prefix);
 
     return Vote{
         .voter = voter,
@@ -168,22 +175,22 @@ pub fn deserializeVote(data: []const u8, allocator: std.mem.Allocator) !Vote {
 /// Serialize a batch of votes for efficient transmission
 pub fn serializeVotesBatch(votes: []const Vote, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, votes.len * 128 + 4);
-    errdefer buf.deinit();
+    errdefer buf.deinit(allocator);
 
     var count_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &count_bytes, @as(u32, @intCast(votes.len)), .big);
-    try buf.appendSlice(&count_bytes);
+    try buf.appendSlice(allocator,&count_bytes);
 
     for (votes) |vote| {
         const serialized = try serializeVote(vote, allocator);
         defer allocator.free(serialized);
         var size_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &size_bytes, @as(u32, @intCast(serialized.len)), .big);
-        try buf.appendSlice(&size_bytes);
-        try buf.appendSlice(serialized);
+        try buf.appendSlice(allocator,&size_bytes);
+        try buf.appendSlice(allocator,serialized);
     }
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Deserialize a batch of votes from network transmission
@@ -195,7 +202,7 @@ pub fn deserializeVotesBatch(data: []const u8, allocator: std.mem.Allocator) ![]
     offset += 4;
 
     var votes = try std.ArrayList(Vote).initCapacity(allocator, count);
-    errdefer votes.deinit();
+    errdefer votes.deinit(allocator);
 
     for (0..count) |_| {
         if (offset + 4 > data.len) return error.InvalidBatchFormat;
@@ -206,29 +213,29 @@ pub fn deserializeVotesBatch(data: []const u8, allocator: std.mem.Allocator) ![]
         const vote = try deserializeVote(data[offset..][0..size], allocator);
         offset += size;
 
-        try votes.append(vote);
+        try votes.append(allocator, vote);
     }
 
-    return votes.toOwnedSlice();
+    return votes.toOwnedSlice(allocator);
 }
 
 /// Optimized commit certificate serialization
 pub fn serializeCommitCertificate(cert: CommitCertificate, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, 128);
-    errdefer buf.deinit();
+    errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(&cert.block_digest);
+    try buf.appendSlice(allocator,&cert.block_digest);
     var round_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &round_bytes, cert.round.value, .big);
-    try buf.appendSlice(&round_bytes);
+    try buf.appendSlice(allocator,&round_bytes);
     var stake_bytes: [16]u8 = undefined;
     std.mem.writeInt(u128, &stake_bytes, cert.quorum_stake, .big);
-    try buf.appendSlice(&stake_bytes);
+    try buf.appendSlice(allocator,&stake_bytes);
     var confidence_bytes: [8]u8 = undefined;
     std.mem.writeInt(f64, &confidence_bytes, cert.confidence, .big);
-    try buf.appendSlice(&confidence_bytes);
+    try buf.appendSlice(allocator,&confidence_bytes);
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Optimized commit certificate deserialization
@@ -255,7 +262,7 @@ pub fn deserializeCommitCertificate(data: []const u8, allocator: std.mem.Allocat
 
 test "Block serialization" {
     const allocator = std.testing.allocator;
-    const block = try Block.create(
+    var block = try Block.create(
         @as([32]u8, @splat(1)),
         .{ .value = 2 },
         "test payload",
@@ -267,7 +274,7 @@ test "Block serialization" {
     const serialized = try serializeBlock(block, allocator);
     defer allocator.free(serialized);
 
-    const deserialized = try deserializeBlock(serialized, allocator);
+    var deserialized = try deserializeBlock(serialized, allocator);
     defer deserialized.deinit(allocator);
 
     try std.testing.expect(std.mem.eql(u8, &block.author, &deserialized.author));
@@ -283,7 +290,7 @@ test "Vote serialization" {
         .stake = 1000,
         .round = .{ .value = 2 },
         .block_digest = @as([32]u8, @splat(0)),
-        .signature = @as([64]u8, @splat(0)),
+        .signature = @as([96]u8, @splat(0)),
     };
 
     const serialized = try serializeVote(vote, allocator);
@@ -299,7 +306,7 @@ test "Vote serialization" {
 
 test "Batch operations" {
     const allocator = std.testing.allocator;
-    const blocks = [_]Block{
+    var blocks = [_]Block{
         try Block.create(@as([32]u8, @splat(1)), .{ .value = 0 }, "block 0", &.{}, allocator),
         try Block.create(@as([32]u8, @splat(2)), .{ .value = 1 }, "block 1", &.{}, allocator),
     };
@@ -309,8 +316,11 @@ test "Batch operations" {
     const serialized = try serializeBlocksBatch(&blocks, allocator);
     defer allocator.free(serialized);
 
-    const deserialized = try deserializeBlocksBatch(serialized, allocator);
-    defer for (deserialized) |block| block.deinit(allocator);
+    var deserialized = try deserializeBlocksBatch(serialized, allocator);
+    defer {
+        for (deserialized) |*decoded| decoded.deinit(allocator);
+        allocator.free(deserialized);
+    }
 
     try std.testing.expect(deserialized.len == 2);
     try std.testing.expect(std.mem.eql(u8, &blocks[0].author, &deserialized[0].author));

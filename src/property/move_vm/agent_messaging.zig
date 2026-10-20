@@ -6,6 +6,14 @@
 const std = @import("std");
 const core = @import("../../core.zig");
 
+fn saturatingAdd(total: u64, amount: u64) u64 {
+    return std.math.add(u64, total, amount) catch std.math.maxInt(u64);
+}
+
+fn saturatingAddClock(clock_sec: i64, duration_secs: i64) i64 {
+    return std.math.add(i64, clock_sec, duration_secs) catch if (duration_secs < 0) std.math.minInt(i64) else std.math.maxInt(i64);
+}
+
 pub const MessageType = enum(u8) {
     task_request = 1,
     task_accept = 2,
@@ -37,6 +45,10 @@ pub const AgentMessaging = struct {
     total_tasks_created: u64,
     total_tasks_completed: u64,
     total_rewards_paid: u64,
+    /// Mixed into task ids so identical descriptions do not collide.
+    next_seq: u64 = 0,
+    /// Seconds stamped on new tasks. Callers set this from the epoch start.
+    clock_sec: i64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !*AgentMessaging {
         const self = try allocator.create(AgentMessaging);
@@ -47,8 +59,14 @@ pub const AgentMessaging = struct {
             .total_tasks_created = 0,
             .total_tasks_completed = 0,
             .total_rewards_paid = 0,
+            .next_seq = 0,
+            .clock_sec = 0,
         };
         return self;
+    }
+
+    pub fn setClock(self: *AgentMessaging, epoch_start_sec: i64) void {
+        self.clock_sec = epoch_start_sec;
     }
 
     pub fn deinit(self: *AgentMessaging) void {
@@ -68,26 +86,43 @@ pub const AgentMessaging = struct {
         reward: u64,
         deadline_secs: i64,
     ) !core.ObjectID {
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-        const id = core.ObjectID.hash(description);
-
+        var hasher = std.crypto.hash.Blake3.init(.{});
+        hasher.update("task");
+        const seq = self.next_seq;
+        self.next_seq = std.math.add(u64, seq, 1) catch return error.ArithmeticOverflow;
+        var seq_buf: [8]u8 = undefined;
+        std.mem.writeInt(u64, &seq_buf, seq, .big);
+        hasher.update(&seq_buf);
+        hasher.update(&sender);
+        hasher.update(&recipient);
+        hasher.update(description);
+        var id_bytes: [32]u8 = undefined;
+        hasher.final(&id_bytes);
+        const id = core.ObjectID{ .bytes = id_bytes };
         if (self.messages.contains(id)) return error.AlreadyExists;
 
+        const description_copy = try self.allocator.dupe(u8, description);
         const msg = AgentMessage{
             .id = id,
             .msg_type = .task_request,
             .sender = sender,
             .recipient = recipient,
-            .task_description = try self.allocator.dupe(u8, description),
+            .task_description = description_copy,
             .reward_amount = reward,
             .status = .pending,
-            .created_at = ts.sec,
-            .expires_at = ts.sec + deadline_secs,
+            .created_at = self.clock_sec,
+            .expires_at = saturatingAddClock(self.clock_sec, deadline_secs),
         };
-        try self.messages.put(self.allocator, id, msg);
-        try self.escrow.put(self.allocator, id, reward);
-        self.total_tasks_created += 1;
+        self.messages.put(self.allocator, id, msg) catch |err| {
+            self.allocator.free(description_copy);
+            return err;
+        };
+        self.escrow.put(self.allocator, id, reward) catch |err| {
+            _ = self.messages.orderedRemove(id);
+            self.allocator.free(description_copy);
+            return err;
+        };
+        self.total_tasks_created = saturatingAdd(self.total_tasks_created, 1);
         return id;
     }
 
@@ -105,8 +140,8 @@ pub const AgentMessaging = struct {
         msg.status = .completed;
         const reward = self.escrow.get(message_id) orelse 0;
         _ = self.escrow.orderedRemove(message_id);
-        self.total_tasks_completed += 1;
-        self.total_rewards_paid += reward;
+        self.total_tasks_completed = saturatingAdd(self.total_tasks_completed, 1);
+        self.total_rewards_paid = saturatingAdd(self.total_rewards_paid, reward);
         return reward;
     }
 
@@ -124,7 +159,7 @@ pub const AgentMessaging = struct {
         _ = comment;
         // Feedback recorded; tip transferred to task executor
         if (tip_amount > 0) {
-            self.total_rewards_paid += tip_amount;
+            self.total_rewards_paid = saturatingAdd(self.total_rewards_paid, tip_amount);
         }
     }
 
@@ -182,4 +217,85 @@ test "AgentMessaging cancel and refund" {
     const refund = try am.cancelTask(msg_id);
     try std.testing.expectEqual(@as(u64, 300), refund);
     try std.testing.expectEqual(@as(u64, 0), am.total_tasks_completed);
+}
+
+test "AgentMessaging tasks with the same text stay distinct" {
+    const allocator = std.testing.allocator;
+    var am = try AgentMessaging.init(allocator);
+    defer am.deinit();
+    am.setClock(1_700_000_000);
+
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
+    const first = try am.createTask(alice, bob, "same brief", 10, 60);
+    const second = try am.createTask(alice, bob, "same brief", 10, 60);
+    try std.testing.expect(!first.eql(second));
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), am.messages.get(first).?.created_at);
+    try std.testing.expectEqual(@as(i64, 1_700_000_060), am.messages.get(second).?.expires_at);
+    try std.testing.expectEqual(@as(u64, 2), am.total_tasks_created);
+}
+
+test "AgentMessaging task deadline saturates at the i64 limits" {
+    const allocator = std.testing.allocator;
+    var am = try AgentMessaging.init(allocator);
+    defer am.deinit();
+
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
+    am.setClock(std.math.maxInt(i64) - 10);
+    const late = try am.createTask(alice, bob, "late", 1, 100);
+    try std.testing.expectEqual(std.math.maxInt(i64), am.messages.get(late).?.expires_at);
+
+    am.setClock(std.math.minInt(i64) + 10);
+    const early = try am.createTask(alice, bob, "early", 1, -100);
+    try std.testing.expectEqual(std.math.minInt(i64), am.messages.get(early).?.expires_at);
+}
+
+test "AgentMessaging paid rewards saturate at the u64 limit" {
+    const allocator = std.testing.allocator;
+    var am = try AgentMessaging.init(allocator);
+    defer am.deinit();
+
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
+    const cap = std.math.maxInt(u64);
+    const first = try am.createTask(alice, bob, "cap", cap, 60);
+    try am.acceptTask(first);
+    _ = try am.completeTask(first);
+    const second = try am.createTask(alice, bob, "extra", 1, 60);
+    try am.acceptTask(second);
+    _ = try am.completeTask(second);
+    try am.submitFeedback(second, 5, "", 10);
+    try std.testing.expectEqual(cap, am.total_rewards_paid);
+}
+
+test "AgentMessaging refuses to wrap its task sequence" {
+    const allocator = std.testing.allocator;
+    var am = try AgentMessaging.init(allocator);
+    defer am.deinit();
+
+    am.next_seq = std.math.maxInt(u64);
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
+    try std.testing.expectError(error.ArithmeticOverflow, am.createTask(alice, bob, "overflow", 1, 60));
+    try std.testing.expectEqual(std.math.maxInt(u64), am.next_seq);
+    try std.testing.expectEqual(@as(usize, 0), am.messages.count());
+}
+
+test "AgentMessaging task counts saturate at the u64 limit" {
+    const allocator = std.testing.allocator;
+    var am = try AgentMessaging.init(allocator);
+    defer am.deinit();
+
+    const alice = @as([32]u8, @splat(1));
+    const bob = @as([32]u8, @splat(2));
+    const cap = std.math.maxInt(u64);
+    am.total_tasks_created = cap;
+    am.total_tasks_completed = cap;
+    const id = try am.createTask(alice, bob, "cap-count", 1, 60);
+    try std.testing.expectEqual(cap, am.total_tasks_created);
+    try am.acceptTask(id);
+    _ = try am.completeTask(id);
+    try std.testing.expectEqual(cap, am.total_tasks_completed);
+    try std.testing.expect(am.messages.get(id).?.status == .completed);
 }

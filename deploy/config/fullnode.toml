@@ -12,6 +12,7 @@ connection_timeout = 30
 [consensus]
 validator_enabled = false
 epoch_duration_secs = 86400
+epoch_reward = 0
 
 [storage]
 data_dir = "/var/lib/zknot3"

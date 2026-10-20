@@ -135,6 +135,49 @@ pub fn parseGovernanceProposalInput(params: ?std.json.Value) ParseError!MainnetE
     };
 }
 
+pub const CreditGasParams = struct {
+    address: [32]u8,
+    amount: u64,
+};
+
+pub const GetGasBalanceParams = struct {
+    address: [32]u8,
+};
+
+fn expectU64Field(o: std.json.ObjectMap, name: []const u8) ParseError!u64 {
+    const amt_v = o.get(name) orelse return error.MissingField;
+    return switch (amt_v) {
+        .integer => |n| blk: {
+            if (n < 0) return error.InvalidAmount;
+            break :blk @as(u64, @intCast(n));
+        },
+        else => error.NotObject,
+    };
+}
+
+/// Params for `knot3_creditGas`: `{ "address": "<hex32>", "amount": <u64> }`.
+pub fn parseCreditGasParams(params: ?std.json.Value) ParseError!CreditGasParams {
+    const root = params orelse return error.MissingParams;
+    const o = switch (root) {
+        .object => |obj| obj,
+        else => return error.NotObject,
+    };
+    const address = try parseHex32Str(try expectStringField(o, "address"));
+    const amount = try expectU64Field(o, "amount");
+    return .{ .address = address, .amount = amount };
+}
+
+/// Params for `knot3_getGasBalance`: `{ "address": "<hex32>" }`.
+pub fn parseGetGasBalanceParams(params: ?std.json.Value) ParseError!GetGasBalanceParams {
+    const root = params orelse return error.MissingParams;
+    const o = switch (root) {
+        .object => |obj| obj,
+        else => return error.NotObject,
+    };
+    const address = try parseHex32Str(try expectStringField(o, "address"));
+    return .{ .address = address };
+}
+
 pub fn parseCheckpointProofRequest(params: ?std.json.Value) ParseError!MainnetExtensionHooks.CheckpointProofRequest {
     const root = params orelse return error.MissingParams;
     const o = switch (root) {

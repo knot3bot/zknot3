@@ -8,7 +8,7 @@
 
 ## Abstract
 
-zknot3 is a high-performance Layer-1 blockchain built on the **Three-Source Integration (三源合恰)** framework. It achieves 95% feature parity with Sui while introducing unique capabilities for human-AI co-creation: zkLogin identity bridging, Programmable Transaction Blocks (PTB), Gas Station sponsorship, VRF-based randomness, and a comprehensive licensing and marketplace system. With 30 TPS optimizations delivering up to 150,000+ TPS on the Fast Path, zknot3 is designed as the trusted infrastructure for the **Creator³** human-AI co-creation evolution network.
+zknot3 is a Layer-1 built on the **Three-Source Integration (三源合恰)** framework, with a zknot3-native bytecode VM, PTB, gas sponsorship, and VRF. It is not Move-binary compatible. Measured single-node throughput is the README benchmark: about 90,000 TPS on the fast path and about 5,000 TPS on the consensus path.
 
 ---
 
@@ -233,7 +233,7 @@ Six license types with automatic royalty calculation:
 | Scenario | TPS |
 |----------|-----|
 | Fast Path Single-Owner | 50,000-100,000 |
-| Fast Path Batch Parallel | 80,000-150,000 |
+| Fast Path Batch Parallel | about 90,000 (README measurement) |
 | Consensus 2-Chain (4 validators) | 3,000-5,000 |
 | Consensus 3-Chain (100 validators, BLS) | 500-1,000 |
 | PTB Atomic Batch | 10,000-20,000 |
@@ -345,9 +345,9 @@ helm install zknot3 deploy/kubernetes/helm/zknot3
 
 ## 12. Conclusion
 
-zknot3 v0.11.0 represents a significant milestone in blockchain infrastructure for creative AI applications. With 30 TPS optimizations achieving 80x throughput improvement, 95% Sui feature parity, and unique Creator³ capabilities including zkLogin identity bridging, on-chain licensing, agent registry and messaging, and an integrated creation marketplace, zknot3 is positioned as the trusted infrastructure for the emerging human-AI co-creation economy.
+zknot3 is a reference implementation of its own protocol. The measured single-node figures in the repository README are about 90,000 TPS on the fast path and about 5,000 TPS on the consensus path. The VM executes zknot3 bytecode and is not Move-binary compatible. A public mainnet still needs an external audit and a completed cutover.
 
-**363 tests · ~9.4/10 production score · 150,000+ peak TPS**
+**Test suite, WAN gate, and formal specs are in CI. Peak TPS is the README benchmark, not a 150,000 TPS claim.**
 
 ---
 

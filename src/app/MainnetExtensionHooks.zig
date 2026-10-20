@@ -104,6 +104,50 @@ pub const ProofSigPair = struct {
     signature: [64]u8,
 };
 
+/// Equivocation slash curve, in basis points of the validator's current stake.
+/// Prior offenses on this validator: 0 → 10%, 1 → 25%, 2 → 50%, 3 or more → 100%.
+pub const SlashSchedule = struct {
+    pub fn basisPoints(prior_offenses: u32) u64 {
+        return switch (prior_offenses) {
+            0 => 1_000,
+            1 => 2_500,
+            2 => 5_000,
+            else => 10_000,
+        };
+    }
+
+    /// Stake units to remove. A positive stake always loses at least 1 unit
+    /// on the first non-zero step, and never more than `current_stake`.
+    pub fn amount(current_stake: u64, prior_offenses: u32) u64 {
+        if (current_stake == 0) return 0;
+        const raw: u128 = (@as(u128, current_stake) * basisPoints(prior_offenses)) / 10_000;
+        if (raw == 0) return 1;
+        if (raw > current_stake) return current_stake;
+        return @intCast(raw);
+    }
+
+    /// Epochs the validator stays out of the active quorum after this many
+    /// recorded equivocation slashes (the count includes the one just applied).
+    /// 1 → 2 epochs, 2 → 3, 3 or more → 5.
+    pub fn jailEpochs(offense_count: u32) u64 {
+        return switch (offense_count) {
+            0 => 0,
+            1 => 2,
+            2 => 3,
+            else => 5,
+        };
+    }
+};
+
+/// Integer pro-rata split. The caller assigns the leftover units (at most
+/// `weights.len - 1`) so the shares sum to `total`.
+pub const EpochRewards = struct {
+    pub fn share(total: u64, weight: u64, total_weight: u64) u64 {
+        if (total == 0 or weight == 0 or total_weight == 0) return 0;
+        return @intCast((@as(u128, total) * @as(u128, weight)) / @as(u128, total_weight));
+    }
+};
+
 /// 8-byte domain + 32 + 8 + 32 = 80 bytes, stable across RPC/GraphQL/SDK.
 pub fn m4ProofSigningMessage(state_root: [32]u8, sequence: u64, object_id: [32]u8) [80]u8 {
     var out: [80]u8 = undefined;
@@ -156,6 +200,7 @@ pub const ManagerError = error{
     InvalidGovernanceTransition,
     InvalidWalPayload,
     UnsupportedWalReplayOp,
+    ArithmeticOverflow,
 };
 
 const DelegationKey = struct {
@@ -175,8 +220,13 @@ pub const Manager = struct {
     validator_stake: std.AutoArrayHashMapUnmanaged([32]u8, u64),
     delegations: std.AutoArrayHashMapUnmanaged(DelegationKey, u64),
     processed_evidence: std.AutoArrayHashMapUnmanaged([32]u8, void),
+    /// Validator stays out of the active quorum while `current_epoch` is below this.
+    jailed_until: std.AutoArrayHashMapUnmanaged([32]u8, u64) = .empty,
     total_slashed: u64 = 0,
     current_epoch: u64 = 0,
+    /// Seconds stamped into stake, proposal, and vote records. The node sets
+    /// this from the epoch start so WAL bytes do not depend on the host clock.
+    clock_sec: i64 = 0,
     validator_set_hash: [32]u8 = @as([32]u8, @splat(0)),
     /// Optional M4-only WAL (separate from LSM); owned by `Node`.
     m4_wal: ?*wal_pkg.WAL = null,
@@ -192,12 +242,17 @@ pub const Manager = struct {
             .delegations = .empty,
             .processed_evidence = .empty,
             .m4_wal = null,
+            .clock_sec = 0,
         };
         return self;
     }
 
     pub fn setM4Wal(self: *Self, wal: ?*wal_pkg.WAL) void {
         self.m4_wal = wal;
+    }
+
+    pub fn setClock(self: *Self, epoch_start_sec: i64) void {
+        self.clock_sec = epoch_start_sec;
     }
 
     pub fn deinit(self: *Self) void {
@@ -213,14 +268,15 @@ pub const Manager = struct {
         self.validator_stake.deinit(self.allocator);
         self.delegations.deinit(self.allocator);
         self.processed_evidence.deinit(self.allocator);
+        self.jailed_until.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
     pub fn submitStakeOperation(self: *Self, input: StakeOperationInput) (ManagerError || anyerror)!u64 {
         if (input.amount == 0) return error.InvalidAmount;
         const id = self.next_stake_operation_id;
-        self.next_stake_operation_id += 1;
-        const now = nowSeconds();
+        self.next_stake_operation_id = std.math.add(u64, id, 1) catch return error.ArithmeticOverflow;
+        const now = self.clock_sec;
 
         try self.applyStakeOperation(input);
 
@@ -240,7 +296,7 @@ pub const Manager = struct {
     pub fn submitGovernanceProposal(self: *Self, input: GovernanceProposalInput) (ManagerError || anyerror)!u64 {
         if (input.title.len == 0 or input.description.len == 0) return error.InvalidGovernanceTransition;
         const id = self.next_proposal_id;
-        self.next_proposal_id += 1;
+        self.next_proposal_id = std.math.add(u64, id, 1) catch return error.ArithmeticOverflow;
         try self.proposals.append(self.allocator, .{
             .id = id,
             .proposer = input.proposer,
@@ -248,7 +304,7 @@ pub const Manager = struct {
             .description = try self.allocator.dupe(u8, input.description),
             .kind = input.kind,
             .activation_epoch = input.activation_epoch,
-            .created_at = nowSeconds(),
+            .created_at = self.clock_sec,
             .status = .pending,
         });
         try self.appendGovernanceProposalWal(&self.proposals.items[self.proposals.items.len - 1]);
@@ -288,7 +344,7 @@ pub const Manager = struct {
                 .validator = validator,
                 .stake_weight = stake,
                 .approve = approve,
-                .voted_at = nowSeconds(),
+                .voted_at = self.clock_sec,
             };
             try self.votes.append(self.allocator, vote);
             try self.appendGovernanceVoteWal(&vote);
@@ -363,6 +419,105 @@ pub const Manager = struct {
         return self.validator_stake.get(validator) orelse 0;
     }
 
+    pub fn getDelegation(self: *const Self, validator: [32]u8, delegator: [32]u8) u64 {
+        return self.delegations.get(.{ .validator = validator, .delegator = delegator }) orelse 0;
+    }
+
+    /// Equivocation slashes already recorded for `validator`. Manual slash
+    /// operations with other metadata do not advance the curve.
+    pub fn priorEquivocationOffenses(self: *const Self, validator: [32]u8) u32 {
+        var n: u32 = 0;
+        for (self.stake_ops.items) |op| {
+            if (op.action != .slash) continue;
+            if (!std.mem.eql(u8, &op.validator, &validator)) continue;
+            if (!std.mem.eql(u8, op.metadata, "equivocation_evidence")) continue;
+            n +|= 1;
+        }
+        return n;
+    }
+
+    pub fn scheduledSlashAmount(self: *const Self, validator: [32]u8) u64 {
+        return SlashSchedule.amount(self.getValidatorStake(validator), self.priorEquivocationOffenses(validator));
+    }
+
+    pub fn isJailed(self: *const Self, validator: [32]u8) bool {
+        const until = self.jailed_until.get(validator) orelse return false;
+        return self.current_epoch < until;
+    }
+
+    fn noteEquivocationJail(self: *Self, validator: [32]u8) !void {
+        const until = self.current_epoch + SlashSchedule.jailEpochs(self.priorEquivocationOffenses(validator));
+        const prev = self.jailed_until.get(validator) orelse 0;
+        if (until > prev) try self.jailed_until.put(self.allocator, validator, until);
+    }
+
+    /// Slash by `SlashSchedule` and record the evidence. Returns false when
+    /// this evidence digest was already applied.
+    pub fn applyScheduledEquivocation(
+        self: *Self,
+        validator: [32]u8,
+        round: u64,
+        evidence_payload: []const u8,
+    ) (ManagerError || anyerror)!bool {
+        const slash_amount = self.scheduledSlashAmount(validator);
+        if (slash_amount == 0) return error.InsufficientStake;
+        return self.applyEquivocationEvidence(validator, validator, round, evidence_payload, slash_amount);
+    }
+
+    /// Mint `total_reward` and split it across current delegations.
+    /// Returns the amount actually credited (0 when there is nobody to pay).
+    pub fn distributeEpochRewards(self: *Self, total_reward: u64) !u64 {
+        if (total_reward == 0) return 0;
+
+        const Snap = struct {
+            key: DelegationKey,
+            weight: u64,
+            share: u64,
+        };
+        var rows = std.ArrayList(Snap).empty;
+        defer rows.deinit(self.allocator);
+
+        var total_weight: u64 = 0;
+        var it = self.delegations.iterator();
+        while (it.next()) |entry| {
+            const weight = entry.value_ptr.*;
+            if (weight == 0) continue;
+            total_weight = std.math.add(u64, total_weight, weight) catch return error.Overflow;
+            try rows.append(self.allocator, .{
+                .key = entry.key_ptr.*,
+                .weight = weight,
+                .share = 0,
+            });
+        }
+        if (rows.items.len == 0 or total_weight == 0) return 0;
+
+        var assigned: u64 = 0;
+        var best: usize = 0;
+        for (rows.items, 0..) |*row, i| {
+            row.share = EpochRewards.share(total_reward, row.weight, total_weight);
+            assigned += row.share;
+            const better = row.weight > rows.items[best].weight or
+                (row.weight == rows.items[best].weight and
+                    std.mem.order(u8, &row.key.delegator, &rows.items[best].key.delegator) == .lt);
+            if (i == 0 or better) best = i;
+        }
+        rows.items[best].share += total_reward - assigned;
+
+        var credited: u64 = 0;
+        for (rows.items) |row| {
+            if (row.share == 0) continue;
+            _ = try self.submitStakeOperation(.{
+                .validator = row.key.validator,
+                .delegator = row.key.delegator,
+                .amount = row.share,
+                .action = .reward,
+                .metadata = "epoch_reward",
+            });
+            credited += row.share;
+        }
+        return credited;
+    }
+
     pub fn getTotalSlashed(self: *const Self) u64 {
         return self.total_slashed;
     }
@@ -418,6 +573,7 @@ pub const Manager = struct {
             .action = .slash,
             .metadata = "equivocation_evidence",
         });
+        try self.noteEquivocationJail(validator);
         return true;
     }
 
@@ -483,32 +639,64 @@ pub const Manager = struct {
         }
     }
 
+    /// Remove `slash_amount` from this validator's delegations in proportion
+    /// to each delegation. Leftover units from integer division go to the
+    /// largest delegation (ties broken by delegator bytes).
     fn applySlashToDelegations(self: *Self, validator: [32]u8, slash_amount: u64) !void {
         if (slash_amount == 0) return;
 
-        var remaining = slash_amount;
-        var updates = std.ArrayList(struct { key: DelegationKey, value: u64 }).empty;
-        defer updates.deinit(self.allocator);
+        const Row = struct { key: DelegationKey, old: u64, next: u64 };
+        var rows = std.ArrayList(Row).empty;
+        defer rows.deinit(self.allocator);
 
+        var total: u64 = 0;
         var it = self.delegations.iterator();
         while (it.next()) |entry| {
             if (!std.mem.eql(u8, &entry.key_ptr.validator, &validator)) continue;
-            if (remaining == 0) break;
             const old = entry.value_ptr.*;
-            const slash = @min(old, remaining);
-            const next = old - slash;
-            remaining -= slash;
-            try updates.append(self.allocator, .{
+            if (old == 0) continue;
+            total = std.math.add(u64, total, old) catch return error.Overflow;
+            try rows.append(self.allocator, .{
                 .key = entry.key_ptr.*,
-                .value = next,
+                .old = old,
+                .next = old,
             });
         }
+        if (total == 0 or rows.items.len == 0) return;
 
-        for (updates.items) |u| {
-            if (u.value == 0) {
-                _ = self.delegations.swapRemove(u.key);
-            } else {
-                try self.delegations.put(self.allocator, u.key, u.value);
+        const budget = @min(slash_amount, total);
+        var assigned: u64 = 0;
+        for (rows.items) |*row| {
+            const cut: u64 = @intCast((@as(u128, budget) * row.old) / total);
+            const cut_capped = @min(cut, row.old);
+            row.next = row.old - cut_capped;
+            assigned += cut_capped;
+        }
+
+        var remainder = budget - assigned;
+        while (remainder > 0) {
+            var best: ?usize = null;
+            for (rows.items, 0..) |row, i| {
+                if (row.next == 0) continue;
+                if (best == null) {
+                    best = i;
+                    continue;
+                }
+                const cur = rows.items[best.?];
+                const larger = row.old > cur.old or
+                    (row.old == cur.old and std.mem.order(u8, &row.key.delegator, &cur.key.delegator) == .lt);
+                if (larger) best = i;
+            }
+            const idx = best orelse break;
+            rows.items[idx].next -= 1;
+            remainder -= 1;
+        }
+
+        for (rows.items) |row| {
+            if (row.next == 0) {
+                _ = self.delegations.swapRemove(row.key);
+            } else if (row.next != row.old) {
+                try self.delegations.put(self.allocator, row.key, row.next);
             }
         }
     }
@@ -649,6 +837,8 @@ pub const Manager = struct {
             .m4_state_snapshot => {
                 try self.deserializeStateSnapshot(value);
             },
+            // Gas ledger is owned by Node/Executor; Node.replayMainnetM4Wal routes these.
+            .m4_gas_balance, .m4_gas_snapshot => return error.UnsupportedWalReplayOp,
             .insert, .delete, .commit, .abort => return error.UnsupportedWalReplayOp,
         }
     }
@@ -673,7 +863,9 @@ pub const Manager = struct {
 
     fn injectReplayedStakeOperation(self: *Self, op: StakeOperation) !void {
         errdefer self.allocator.free(op.metadata);
-        if (op.id >= self.next_stake_operation_id) self.next_stake_operation_id = op.id + 1;
+        if (op.id >= self.next_stake_operation_id) {
+            self.next_stake_operation_id = std.math.add(u64, op.id, 1) catch op.id;
+        }
         try self.applyStakeOperation(.{
             .validator = op.validator,
             .delegator = op.delegator,
@@ -690,6 +882,9 @@ pub const Manager = struct {
             .action = op.action,
             .metadata = try self.allocator.dupe(u8, op.metadata),
         });
+        if (op.action == .slash and std.mem.eql(u8, op.metadata, "equivocation_evidence")) {
+            try self.noteEquivocationJail(op.validator);
+        }
         self.allocator.free(op.metadata);
     }
 
@@ -698,7 +893,9 @@ pub const Manager = struct {
             self.allocator.free(p.title);
             self.allocator.free(p.description);
         }
-        if (p.id >= self.next_proposal_id) self.next_proposal_id = p.id + 1;
+        if (p.id >= self.next_proposal_id) {
+            self.next_proposal_id = std.math.add(u64, p.id, 1) catch p.id;
+        }
         try self.proposals.append(self.allocator, .{
             .id = p.id,
             .proposer = p.proposer,
@@ -1134,6 +1331,27 @@ pub const Manager = struct {
             for (ev) |h| try buf.appendSlice(self.allocator, &h);
         }
 
+        // Optional tail. Readers of v1 snapshots stop before this marker.
+        {
+            try buf.appendSlice(self.allocator, "m4jl");
+            const n = self.jailed_until.count();
+            try W.appendU32(&buf, self.allocator, @intCast(n));
+            const keys = try self.allocator.alloc([32]u8, n);
+            defer self.allocator.free(keys);
+            var jit = self.jailed_until.iterator();
+            var ji: usize = 0;
+            while (jit.next()) |e| : (ji += 1) keys[ji] = e.key_ptr.*;
+            std.mem.sort([32]u8, keys, {}, struct {
+                fn less(_: void, a: [32]u8, b: [32]u8) bool {
+                    return std.mem.order(u8, &a, &b) == .lt;
+                }
+            }.less);
+            for (keys) |k| {
+                try buf.appendSlice(self.allocator, &k);
+                try W.appendU64(&buf, self.allocator, self.jailed_until.get(k) orelse 0);
+            }
+        }
+
         return buf.toOwnedSlice(self.allocator);
     }
 
@@ -1194,6 +1412,7 @@ pub const Manager = struct {
         self.validator_stake.clearRetainingCapacity();
         self.delegations.clearRetainingCapacity();
         self.processed_evidence.clearRetainingCapacity();
+        self.jailed_until.clearRetainingCapacity();
 
         // Stake operations
         {
@@ -1305,6 +1524,16 @@ pub const Manager = struct {
                 try self.processed_evidence.put(self.allocator, eid, {});
             }
         }
+
+        if (off + 4 <= data.len and std.mem.eql(u8, data[off..][0..4], "m4jl")) {
+            off += 4;
+            const n = try R.readU32(data, &off);
+            for (0..n) |_| {
+                const validator = try R.readArray(32, data, &off);
+                const until = try R.readU64(data, &off);
+                try self.jailed_until.put(self.allocator, validator, until);
+            }
+        }
     }
 
     pub fn appendStateSnapshotWal(self: *Self) !void {
@@ -1316,10 +1545,59 @@ pub const Manager = struct {
     }
 };
 
-fn nowSeconds() i64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return ts.sec;
+test "m4 record times follow the epoch clock" {
+    const allocator = std.testing.allocator;
+    var a = try Manager.init(allocator);
+    defer a.deinit();
+    var b = try Manager.init(allocator);
+    defer b.deinit();
+    a.setClock(1_700_000_000);
+    b.setClock(1_700_000_000);
+
+    const input = StakeOperationInput{
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
+        .amount = 10,
+        .action = .stake,
+    };
+    _ = try a.submitStakeOperation(input);
+    _ = try b.submitStakeOperation(input);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), a.stake_ops.items[0].submitted_at);
+    try std.testing.expectEqual(a.stake_ops.items[0].submitted_at, b.stake_ops.items[0].submitted_at);
+
+    _ = try a.submitGovernanceProposal(.{
+        .proposer = @as([32]u8, @splat(9)),
+        .title = "t",
+        .description = "d",
+        .kind = .parameter_change,
+    });
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), a.proposals.items[0].created_at);
+}
+
+test "mainnet hooks refuse to wrap stake and proposal ids" {
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+    mgr.next_stake_operation_id = std.math.maxInt(u64);
+    mgr.next_proposal_id = std.math.maxInt(u64);
+
+    try std.testing.expectError(error.ArithmeticOverflow, mgr.submitStakeOperation(.{
+        .validator = @as([32]u8, @splat(1)),
+        .delegator = @as([32]u8, @splat(2)),
+        .amount = 10,
+        .action = .stake,
+    }));
+    try std.testing.expectEqual(std.math.maxInt(u64), mgr.next_stake_operation_id);
+    try std.testing.expectEqual(@as(usize, 0), mgr.stake_ops.items.len);
+
+    try std.testing.expectError(error.ArithmeticOverflow, mgr.submitGovernanceProposal(.{
+        .proposer = @as([32]u8, @splat(9)),
+        .title = "t",
+        .description = "d",
+        .kind = .parameter_change,
+    }));
+    try std.testing.expectEqual(std.math.maxInt(u64), mgr.next_proposal_id);
+    try std.testing.expectEqual(@as(usize, 0), mgr.proposals.items.len);
 }
 
 test "mainnet hooks allocate ids monotonically" {
@@ -1528,4 +1806,151 @@ test "M4 state snapshot roundtrip" {
     try std.testing.expectEqual(@as(u64, 1000), mgr2.delegations.get(.{ .validator = validator, .delegator = delegator }).?);
     try std.testing.expect(mgr2.processed_evidence.contains(@as([32]u8, @splat(0xEE))));
     try std.testing.expect(std.mem.eql(u8, &mgr2.validator_set_hash, &@as([32]u8, @splat(0xAA))));
+}
+
+test "slash schedule escalates and repeat evidence does not" {
+    try std.testing.expectEqual(@as(u64, 100), SlashSchedule.amount(1000, 0));
+    try std.testing.expectEqual(@as(u64, 250), SlashSchedule.amount(1000, 1));
+    try std.testing.expectEqual(@as(u64, 500), SlashSchedule.amount(1000, 2));
+    try std.testing.expectEqual(@as(u64, 1000), SlashSchedule.amount(1000, 3));
+    try std.testing.expectEqual(@as(u64, 0), SlashSchedule.amount(0, 0));
+    try std.testing.expectEqual(@as(u64, 1), SlashSchedule.amount(1, 0));
+
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+
+    const validator = @as([32]u8, @splat(0x41));
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = validator,
+        .amount = 1000,
+        .action = .stake,
+    });
+
+    try std.testing.expect(try mgr.applyScheduledEquivocation(validator, 1, "e1"));
+    try std.testing.expectEqual(@as(u64, 900), mgr.getValidatorStake(validator));
+    try std.testing.expect(!try mgr.applyScheduledEquivocation(validator, 1, "e1"));
+    try std.testing.expectEqual(@as(u64, 900), mgr.getValidatorStake(validator));
+
+    try std.testing.expect(try mgr.applyScheduledEquivocation(validator, 2, "e2"));
+    // 25% of the remaining 900.
+    try std.testing.expectEqual(@as(u64, 675), mgr.getValidatorStake(validator));
+    try std.testing.expectEqual(@as(u64, 325), mgr.getTotalSlashed());
+}
+
+test "slash is pro-rata across delegations" {
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+
+    const validator = @as([32]u8, @splat(0x51));
+    const larger = @as([32]u8, @splat(0x02));
+    const smaller = @as([32]u8, @splat(0x01));
+
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = larger,
+        .amount = 60,
+        .action = .stake,
+    });
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = smaller,
+        .amount = 40,
+        .action = .stake,
+    });
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = validator,
+        .amount = 50,
+        .action = .slash,
+        .metadata = "manual",
+    });
+
+    try std.testing.expectEqual(@as(u64, 50), mgr.getValidatorStake(validator));
+    try std.testing.expectEqual(@as(u64, 30), mgr.getDelegation(validator, larger));
+    try std.testing.expectEqual(@as(u64, 20), mgr.getDelegation(validator, smaller));
+
+    // 1 unit of dust lands on the larger of two delegations (weights 2 and 1).
+    var dust = try Manager.init(allocator);
+    defer dust.deinit();
+    _ = try dust.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = larger,
+        .amount = 2,
+        .action = .stake,
+    });
+    _ = try dust.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = smaller,
+        .amount = 1,
+        .action = .stake,
+    });
+    _ = try dust.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = validator,
+        .amount = 1,
+        .action = .slash,
+        .metadata = "manual",
+    });
+    try std.testing.expectEqual(@as(u64, 1), dust.getDelegation(validator, larger));
+    try std.testing.expectEqual(@as(u64, 1), dust.getDelegation(validator, smaller));
+}
+
+test "epoch rewards split pro-rata and sum to the budget" {
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+
+    const validator = @as([32]u8, @splat(0x61));
+    const larger = @as([32]u8, @splat(0x02));
+    const smaller = @as([32]u8, @splat(0x01));
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = larger,
+        .amount = 75,
+        .action = .stake,
+    });
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = smaller,
+        .amount = 25,
+        .action = .stake,
+    });
+
+    const credited = try mgr.distributeEpochRewards(10);
+    try std.testing.expectEqual(@as(u64, 10), credited);
+    try std.testing.expectEqual(@as(u64, 110), mgr.getValidatorStake(validator));
+    // 7 + 2, and the leftover 1 goes to the larger delegation.
+    try std.testing.expectEqual(@as(u64, 83), mgr.getDelegation(validator, larger));
+    try std.testing.expectEqual(@as(u64, 27), mgr.getDelegation(validator, smaller));
+    try std.testing.expectEqual(@as(u64, 0), try mgr.distributeEpochRewards(0));
+}
+
+test "equivocation jail expires on the epoch boundary and survives a snapshot" {
+    const allocator = std.testing.allocator;
+    var mgr = try Manager.init(allocator);
+    defer mgr.deinit();
+
+    const validator = @as([32]u8, @splat(0x71));
+    _ = try mgr.submitStakeOperation(.{
+        .validator = validator,
+        .delegator = validator,
+        .amount = 1000,
+        .action = .stake,
+    });
+    try std.testing.expect(try mgr.applyScheduledEquivocation(validator, 1, "jail-e1"));
+    try std.testing.expect(mgr.isJailed(validator));
+    try std.testing.expectEqual(@as(u64, 2), mgr.jailed_until.get(validator).?);
+
+    const blob = try mgr.serializeStateSnapshot();
+    defer allocator.free(blob);
+    var restored = try Manager.init(allocator);
+    defer restored.deinit();
+    try restored.deserializeStateSnapshot(blob);
+    try std.testing.expect(restored.isJailed(validator));
+
+    try restored.advanceEpoch(2);
+    try std.testing.expect(!restored.isJailed(validator));
 }

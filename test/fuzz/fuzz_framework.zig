@@ -302,6 +302,7 @@ pub const LSMTreeFuzzer = struct {
 
             // Verify we can get it back
             const retrieved = tree.get(key_opt.?) catch break;
+            defer if (retrieved) |owned| allocator.free(owned);
             if (retrieved == null) {
                 std.debug.panic("LSMTree put/get failed: key not found", .{});
             }

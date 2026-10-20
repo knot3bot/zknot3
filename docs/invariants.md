@@ -242,6 +242,6 @@ Every error in zknot3 falls into one of these categories:
 | **ConsensusViolation** | Fork, double-commit, invalid cert | I-1, I-2, I-4 | Halt consensus, alert operators |
 | **Transient** | Network timeout, disk full, lock contention | None (temporary) | Retry with exponential backoff |
 | **PeerFault** | Remote node sent invalid data | N-1, N-2 | Ban peer, log evidence |
-| **ByzantineEvidence** | Provable equivocation or double-sign | I-4 | Record evidence, future slash |
+| **ByzantineEvidence** | Provable equivocation or double-sign | I-4 | Record evidence, slash on the 10/25/50/100% curve, jail for 2/3/5 epochs, copy into voting power |
 | **InvalidInput** | Client-sent malformed tx or request | S-5, M-1 | Reject with error code |
 | **ResourceExhausted** | OOM, fd limit, disk full | M-2, ST-1 | Graceful degrade or shutdown |

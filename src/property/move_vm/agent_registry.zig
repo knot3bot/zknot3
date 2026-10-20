@@ -8,6 +8,14 @@
 const std = @import("std");
 const core = @import("../../core.zig");
 
+fn saturatingAddI64(total: i64, delta: i64) i64 {
+    return std.math.add(i64, total, delta) catch if (delta < 0) std.math.minInt(i64) else std.math.maxInt(i64);
+}
+
+fn saturatingAddU64(total: u64, amount: u64) u64 {
+    return std.math.add(u64, total, amount) catch std.math.maxInt(u64);
+}
+
 pub const AgentCapability = enum(u8) {
     image_gen = 1,
     text_gen = 2,
@@ -55,6 +63,8 @@ pub const AgentRegistry = struct {
     allocator: std.mem.Allocator,
     agents: std.AutoArrayHashMapUnmanaged(core.ObjectID, Agent),
     capability_index: std.AutoArrayHashMapUnmanaged(u8, std.ArrayList(core.ObjectID)),
+    /// Seconds stamped on new agents. Callers set this from the epoch start.
+    clock_sec: i64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !*AgentRegistry {
         const self = try allocator.create(AgentRegistry);
@@ -62,8 +72,13 @@ pub const AgentRegistry = struct {
             .allocator = allocator,
             .agents = .empty,
             .capability_index = .empty,
+            .clock_sec = 0,
         };
         return self;
+    }
+
+    pub fn setClock(self: *AgentRegistry, epoch_start_sec: i64) void {
+        self.clock_sec = epoch_start_sec;
     }
 
     pub fn deinit(self: *AgentRegistry) void {
@@ -85,26 +100,38 @@ pub const AgentRegistry = struct {
         capabilities: []const AgentCapability,
         endpoint_url: []const u8,
     ) !core.ObjectID {
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-
-        const id = core.ObjectID.hash(name);
+        var hasher = std.crypto.hash.Blake3.init(.{});
+        hasher.update("agent");
+        hasher.update(&owner);
+        hasher.update(name);
+        var id_bytes: [32]u8 = undefined;
+        hasher.final(&id_bytes);
+        const id = core.ObjectID{ .bytes = id_bytes };
         if (self.agents.contains(id)) return error.AlreadyRegistered;
+
+        var stored = false;
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer if (!stored) self.allocator.free(name_copy);
+        const caps_copy = try self.allocator.dupe(AgentCapability, capabilities);
+        errdefer if (!stored) self.allocator.free(caps_copy);
+        const url_copy = try self.allocator.dupe(u8, endpoint_url);
+        errdefer if (!stored) self.allocator.free(url_copy);
 
         const agent = Agent{
             .id = id,
             .owner = owner,
-            .name = try self.allocator.dupe(u8, name),
-            .capabilities = try self.allocator.dupe(AgentCapability, capabilities),
-            .endpoint_url = try self.allocator.dupe(u8, endpoint_url),
+            .name = name_copy,
+            .capabilities = caps_copy,
+            .endpoint_url = url_copy,
             .reputation_score = 100,
             .total_tasks_completed = 0,
             .total_rewards_earned = 0,
-            .created_at = ts.sec,
+            .created_at = self.clock_sec,
             .is_active = true,
         };
 
         try self.agents.put(self.allocator, id, agent);
+        stored = true;
 
         // Index by capability for fast discovery
         for (capabilities) |cap| {
@@ -120,9 +147,9 @@ pub const AgentRegistry = struct {
     /// Positive delta for successful tasks, negative for failures.
     pub fn updateReputation(self: *AgentRegistry, agent_id: core.ObjectID, score_delta: i64, reward_amount: u64) !void {
         const agent = self.agents.getPtr(agent_id) orelse return error.AgentNotFound;
-        agent.reputation_score += score_delta;
-        if (score_delta > 0) agent.total_tasks_completed += 1;
-        agent.total_rewards_earned += reward_amount;
+        agent.reputation_score = saturatingAddI64(agent.reputation_score, score_delta);
+        if (score_delta > 0) agent.total_tasks_completed = saturatingAddU64(agent.total_tasks_completed, 1);
+        agent.total_rewards_earned = saturatingAddU64(agent.total_rewards_earned, reward_amount);
     }
 
     /// Discover agents by capability. Returns agents sorted by reputation (highest first).
@@ -194,4 +221,39 @@ test "AgentRegistry reputation update" {
     const agent = reg.agents.get(id).?;
     try std.testing.expectEqual(@as(i64, 110), agent.reputation_score);
     try std.testing.expectEqual(@as(u64, 1000), agent.total_rewards_earned);
+}
+
+test "AgentRegistry reputation and rewards saturate at the integer limits" {
+    const allocator = std.testing.allocator;
+    var reg = try AgentRegistry.init(allocator);
+    defer reg.deinit();
+
+    const owner = @as([32]u8, @splat(1));
+    const caps = [_]AgentCapability{.code_gen};
+    const id = try reg.register(owner, "CapBot", &caps, "https://cap.example");
+
+    try reg.updateReputation(id, std.math.maxInt(i64), std.math.maxInt(u64));
+    try reg.updateReputation(id, 1, 1);
+    const high = reg.agents.get(id).?;
+    try std.testing.expectEqual(std.math.maxInt(i64), high.reputation_score);
+    try std.testing.expectEqual(std.math.maxInt(u64), high.total_rewards_earned);
+
+    const low_id = try reg.register(owner, "FloorBot", &caps, "https://floor.example");
+    try reg.updateReputation(low_id, std.math.minInt(i64), 0);
+    try reg.updateReputation(low_id, -101, 0);
+    try std.testing.expectEqual(std.math.minInt(i64), reg.agents.get(low_id).?.reputation_score);
+}
+
+test "AgentRegistry ids include the owner and use the epoch clock" {
+    const allocator = std.testing.allocator;
+    var reg = try AgentRegistry.init(allocator);
+    defer reg.deinit();
+    reg.setClock(1_700_000_000);
+
+    const caps = [_]AgentCapability{.text_gen};
+    const first = try reg.register(@as([32]u8, @splat(1)), "Bot", &caps, "https://a.example");
+    const second = try reg.register(@as([32]u8, @splat(2)), "Bot", &caps, "https://b.example");
+    try std.testing.expect(!first.eql(second));
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), reg.agents.get(first).?.created_at);
+    try std.testing.expectError(error.AlreadyRegistered, reg.register(@as([32]u8, @splat(1)), "Bot", &caps, "https://a.example"));
 }

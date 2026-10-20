@@ -26,6 +26,7 @@
   - [ ] `knot3_submitStakeOperation`
   - [ ] `knot3_submitGovernanceProposal`
   - [ ] `knot3_getCheckpointProof`
+  - [ ] `knot3_creditGas` / `knot3_getGasBalance`（admin token + ledger smoke；非 gas-coin）
 - [ ] Verify light-client proof check passes on sampled checkpoint
 - [ ] 灰度策略执行：10% 节点 -> 30% 节点 -> 全量
 

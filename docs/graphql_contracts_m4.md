@@ -108,3 +108,4 @@ mutation {
 - 字段名继续与 `knot3_` RPC 命名保持一致（如 `objectId` camelCase、GraphQL `activationEpoch` → 内部 `activation_epoch` 映射）。
 - `proof` / `signatures` 为 **十六进制编码的可验证载荷**（Ed25519 多签清单 + quorum），详见 `docs/rpc_contracts_m4.md` 与 `LightClient.verifyCheckpointProofQuorum`。
 - 解析失败时 resolver 返回 `error.InvalidParams`（由 GraphQL 执行层表现为查询/变更失败）；HTTP 网关若桥接 JSON-RPC，请使用 **`-32602`** 映射以保持运维一致性。
+- **非全量 RPC 对等**：`knot3_creditGas` / `knot3_getGasBalance` 仅在 JSON-RPC（见 `docs/rpc_contracts_m4.md`）暴露；本 GraphQL schema **尚未** 提供对应字段，请勿假设 GraphQL 与 RPC 完全一致。

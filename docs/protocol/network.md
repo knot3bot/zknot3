@@ -4,7 +4,7 @@
 
 zknot3 uses a dual-layer networking stack:
 - **P2P layer**: Kademlia DHT for peer discovery + gossip for message propagation
-- **Transport layer**: QUIC-style framing over TCP (future: real QUIC/UDP)
+- **Transport layer**: QUIC-style framing over TCP for this cutover (`transport = "tcp"`). UDP QUIC is optional behind `-Dquic` and is not the frozen path.
 
 ## Message Types
 
@@ -76,17 +76,17 @@ Ban threshold: 3x rate limit violations → ban for p2p_peer_ban_seconds
 
 ## Transport
 
-### Current: QUIC-style TCP Framing
+### Frozen for this cutover: QUIC-style TCP Framing
 ```
 Frame: [type:u8][stream_id:u32][length:u32][payload:bytes]
 ```
-Uses TCP with application-level multiplexing. NOT real QUIC/UDP.
+Production profiles set `transport = "tcp"`. The authenticated handshake
+includes the genesis digest (`k3gen01`). A peer with a different digest is
+refused.
 
-### Future: QUIC/UDP Migration Path
-- `QUIC.zig` already has stream abstraction
-- Noise session per QUIC connection
-- 0-RTT handshake for re-connections
-- Migration blocked on: QUIC library integration (msquic or quiche)
+`transport = "quic"` selects the vendored ngtcp2 engine and is refused unless
+the binary was built with `-Dquic`. That UDP path is not part of this cutover:
+it does not bind the genesis digest, and it is not in the WAN gate.
 
 ## HTTP / JSON-RPC
 

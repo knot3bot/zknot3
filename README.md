@@ -8,10 +8,12 @@
 >
 > **Known gaps** (stated plainly, see `AGENTS.md` → "Key Architectural
 > Decisions" for the itemised list):
-> - Multi-node distributed behaviour is **not yet covered by tests**. The
->   single-node network, storage and consensus paths are exercised; the
->   `test/integration/test_cluster.zig` multi-validator harness exists but
->   contains no test cases yet.
+> - Multi-node behaviour is covered by the in-process cluster tests, the
+>   Byzantine simulator, and the CI WAN gate (latency, loss, partition,
+>   healing). A public multi-region deployment has not been run.
+> - Equivocation slashing and epoch rewards are applied by the node that
+>   observes them. They change that node's voting power. They are not a
+>   separately finalized cross-validator transaction.
 > - There is **no `@compileAssert`** in the tree. Earlier revisions claimed
 >   compile-time category-theoretic verification; it was never implemented.
 > - The Move-style VM executes a **zknot3-native bytecode**, not Move bytecode.
@@ -70,8 +72,11 @@ the same `state₁` on every validator.
 | Client trust | Clients trust validator set for state; light clients verify proofs independently |
 
 A validator is **Byzantine** if it: equivocates (signs two blocks at the same round),
-proposes invalid blocks, or withholds votes. The protocol detects equivocation;
-slashing is planned but not yet implemented.
+proposes invalid blocks, or withholds votes. The protocol detects equivocation.
+The observing node slashes that validator's M4 stake on a fixed curve
+(10%, then 25%, then 50%, then 100% of remaining stake) and splits the loss
+pro-rata across its delegations. The validator is then jailed for 2, 3, or 5
+epochs, and its stake leaves the quorum total until the jail expires.
 
 ---
 
@@ -170,7 +175,7 @@ Within an epoch, the validator set is fixed.
 Application:  JSON-RPC (HTTP) + Gossip (P2P)
 Encryption:   Noise XX (3-message handshake, HKDF key derivation)
 Discovery:    Kademlia DHT (256 buckets, k=20, XOR distance)
-Transport:    QUIC-style framing over TCP (future: real QUIC/UDP)
+Transport:    QUIC-style framing over TCP (UDP QUIC with `zig build -Dquic`)
 ```
 
 ### Message Types
@@ -280,15 +285,17 @@ before execution.
 
 | Attack | Detected? | Mitigation |
 |--------|-----------|------------|
-| Equivocation (double-vote) | Yes | Votes rejected; evidence logged |
+| Equivocation (double-vote) | Yes | Votes rejected; signed evidence broadcast; stake slashed on the 10/25/50/100% curve; jailed for 2/3/5 epochs |
 | Invalid block proposal | Yes | Block digest verified before voting |
 | Vote withholding | Partial | Round timeout auto-advances |
-| Eclipse attack (P2P) | Partial | Kademlia bucket diversity; bootstrap seeds |
+| Eclipse attack (P2P) | Partial | Kademlia bucket diversity; bootstrap seeds; TCP /16 cap (default 8) |
 | Sybil (validator set) | No | Stake-weighted voting limits influence |
 | Long-range attack | No | Light client checkpoint trust model |
 
 **Current limitations**:
-- No automatic slashing (evidence logged, penalty not enforced)
+- Slashing and jail change the observing node's voting power. Validators only
+  stay in agreement if they all see the same signed evidence and run the same schedule
+- No market gas price
 - No fork-choice rule beyond "first committed wins"
 - Eclipse resistance depends on bootstrap seed configuration
 
@@ -310,8 +317,12 @@ committed blocks, any node can reconstruct the identical state.
 - Move VM is upgraded to a version with different semantics
 - Gas costs change between replay attempts
 
-**Snapshot-based fast sync** (future): Download state snapshot at checkpoint N,
-verify Merkle proof, then replay only blocks from N+1 onward.
+**Snapshot-based fast sync**: `ObjectStore.exportStateSnapshot` writes every
+live LSM record into a `k3snap01` blob whose Blake3 digest is checked by
+`importStateSnapshot`. The blob names the checkpoint sequence and digest it
+replaces. Later checkpoints are accepted only when each `previous_digest`
+continues from that digest (`StateSnapshot.verifyContinuation`). Replay then
+starts at the next checkpoint, not at genesis.
 
 ---
 
@@ -348,13 +359,16 @@ verify Merkle proof, then replay only blocks from N+1 onward.
       including configs that could never pass current validation)
 
 ### Planned
-- [ ] Automatic slashing on equivocation evidence (manual slash ops exist via M4 stake operations)
+- [x] Automatic slashing on equivocation evidence (10% / 25% / 50% / 100% of remaining stake, pro-rata across delegations, copied into voting power)
+- [x] Validator delegation and epoch reward distribution (`consensus.epoch_reward`, pro-rata; zero disables minting)
+- [x] Snapshot fast sync (`k3snap01` blob, Blake3 digest, checkpoint continuation)
+- [x] Epoch jail after equivocation (2/3/5 epochs; stake leaves the quorum total; `m4jl` snapshot tail)
+- [x] TCP IPv4 /16 peer cap (`p2p_max_peers_per_16`, default 8)
 - [ ] Market-based gas pricing (reference price + surge pricing, per-epoch)
-- [ ] Snapshot-based fast sync (state snapshot + Merkle proof + incremental replay)
-- [ ] Real QUIC/UDP transport (replace TCP framing with msquic/quiche integration)
+- [x] UDP QUIC via vendored httpz/ngtcp2 (`zig build -Dquic`; the default build keeps the TCP framing transport)
 - [ ] Narwhal-style data/consensus separation
 - [ ] Archive node mode (full history, no pruning)
-- [ ] Validator delegation and reward distribution
+- [ ] External security audit and a completed mainnet cutover (the checklist in `docs/mainnet_cutover_checklist.md` is still an operator task)
 
 ### Completed since (light client)
 - [x] State Merkle proofs for light client verification

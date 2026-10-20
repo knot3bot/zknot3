@@ -399,7 +399,7 @@ test "byzantine: withholding leader is unblocked by view change" {
                 pending_digests[pending_len] = block.digest;
                 pending_len += 1;
             }
-            for (0..n_validators) |i| sim.nodes[i].advanceRound();
+            for (0..n_validators) |i| try sim.nodes[i].advanceRound();
         } else {
             // Byzantine leader withholds: no proposal appears. Honest
             // validators emit timeout votes; f+1 = 2 of them trigger a view

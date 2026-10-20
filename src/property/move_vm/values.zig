@@ -46,6 +46,14 @@ pub const Container = struct {
         return ptr;
     }
 
+    fn retain(self: *Container) !void {
+        self.ref_count = std.math.add(u32, self.ref_count, 1) catch return error.Overflow;
+    }
+
+    fn release(self: *Container) void {
+        self.ref_count = std.math.sub(u32, self.ref_count, 1) catch 0;
+    }
+
     pub fn copyValue(self: *Container, allocator: std.mem.Allocator) !*Container {
         const ptr = try allocator.create(Container);
         errdefer allocator.destroy(ptr);
@@ -67,7 +75,7 @@ pub const Container = struct {
 
     pub fn deinit(self: *Container, allocator: std.mem.Allocator) void {
         self.checkedDeinit(allocator) catch |err| {
-            std.log.warn("Container.deinit: {} ({}) — forcing deinit with {} active borrows", .{ @errorName(err), self.ref_count });
+            std.log.warn("Container.deinit: {s} ({d} active borrows)", .{ @errorName(err), self.ref_count });
             // Force deinit even with active borrows
             for (self.data.items) |*item| item.deinit(allocator);
             self.data.deinit(allocator);
@@ -120,7 +128,7 @@ pub const ValueImpl = union(enum) {
     ContainerRef: ContainerRef,
     IndexedRef: IndexedRef,
 
-    pub fn copyValue(self: ValueImpl, allocator: std.mem.Allocator) !ValueImpl {
+    pub fn copyValue(self: ValueImpl, allocator: std.mem.Allocator) (std.mem.Allocator.Error || error{Overflow})!ValueImpl {
         return switch (self) {
             .Invalid => .Invalid,
             .U8 => |x| .{ .U8 = x },
@@ -133,11 +141,11 @@ pub const ValueImpl = union(enum) {
             .Address => |x| .{ .Address = x },
             .Container => |c| .{ .Container = try c.copyValue(allocator) },
             .ContainerRef => |r| {
-                r.container.ref_count += 1;
+                try r.container.retain();
                 return .{ .ContainerRef = .{ .container = r.container, .is_mutable = r.is_mutable } };
             },
             .IndexedRef => |r| {
-                r.container_ref.container.ref_count += 1;
+                try r.container_ref.container.retain();
                 return .{ .IndexedRef = .{ .container_ref = .{ .container = r.container_ref.container, .is_mutable = r.container_ref.is_mutable }, .idx = r.idx } };
             },
         };
@@ -166,8 +174,8 @@ pub const ValueImpl = union(enum) {
     pub fn deinit(self: *ValueImpl, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .Container => |c| c.deinit(allocator),
-            .ContainerRef => |r| r.container.ref_count -= 1,
-            .IndexedRef => |r| r.container_ref.container.ref_count -= 1,
+            .ContainerRef => |r| r.container.release(),
+            .IndexedRef => |r| r.container_ref.container.release(),
             else => {},
         }
     }
@@ -189,11 +197,22 @@ pub const ValueImpl = union(enum) {
                 if (!r.is_mutable) return error.InvalidReference;
                 switch (value) {
                     .Container => |src| {
-                        for (r.container.data.items) |*item| item.deinit(allocator);
-                        r.container.data.clearRetainingCapacity();
-                        for (src.data.items) |item| {
-                            try r.container.data.append(try item.copyValue(allocator));
+                        var next = std.ArrayList(ValueImpl).empty;
+                        errdefer {
+                            for (next.items) |*item| item.deinit(allocator);
+                            next.deinit(allocator);
                         }
+                        for (src.data.items) |item| {
+                            const copied = try item.copyValue(allocator);
+                            next.append(allocator, copied) catch |err| {
+                                var doomed = copied;
+                                doomed.deinit(allocator);
+                                return err;
+                            };
+                        }
+                        for (r.container.data.items) |*item| item.deinit(allocator);
+                        r.container.data.deinit(allocator);
+                        r.container.data = next;
                     },
                     else => return error.TypeMismatch,
                 }
@@ -201,8 +220,9 @@ pub const ValueImpl = union(enum) {
             .IndexedRef => |*r| {
                 if (!r.container_ref.is_mutable) return error.InvalidReference;
                 if (r.idx >= r.container_ref.container.data.items.len) return error.IndexOutOfBounds;
+                const copied = try value.copyValue(allocator);
                 r.container_ref.container.data.items[r.idx].deinit(allocator);
-                r.container_ref.container.data.items[r.idx] = try value.copyValue(allocator);
+                r.container_ref.container.data.items[r.idx] = copied;
             },
             else => return error.TypeMismatch,
         }
@@ -213,7 +233,7 @@ pub const ValueImpl = union(enum) {
             .ContainerRef => |r| {
                 if (r.container.kind != .Vec) return error.TypeMismatch;
                 if (idx >= r.container.data.items.len) return error.IndexOutOfBounds;
-                r.container.ref_count += 1;
+                try r.container.retain();
                 return .{ .IndexedRef = .{ .container_ref = r, .idx = idx } };
             },
             else => error.TypeMismatch,
@@ -225,7 +245,7 @@ pub const ValueImpl = union(enum) {
             .ContainerRef => |r| {
                 if (r.container.kind != .Struct) return error.TypeMismatch;
                 if (idx >= r.container.data.items.len) return error.IndexOutOfBounds;
-                r.container.ref_count += 1;
+                try r.container.retain();
                 return .{ .IndexedRef = .{ .container_ref = r, .idx = idx } };
             },
             else => error.TypeMismatch,
@@ -467,12 +487,30 @@ pub const IntegerValue = union(enum) {
     pub fn shrChecked(a: IntegerValue, b: IntegerValue) !IntegerValue {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return error.TypeMismatch;
         return switch (a) {
-            .U8 => |x| .{ .U8 = x >> @as(u3, @intCast(b.U8)) },
-            .U16 => |x| .{ .U16 = x >> @as(u4, @intCast(b.U16)) },
-            .U32 => |x| .{ .U32 = x >> @as(u5, @intCast(b.U32)) },
-            .U64 => |x| .{ .U64 = x >> @as(u6, @intCast(b.U64)) },
-            .U128 => |x| .{ .U128 = x >> @as(u7, @intCast(b.U128)) },
-            .U256 => |x| .{ .U256 = x >> @as(u8, @intCast(b.U256)) },
+            .U8 => |x| {
+                if (b.U8 >= 8) return error.Overflow;
+                return .{ .U8 = x >> @as(u3, @intCast(b.U8)) };
+            },
+            .U16 => |x| {
+                if (b.U16 >= 16) return error.Overflow;
+                return .{ .U16 = x >> @as(u4, @intCast(b.U16)) };
+            },
+            .U32 => |x| {
+                if (b.U32 >= 32) return error.Overflow;
+                return .{ .U32 = x >> @as(u5, @intCast(b.U32)) };
+            },
+            .U64 => |x| {
+                if (b.U64 >= 64) return error.Overflow;
+                return .{ .U64 = x >> @as(u6, @intCast(b.U64)) };
+            },
+            .U128 => |x| {
+                if (b.U128 >= 128) return error.Overflow;
+                return .{ .U128 = x >> @as(u7, @intCast(b.U128)) };
+            },
+            .U256 => |x| {
+                if (b.U256 >= 256) return error.Overflow;
+                return .{ .U256 = x >> @as(u8, @intCast(b.U256)) };
+            },
         };
     }
 
@@ -569,3 +607,91 @@ pub const VectorValue = struct {
         }
     }
 };
+
+test "shrChecked rejects a shift at least as wide as the integer" {
+    try std.testing.expectError(error.Overflow, IntegerValue.shrChecked(.{ .U8 = 1 }, .{ .U8 = 8 }));
+    const shifted = try IntegerValue.shrChecked(.{ .U8 = 4 }, .{ .U8 = 1 });
+    try std.testing.expectEqual(@as(u8, 2), shifted.U8);
+}
+
+test "Container deinit with an active borrow frees the container" {
+    const allocator = std.testing.allocator;
+    const container = try Container.new(allocator, .Vec, .{});
+    container.ref_count = 1;
+    container.deinit(allocator);
+}
+
+test "container reference count refuses to wrap" {
+    const allocator = std.testing.allocator;
+    const container = try Container.new(allocator, .Vec, .{});
+    defer {
+        container.ref_count = 0;
+        container.deinit(allocator);
+    }
+    container.ref_count = std.math.maxInt(u32);
+    const reference = ValueImpl{ .ContainerRef = .{ .container = container } };
+    try std.testing.expectError(error.Overflow, reference.copyValue(allocator));
+    try std.testing.expectEqual(std.math.maxInt(u32), container.ref_count);
+}
+
+test "releasing a container reference at zero stays at zero" {
+    const allocator = std.testing.allocator;
+    const container = try Container.new(allocator, .Vec, .{});
+    defer container.deinit(allocator);
+    var reference = ValueImpl{ .ContainerRef = .{ .container = container } };
+    reference.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, 0), container.ref_count);
+}
+
+const WriteBudget = struct {
+    parent: std.mem.Allocator,
+    left: usize,
+
+    fn allocator(self: *WriteBudget) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *WriteBudget = @ptrCast(@alignCast(ctx));
+        if (self.left == 0) return null;
+        self.left -= 1;
+        return self.parent.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *WriteBudget = @ptrCast(@alignCast(ctx));
+        return self.parent.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *WriteBudget = @ptrCast(@alignCast(ctx));
+        return self.parent.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *WriteBudget = @ptrCast(@alignCast(ctx));
+        self.parent.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "writeRef keeps the previous element when the replacement copy fails" {
+    const allocator = std.testing.allocator;
+    const inner = try Container.new(allocator, .Struct, .{});
+    try inner.data.append(allocator, .{ .U8 = 7 });
+    const outer = try Container.new(allocator, .Vec, .{});
+    defer outer.deinit(allocator);
+    try outer.data.append(allocator, .{ .Container = inner });
+
+    const replacement = try Container.new(allocator, .Struct, .{});
+    defer replacement.deinit(allocator);
+
+    var budget = WriteBudget{ .parent = allocator, .left = 0 };
+    var slot = ValueImpl{ .IndexedRef = .{ .container_ref = .{ .container = outer, .is_mutable = true }, .idx = 0 } };
+    try std.testing.expectError(error.OutOfMemory, slot.writeRef(budget.allocator(), .{ .Container = replacement }));
+    try std.testing.expectEqual(@as(u8, 7), outer.data.items[0].Container.data.items[0].U8);
+}

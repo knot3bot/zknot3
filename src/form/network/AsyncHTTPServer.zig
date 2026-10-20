@@ -31,6 +31,8 @@ const Conn = struct {
     state: ConnState,
     fd: i32,
     buf: [4096]u8,
+    /// Heap spill for a request larger than `buf` and within `max_request_body_size`.
+    spill: ?[]u8,
     buf_used: usize,
     response: ?[]const u8,
     response_sent: usize,
@@ -94,6 +96,7 @@ pub const AsyncHTTPServer = struct {
                 .state = .idle,
                 .fd = -1,
                 .buf = undefined,
+                .spill = null,
                 .buf_used = 0,
                 .response = null,
                 .response_sent = 0,
@@ -179,6 +182,7 @@ pub const AsyncHTTPServer = struct {
         }
         self.ring.deinit();
         for (&self.conns) |*conn| {
+            self.freeSpill(conn);
             if (conn.response) |r| {
                 self.allocator.free(r);
                 conn.response = null;
@@ -204,23 +208,14 @@ pub const AsyncHTTPServer = struct {
     /// Process io_uring completions and drive the connection state machine.
     pub fn tick(self: *Self) !void {
         // 1. Submit pending SQEs
-        _ = self.ring.submit() catch 0;
+        _ = self.ring.submit() catch |err| {
+            Log.warn("[HTTP] submit failed: {s}", .{@errorName(err)});
+        };
 
-        // 2. Poll CQEs (non-blocking)
-        var cqes: [32]std.os.linux.io_uring_cqe = undefined;
-        const n = self.ring.copy_cqes(&cqes, 0) catch 0;
-
-        for (0..n) |i| {
-            const cqe = cqes[i];
-            const parsed = parseUserData(cqe.user_data);
-            self.handleCqe(parsed.idx, parsed.op, cqe.res) catch |err| {
-                Log.warn("[HTTP] CQE handler error for conn {} op {}: {s}", .{ parsed.idx, @backingInt(parsed.op), @errorName(err) });
-                // Force connection close on error
-                if (parsed.idx < MAX_CONNS) {
-                    self.closeConn(@intCast(parsed.idx));
-                }
-            };
-        }
+        // 2. Drain CQEs. A single 32-slot copy left the rest queued; once the
+        //    CQ stayed non-empty, copy_cqes never took the overflow-flush path
+        //    and the kernel dropped completions.
+        try self.drainCompletions();
 
         // 3. Refill accept ops for idle slots (up to max_conns)
         for (&self.conns, 0..) |*conn, i| {
@@ -235,7 +230,30 @@ pub const AsyncHTTPServer = struct {
         }
 
         // 4. Final submit
-        _ = self.ring.submit() catch 0;
+        _ = self.ring.submit() catch |err| {
+            Log.warn("[HTTP] submit failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    fn drainCompletions(self: *Self) !void {
+        var cqes: [64]std.os.linux.io_uring_cqe = undefined;
+        var batches: usize = 0;
+        while (batches < 8) : (batches += 1) {
+            const n = self.ring.copy_cqes(&cqes, 0) catch |err| {
+                Log.warn("[HTTP] copy_cqes failed: {s}", .{@errorName(err)});
+                return err;
+            };
+            if (n == 0) return;
+            for (cqes[0..n]) |cqe| {
+                const parsed = parseUserData(cqe.user_data);
+                self.handleCqe(parsed.idx, parsed.op, cqe.res) catch |err| {
+                    Log.warn("[HTTP] CQE handler error for conn {} op {}: {s}", .{ parsed.idx, @backingInt(parsed.op), @errorName(err) });
+                    if (parsed.idx < MAX_CONNS) {
+                        self.closeConn(@intCast(parsed.idx));
+                    }
+                };
+            }
+        }
     }
 
     fn handleCqe(self: *Self, idx: u32, op: Op, res: i32) !void {
@@ -250,6 +268,7 @@ pub const AsyncHTTPServer = struct {
                 }
                 conn.fd = res;
                 conn.buf_used = 0;
+                self.freeSpill(conn);
                 conn.state = .reading;
                 _ = try self.ring.recv(makeUserData(idx, .recv), conn.fd, .{ .buffer = conn.buf[0..] }, 0);
             },
@@ -258,36 +277,13 @@ pub const AsyncHTTPServer = struct {
                     self.closeConn(idx);
                     return;
                 }
-                const bytes_read = @as(usize, @intCast(res));
-                conn.buf_used += bytes_read;
-
-                // Check if we have a complete HTTP request
-                const req_data = conn.buf[0..conn.buf_used];
-                const he = std.mem.indexOf(u8, req_data, "\r\n\r\n");
-                if (he) |hdr_end| {
-                    const content_len = HTTPServerBase.parseContentLength(req_data) orelse 0;
-                    const total_needed = hdr_end + 4 + content_len;
-                    if (conn.buf_used >= total_needed) {
-                        // We have a complete request (headers + full body).
-                        const response = try self.dispatchRequest(req_data[0..total_needed]);
-                        conn.response = response;
-                        conn.response_sent = 0;
-                        conn.state = .writing;
-                        _ = try self.ring.send(makeUserData(idx, .send), conn.fd, response, 0);
-                    } else if (conn.buf_used >= conn.buf.len) {
-                        // Buffer full without full body
-                        self.closeConn(idx);
-                    } else {
-                        // Need more data; submit another recv
-                        _ = try self.ring.recv(makeUserData(idx, .recv), conn.fd, .{ .buffer = conn.buf[conn.buf_used..] }, 0);
-                    }
-                } else if (conn.buf_used >= conn.buf.len) {
-                    // Buffer full without complete headers
+                const bytes_read: usize = @intCast(res);
+                if (bytes_read > recvTail(conn).len) {
                     self.closeConn(idx);
-                } else {
-                    // Need more data; submit another recv
-                    _ = try self.ring.recv(makeUserData(idx, .recv), conn.fd, .{ .buffer = conn.buf[conn.buf_used..] }, 0);
+                    return;
                 }
+                conn.buf_used += bytes_read;
+                try self.continueRead(idx);
             },
             .send => {
                 if (res <= 0) {
@@ -308,6 +304,7 @@ pub const AsyncHTTPServer = struct {
                 }
             },
             .close => {
+                self.freeSpill(conn);
                 if (conn.response) |r| {
                     self.allocator.free(r);
                     conn.response = null;
@@ -327,7 +324,7 @@ pub const AsyncHTTPServer = struct {
             conn.state = .closing;
             _ = self.ring.close(makeUserData(idx, .close), conn.fd) catch |err| {
                 Log.warn("[HTTP] close submit failed: {s}", .{@errorName(err)});
-                // Fallback to immediate cleanup
+                self.freeSpill(conn);
                 if (conn.response) |r| {
                     self.allocator.free(r);
                     conn.response = null;
@@ -337,6 +334,7 @@ pub const AsyncHTTPServer = struct {
                 conn.state = .idle;
             };
         } else {
+            self.freeSpill(conn);
             if (conn.response) |r| {
                 self.allocator.free(r);
                 conn.response = null;
@@ -344,6 +342,87 @@ pub const AsyncHTTPServer = struct {
             conn.buf_used = 0;
             conn.state = .idle;
         }
+    }
+
+    fn freeSpill(self: *Self, conn: *Conn) void {
+        if (conn.spill) |s| self.allocator.free(s);
+        conn.spill = null;
+    }
+
+    fn stored(conn: *Conn) []u8 {
+        if (conn.spill) |s| return s;
+        return conn.buf[0..];
+    }
+
+    fn requestSlice(conn: *Conn) []u8 {
+        return stored(conn)[0..conn.buf_used];
+    }
+
+    fn recvTail(conn: *Conn) []u8 {
+        return stored(conn)[conn.buf_used..];
+    }
+
+    fn ensureCapacity(self: *Self, conn: *Conn, need: usize) !void {
+        const have = if (conn.spill) |s| s.len else conn.buf.len;
+        if (have >= need) return;
+        const next = try self.allocator.alloc(u8, need);
+        errdefer self.allocator.free(next);
+        @memcpy(next[0..conn.buf_used], requestSlice(conn));
+        if (conn.spill) |s| self.allocator.free(s);
+        conn.spill = next;
+    }
+
+    fn beginResponse(self: *Self, idx: u32, response: []const u8) !void {
+        const conn = &self.conns[idx];
+        conn.response = response;
+        conn.response_sent = 0;
+        conn.state = .writing;
+        self.ring.send(makeUserData(idx, .send), conn.fd, response, 0) catch |err| {
+            self.allocator.free(response);
+            conn.response = null;
+            return err;
+        };
+    }
+
+    fn tooLargeResponse(self: *Self) ![]u8 {
+        var response = Response{
+            .status = .payload_too_large,
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+            .body = "{\"error\":\"Request body too large\"}",
+        };
+        response = try response.withJSONContentType(self.allocator);
+        return try response.toString(self.allocator);
+    }
+
+    fn continueRead(self: *Self, idx: u32) !void {
+        const conn = &self.conns[idx];
+        const req_data = requestSlice(conn);
+        const max_body = if (self.node) |n| n.config.network.max_request_body_size else 1024 * 1024;
+        if (std.mem.indexOf(u8, req_data, "\r\n\r\n")) |hdr_end| {
+            const content_len = HTTPServerBase.parseContentLength(req_data) orelse 0;
+            if (content_len > max_body) {
+                try self.beginResponse(idx, try self.tooLargeResponse());
+                return;
+            }
+            const total_needed = hdr_end + 4 + content_len;
+            if (conn.buf_used >= total_needed) {
+                const response = try self.dispatchRequest(req_data[0..total_needed]);
+                try self.beginResponse(idx, response);
+                return;
+            }
+            try self.ensureCapacity(conn, total_needed);
+            if (recvTail(conn).len == 0) {
+                self.closeConn(idx);
+                return;
+            }
+            _ = try self.ring.recv(makeUserData(idx, .recv), conn.fd, .{ .buffer = recvTail(conn) }, 0);
+            return;
+        }
+        if (recvTail(conn).len == 0) {
+            self.closeConn(idx);
+            return;
+        }
+        _ = try self.ring.recv(makeUserData(idx, .recv), conn.fd, .{ .buffer = recvTail(conn) }, 0);
     }
 
     fn generateTraceId() [32]u8 {
@@ -459,6 +538,8 @@ pub const AsyncHTTPServer = struct {
                 const info = node.getNodeInfo();
                 const peers = if (node.getP2PServer()) |p2p| p2p.peerCount() else 0;
                 const pool_stats = node.getTxnPoolStats();
+                const P2PServerMod = @import("P2PServer.zig").P2PServer;
+                const dirs: P2PServerMod.DirectionStats = if (node.getP2PServer()) |p2p| p2p.directionStats() else .{ .inbound = 0, .outbound = 0, .inbound_paused = false };
                 var p2p_sq_depth: u64 = 0;
                 var p2p_cq_lat_ms: u64 = 0;
                 var p2p_fallback_count: u64 = 0;
@@ -478,6 +559,18 @@ pub const AsyncHTTPServer = struct {
                         "# HELP zknot3_peers_connected Number of connected peers\n" ++
                         "# TYPE zknot3_peers_connected gauge\n" ++
                         "zknot3_peers_connected {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_peers_inbound Number of inbound peers\n" ++
+                        "# TYPE zknot3_peers_inbound gauge\n" ++
+                        "zknot3_peers_inbound {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_peers_outbound Number of outbound peers\n" ++
+                        "# TYPE zknot3_peers_outbound gauge\n" ++
+                        "zknot3_peers_outbound {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_inbound_paused 1 when inbound accepts are paused\n" ++
+                        "# TYPE zknot3_p2p_inbound_paused gauge\n" ++
+                        "zknot3_p2p_inbound_paused {}\n" ++
                         "\n" ++
                         "# HELP zknot3_uptime_seconds Node uptime in seconds\n" ++
                         "# TYPE zknot3_uptime_seconds gauge\n" ++
@@ -521,6 +614,9 @@ pub const AsyncHTTPServer = struct {
                     .{
                         info.consensus_round,
                         peers,
+                        dirs.inbound,
+                        dirs.outbound,
+                        @intFromBool(dirs.inbound_paused),
                         info.uptime_seconds,
                         info.pending_transactions,
                         info.committed_blocks,
@@ -778,6 +874,61 @@ pub const AsyncHTTPServer = struct {
                         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
                         .{ proof.sequence, proof.state_root, proof_hex, sig_hex },
                     );
+                } else if (std.mem.eql(u8, method_val.string, "knot3_creditGas")) blk: {
+                    const node = self.node orelse {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.internalError(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.badRequest(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const input = M4RpcParams.parseCreditGasParams(params_val) catch {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_creditGas params\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.badRequest(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const balance = node.creditGas(input.address, input.amount) catch |err| {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"";
+                        const err_suffix = "\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
+                        var http_resp = Response.internalError(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
+                } else if (std.mem.eql(u8, method_val.string, "knot3_getGasBalance")) blk: {
+                    const node = self.node orelse {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.internalError(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.badRequest(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const input = M4RpcParams.parseGetGasBalanceParams(params_val) catch {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getGasBalance params\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.badRequest(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const balance = node.getGasBalance(input.address);
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
                 } else null;
 
                 if (result_json) |r| {
@@ -811,3 +962,17 @@ pub const AsyncHTTPServer = struct {
         return try response.toString(self.allocator);
     }
 };
+
+test "async http request spill keeps bytes already read" {
+    const allocator = std.testing.allocator;
+    const addr = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 9);
+    var server = try AsyncHTTPServer.init(allocator, addr);
+    defer server.freeSpill(&server.conns[0]);
+    const conn = &server.conns[0];
+    conn.buf_used = 8;
+    @memcpy(conn.buf[0..8], "POST /x ");
+    try server.ensureCapacity(conn, 5000);
+    try std.testing.expectEqual(@as(usize, 5000), conn.spill.?.len);
+    try std.testing.expectEqualStrings("POST /x ", conn.spill.?[0..8]);
+    try std.testing.expectEqual(@as(usize, 4992), AsyncHTTPServer.recvTail(conn).len);
+}

@@ -26,6 +26,21 @@ fn extractBytes(allocator: std.mem.Allocator, val: Value) NativeError![]u8 {
     return bytes;
 }
 
+fn dimension(value: Value) NativeError!usize {
+    if (value.tag != .integer or value.data.int < 0) return NativeError.TypeMismatch;
+    return @intCast(value.data.int);
+}
+
+fn checkedLen(a: usize, b: usize) NativeError!usize {
+    return std.math.mul(usize, a, b) catch NativeError.InvalidArgumentCount;
+}
+
+fn saturatingAddI32(total: i32, delta: i32) i32 {
+    const added, const overflow = @addWithOverflow(total, delta);
+    if (overflow == 0) return added;
+    return if (delta < 0) std.math.minInt(i32) else std.math.maxInt(i32);
+}
+
 /// Helper: pack byte slice into a Value vector
 fn packBytes(allocator: std.mem.Allocator, bytes: []const u8) NativeError!Value {
     const vec = allocator.alloc(Value, bytes.len) catch return NativeError.OutOfMemory;
@@ -43,20 +58,21 @@ pub fn nativeTensorMatMul(interpreter: *Interpreter, args: []const Value) Native
     const a_bytes = try extractBytes(interpreter.allocator, args[0]);
     defer interpreter.allocator.free(a_bytes);
 
-    if (args[1].tag != .integer or args[2].tag != .integer or args[4].tag != .integer) return NativeError.TypeMismatch;
-    const rows_a: usize = @intCast(args[1].data.int);
-    const cols_a: usize = @intCast(args[2].data.int);
+    const rows_a = try dimension(args[1]);
+    const cols_a = try dimension(args[2]);
+    const cols_b = try dimension(args[4]);
 
     const b_bytes = try extractBytes(interpreter.allocator, args[3]);
     defer interpreter.allocator.free(b_bytes);
-    const cols_b: usize = @intCast(args[4].data.int);
 
-    if (a_bytes.len != rows_a * cols_a or b_bytes.len != cols_a * cols_b) {
+    const a_len = try checkedLen(rows_a, cols_a);
+    const b_len = try checkedLen(cols_a, cols_b);
+    if (a_bytes.len != a_len or b_bytes.len != b_len) {
         return NativeError.InvalidArgumentCount;
     }
 
     // Allocate result matrix (rows_a x cols_b)
-    const out_len = rows_a * cols_b;
+    const out_len = try checkedLen(rows_a, cols_b);
     const out_bytes = interpreter.allocator.alloc(u8, out_len) catch return NativeError.OutOfMemory;
     defer interpreter.allocator.free(out_bytes);
     @memset(out_bytes, 0);
@@ -71,7 +87,7 @@ pub fn nativeTensorMatMul(interpreter: *Interpreter, args: []const Value) Native
             while (k < cols_a) : (k += 1) {
                 const val_a: i8 = @bitCast(a_bytes[r * cols_a + k]);
                 const val_b: i8 = @bitCast(b_bytes[k * cols_b + c]);
-                sum += @as(i32, val_a) * @as(i32, val_b);
+                sum = saturatingAddI32(sum, @as(i32, val_a) * @as(i32, val_b));
             }
             // Scale and clamp to uint8
             const scaled = std.math.clamp(@divTrunc(sum, 16), -128, 127);
@@ -107,7 +123,7 @@ pub fn nativeQuantizedPredict(interpreter: *Interpreter, args: []const Value) Na
         while (j < inputs.len and (i * inputs.len + j) < weights.len) : (j += 1) {
             const w: i8 = @bitCast(weights[i * inputs.len + j]);
             const x: i8 = @bitCast(inputs[j]);
-            acc += @as(i32, w) * @as(i32, x);
+            acc = saturatingAddI32(acc, @as(i32, w) * @as(i32, x));
         }
         // ReLU activation
         const activated = if (acc < 0) @as(u8, 0) else @as(u8, @intCast(@min(255, @divTrunc(acc, 32))));
@@ -167,6 +183,7 @@ pub fn nativeAgentDispatch(interpreter: *Interpreter, args: []const Value) Nativ
 /// Emits AI inference observability event for indexers and tri-source metrics
 pub fn nativeEmitInferenceEvent(interpreter: *Interpreter, args: []const Value) NativeError!Value {
     if (args.len != 2) return NativeError.InvalidArgumentCount;
+    if (args[1].tag != .integer) return NativeError.TypeMismatch;
 
     const model_id = try extractBytes(interpreter.allocator, args[0]);
     defer interpreter.allocator.free(model_id);
@@ -174,10 +191,13 @@ pub fn nativeEmitInferenceEvent(interpreter: *Interpreter, args: []const Value) 
     const Event = @import("EventEmitter.zig").Event;
     const ctx = interpreter.tx_context orelse return NativeError.ResourceNotFound;
 
+    const payload = try std.fmt.allocPrint(interpreter.allocator, "{{\"model_id\":\"{s}\",\"status\":{d}}}", .{ model_id, args[1].data.int });
+    errdefer interpreter.allocator.free(payload);
+
     const event = Event{
         .event_type = "knot3::ai_framework::InferenceEvent",
         .sender = ctx.sender,
-        .payload = try std.fmt.allocPrint(interpreter.allocator, "{{\"model_id\":\"{s}\",\"status\":{d}}}", .{ model_id, args[1].data.int }),
+        .payload = payload,
         .event_index = @intCast(interpreter.events.items.len),
     };
 
@@ -219,4 +239,91 @@ test "AINatives: tensor_matmul and quantized_predict" {
     const pred = try nativeQuantizedPredict(interp, &.{ weights, inputs });
     defer allocator.free(pred.data.vector);
     try std.testing.expectEqual(@as(usize, 2), pred.data.vector.len);
+}
+
+test "tensor_matmul rejects a negative dimension" {
+    const allocator = std.testing.allocator;
+    const Gas = @import("Gas.zig");
+    const ResourceTracker = @import("Resource.zig").ResourceTracker;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interp = try Interpreter.init(allocator, &gas, &tracker);
+    defer interp.deinit();
+
+    const mat_a = try packBytes(allocator, &[_]u8{ 1, 2, 3, 4 });
+    defer allocator.free(mat_a.data.vector);
+    const mat_b = try packBytes(allocator, &[_]u8{ 5, 6, 7, 8 });
+    defer allocator.free(mat_b.data.vector);
+    const negative = Value{ .tag = .integer, .data = .{ .int = -1 } };
+    const two = Value{ .tag = .integer, .data = .{ .int = 2 } };
+    try std.testing.expectError(NativeError.TypeMismatch, nativeTensorMatMul(interp, &.{ mat_a, negative, two, mat_b, two }));
+}
+
+test "tensor_matmul saturates a dot product that overflows i32" {
+    const allocator = std.testing.allocator;
+    const Gas = @import("Gas.zig");
+    const ResourceTracker = @import("Resource.zig").ResourceTracker;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interp = try Interpreter.init(allocator, &gas, &tracker);
+    defer interp.deinit();
+
+    const n: usize = 131072;
+    const bytes = try allocator.alloc(u8, n);
+    defer allocator.free(bytes);
+    @memset(bytes, 0x80);
+    const mat_a = try packBytes(allocator, bytes);
+    defer allocator.free(mat_a.data.vector);
+    const mat_b = try packBytes(allocator, bytes);
+    defer allocator.free(mat_b.data.vector);
+
+    const one = Value{ .tag = .integer, .data = .{ .int = 1 } };
+    const cols = Value{ .tag = .integer, .data = .{ .int = n } };
+    const res = try nativeTensorMatMul(interp, &.{ mat_a, one, cols, mat_b, one });
+    defer allocator.free(res.data.vector);
+    try std.testing.expectEqual(@as(usize, 1), res.data.vector.len);
+    try std.testing.expectEqual(@as(i64, 127), res.data.vector[0].data.int);
+}
+
+test "emit_inference_event requires an integer status" {
+    const allocator = std.testing.allocator;
+    const Gas = @import("Gas.zig");
+    const ResourceTracker = @import("Resource.zig").ResourceTracker;
+    const TxContext = @import("TxContext.zig").TxContext;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interp = try Interpreter.init(allocator, &gas, &tracker);
+    defer interp.deinit();
+
+    var ctx = TxContext{
+        .sender = @splat(1),
+        .tx_hash = @splat(2),
+        .epoch = 1,
+        .gas_price = 1,
+        .gas_budget = 1000,
+    };
+    interp.tx_context = &ctx;
+
+    const model = try packBytes(allocator, "m1");
+    defer allocator.free(model.data.vector);
+    const boolean_status = Value{ .tag = .boolean, .data = .{ .bool = true } };
+    try std.testing.expectError(NativeError.TypeMismatch, nativeEmitInferenceEvent(interp, &.{ model, boolean_status }));
+
+    const status = Value{ .tag = .integer, .data = .{ .int = 7 } };
+    const result = try nativeEmitInferenceEvent(interp, &.{ model, status });
+    try std.testing.expectEqual(@as(i64, 0), result.data.int);
+    try std.testing.expectEqual(@as(usize, 1), interp.events.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, interp.events.items[0].payload, "\"status\":7") != null);
 }

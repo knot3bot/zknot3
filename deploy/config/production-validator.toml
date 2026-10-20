@@ -1,0 +1,55 @@
+# Validator profile for a mainnet cutover.
+# The signing seed is NOT in this file. Export it as 64 hex characters:
+#   ZKNOT3_SIGNING_KEY=<seed> 
+# The node reads `signing_key_env` from JSON config using the same key names.
+
+[network]
+bind_address = "0.0.0.0"
+rpc_port = 9003
+p2p_enabled = true
+transport = "tcp"
+p2p_address = "0.0.0.0"
+p2p_port = 8083
+max_connections = 1024
+connection_timeout = 30
+genesis_path = "/etc/zknot3/genesis.k3gen"
+
+[consensus]
+validator_enabled = true
+min_validator_stake = 1000000000
+min_validators = 4
+target_validators = 100
+max_validators = 500
+epoch_duration_secs = 86400
+epoch_reward = 0
+quorum_threshold = 200
+vote_quorum = 3
+round_interval_secs = 2
+
+[storage]
+data_dir = "/var/lib/zknot3"
+object_store_path = "objects"
+checkpoint_store_path = "checkpoints"
+cache_size = 10737418240
+
+[vm]
+max_gas_budget = 10000000
+min_gas_price = 1000
+# Gas ledger off by default (docker smoke expects free gas). Example:
+# enforce_gas_payment = true
+# initial_gas_balance = 1000000000
+
+[authority]
+address = "0.0.0.0"
+port = 8083
+signing_key_env = "ZKNOT3_SIGNING_KEY"
+stake = 1000000000
+name = "Validator"
+
+[logging]
+level = 2
+enable_file = true
+file_path = "/var/log/zknot3/zknot3.log"
+enable_stderr = true
+structured = true
+ansi_colors = false

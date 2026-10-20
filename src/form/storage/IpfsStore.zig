@@ -56,6 +56,7 @@ pub const IpfsStore = struct {
     /// Retrieve IPFS content info from a creation object.
     pub fn getFromCreation(store: anytype, creation_id: core.ObjectID) !?IpfsContent {
         const data = try store.getField(creation_id, "ipfs_cid") orelse return null;
+        defer store.allocator.free(data);
         if (data.len < 2) return null;
 
         const cid_len: usize = data[0];
@@ -71,10 +72,13 @@ pub const IpfsStore = struct {
         const pinned_byte: u8 = if (data.len > mime_start + mime_len) data[mime_start + mime_len] else 1;
         const pinned = pinned_byte != 0;
 
+        const owned_cid = try store.allocator.dupe(u8, cid);
+        errdefer store.allocator.free(owned_cid);
+        const owned_mime = try store.allocator.dupe(u8, mime_type);
         return IpfsContent{
-            .cid = cid,
+            .cid = owned_cid,
             .size_bytes = size_bytes,
-            .mime_type = mime_type,
+            .mime_type = owned_mime,
             .pinned = pinned,
             .created_at = 0,
         };

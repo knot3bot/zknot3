@@ -157,6 +157,7 @@ fn rpcBodyHasWriteMethod(allocator: std.mem.Allocator, body: []const u8) bool {
     if (method_val != .string) return true;
     if (std.mem.eql(u8, method_val.string, "knot3_submitStakeOperation")) return true;
     if (std.mem.eql(u8, method_val.string, "knot3_submitGovernanceProposal")) return true;
+    if (std.mem.eql(u8, method_val.string, "knot3_creditGas")) return true;
     return false;
 }
 
@@ -771,11 +772,14 @@ pub const HTTPServer = struct {
                 const xiang_da = tri.xiang_da;
                 const zi_zai = tri.zi_zai;
 
-                var metrics_buf: [8192]u8 = undefined;
+                var metrics_buf: [16384]u8 = undefined;
+                const cut = node.cutoverGauges();
+                const genesis_hex = std.fmt.bytesToHex(node.genesis_digest, .lower);
                 // P2P abuse-defense counters (docs/observability_baseline.md).
                 const P2PServerMod = @import("P2PServer.zig").P2PServer;
                 const rl: P2PServerMod.RateLimitStats = if (node.getP2PServer()) |p2p| p2p.getRateLimitStats() else .{ .rate_limited_drops_total = 0, .banned_peers_total = 0 };
                 const am: P2PServerMod.AsyncMetrics = if (node.getP2PServer()) |p2p| p2p.asyncMetricsSnapshot() else .{ .sq_depth = 0, .cq_lat_ms = 0, .fallback_count = 0 };
+                const dirs: P2PServerMod.DirectionStats = if (node.getP2PServer()) |p2p| p2p.directionStats() else .{ .inbound = 0, .outbound = 0, .inbound_paused = false };
                 const text = std.fmt.bufPrint(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
@@ -785,6 +789,18 @@ pub const HTTPServer = struct {
                         "# HELP zknot3_peers_connected Number of connected peers\n" ++
                         "# TYPE zknot3_peers_connected gauge\n" ++
                         "zknot3_peers_connected {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_peers_inbound Number of inbound peers\n" ++
+                        "# TYPE zknot3_peers_inbound gauge\n" ++
+                        "zknot3_peers_inbound {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_peers_outbound Number of outbound peers\n" ++
+                        "# TYPE zknot3_peers_outbound gauge\n" ++
+                        "zknot3_peers_outbound {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_p2p_inbound_paused 1 when inbound accepts are paused\n" ++
+                        "# TYPE zknot3_p2p_inbound_paused gauge\n" ++
+                        "zknot3_p2p_inbound_paused {}\n" ++
                         "\n" ++
                         "# HELP zknot3_uptime_seconds Node uptime in seconds\n" ++
                         "# TYPE zknot3_uptime_seconds gauge\n" ++
@@ -836,10 +852,53 @@ pub const HTTPServer = struct {
                         "\n" ++
                         "# HELP zknot3_tri_source_zi_zai User satisfaction metric (ZiZai / 性自在)\n" ++
                         "# TYPE zknot3_tri_source_zi_zai gauge\n" ++
-                        "zknot3_tri_source_zi_zai {d:.6}\n",
+                        "zknot3_tri_source_zi_zai {d:.6}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_genesis_info Chain identity pinned at startup\n" ++
+                        "# TYPE zknot3_genesis_info gauge\n" ++
+                        "zknot3_genesis_info{{digest=\"{s}\"}} 1\n" ++
+                        "\n" ++
+                        "# HELP zknot3_checkpoint_stall_epochs Epochs since the last committed checkpoint\n" ++
+                        "# TYPE zknot3_checkpoint_stall_epochs gauge\n" ++
+                        "zknot3_checkpoint_stall_epochs {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_cutover_rollback_checkpoint_stall 1 when stall is at least 2 epochs\n" ++
+                        "# TYPE zknot3_cutover_rollback_checkpoint_stall gauge\n" ++
+                        "zknot3_cutover_rollback_checkpoint_stall {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_proof_verify_attempts_total Checkpoint proofs this process checked\n" ++
+                        "# TYPE zknot3_proof_verify_attempts_total counter\n" ++
+                        "zknot3_proof_verify_attempts_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_proof_verify_failures_total Checkpoint proofs this process rejected\n" ++
+                        "# TYPE zknot3_proof_verify_failures_total counter\n" ++
+                        "zknot3_proof_verify_failures_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_cutover_rollback_proof_failures 1 when failures exceed 0.1 percent after 100 attempts\n" ++
+                        "# TYPE zknot3_cutover_rollback_proof_failures gauge\n" ++
+                        "zknot3_cutover_rollback_proof_failures {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_recovery_slow_total Recoveries slower than 120 seconds\n" ++
+                        "# TYPE zknot3_recovery_slow_total counter\n" ++
+                        "zknot3_recovery_slow_total {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_recovery_consecutive_slow Consecutive recoveries slower than 120 seconds\n" ++
+                        "# TYPE zknot3_recovery_consecutive_slow gauge\n" ++
+                        "zknot3_recovery_consecutive_slow {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_cutover_rollback_recovery 1 after 3 consecutive slow recoveries\n" ++
+                        "# TYPE zknot3_cutover_rollback_recovery gauge\n" ++
+                        "zknot3_cutover_rollback_recovery {}\n" ++
+                        "\n" ++
+                        "# HELP zknot3_cutover_rollback_ban_storm 1 when 50 or more peers have been banned since start\n" ++
+                        "# TYPE zknot3_cutover_rollback_ban_storm gauge\n" ++
+                        "zknot3_cutover_rollback_ban_storm {}\n",
                     .{
                         info.consensus_round,
                         peers,
+                        dirs.inbound,
+                        dirs.outbound,
+                        @intFromBool(dirs.inbound_paused),
                         info.uptime_seconds,
                         info.pending_transactions,
                         info.committed_blocks,
@@ -853,6 +912,16 @@ pub const HTTPServer = struct {
                         wu_feng,
                         xiang_da,
                         zi_zai,
+                        &genesis_hex,
+                        cut.stall_epochs,
+                        cut.rollback_stall,
+                        cut.proof_attempts,
+                        cut.proof_failures,
+                        cut.rollback_proof,
+                        cut.recovery_slow_total,
+                        cut.consecutive_slow_recoveries,
+                        cut.rollback_recovery,
+                        cut.rollback_ban_storm,
                     },
                 ) catch |err| {
                     Log.warn("[WARN] Failed to format metrics response: {}", .{err});
@@ -1171,6 +1240,90 @@ pub const HTTPServer = struct {
                         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
                         .{ proof.sequence, proof.state_root, proof_hex, sig_hex },
                     );
+                } else if (std.mem.eql(u8, method_val.string, "knot3_creditGas")) blk: {
+                    const node = self.node orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const input = M4RpcParams.parseCreditGasParams(params_val) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_creditGas params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const balance = node.creditGas(input.address, input.amount) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"",
+                            "Internal error",
+                            "\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
+                } else if (std.mem.eql(u8, method_val.string, "knot3_getGasBalance")) blk: {
+                    const node = self.node orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const params_val = parsed.value.object.get("params") orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const input = M4RpcParams.parseGetGasBalanceParams(params_val) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getGasBalance params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const balance = node.getGasBalance(input.address);
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
                 } else null;
                 if (result_json) |r| {
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ "{\"jsonrpc\":\"2.0\",\"result\":", r, ",\"id\":", id_str, "}" });
@@ -1214,6 +1367,13 @@ test "HTTP Response with header" {
     const response_with_header = try response.withHeader(std.testing.allocator, "X-Custom", "value");
     try std.testing.expectEqualStrings("value", response_with_header.headers.get("X-Custom").?);
     try std.testing.expectEqualStrings("value", response.headers.get("X-Custom").?);
+}
+
+test "rpcBodyHasWriteMethod flags creditGas not getGasBalance" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_creditGas\"}"));
+    try std.testing.expect(!rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_getGasBalance\"}"));
+    try std.testing.expect(rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_submitStakeOperation\"}"));
 }
 
 test "JSON-RPC response success" {

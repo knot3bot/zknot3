@@ -11,11 +11,85 @@ pub fn build(b: *std.Build) void {
     });
     const blst_mod = blst_dep.module("blst");
 
-    const WireImports = struct {
-        fn attach(module: *std.Build.Module, bld: *std.Build, dep_mod: *std.Build.Module) void {
+    // Vendored httpz QUIC (ngtcp2 + OpenSSL). Off by default so CI does not
+    // need those libraries. `zig build -Dquic` links them and the node uses
+    // UDP for `transport_type = quic`.
+    const enable_quic = b.option(bool, "quic", "Link vendored httpz QUIC (ngtcp2 + OpenSSL)") orelse false;
+    const openssl_include = b.option([]const u8, "openssl-include", "OpenSSL headers") orelse "/opt/homebrew/opt/openssl@3/include";
+    const ngtcp2_include = b.option([]const u8, "ngtcp2-include", "ngtcp2 headers") orelse "/opt/homebrew/opt/libngtcp2/include";
+    const openssl_lib = b.option([]const u8, "openssl-lib", "OpenSSL libraries") orelse "/opt/homebrew/opt/openssl@3/lib";
+    const ngtcp2_lib = b.option([]const u8, "ngtcp2-lib", "ngtcp2 libraries") orelse "/opt/homebrew/opt/libngtcp2/lib";
+
+    const quic_options = b.addOptions();
+    quic_options.addOption(bool, "enabled", enable_quic);
+
+    const httpz_quic_mod: ?*std.Build.Module = if (!enable_quic) null else blk: {
+        const openssl_c = b.addTranslateC(.{
+            .root_source_file = b.path("vendor/httpz/src/openssl.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        openssl_c.addIncludePath(.{ .cwd_relative = openssl_include });
+
+        const ngtcp2_h = b.addTranslateC(.{
+            .root_source_file = b.path("vendor/httpz/src/h3/ngtcp2.h"),
+            .target = target,
+            .optimize = optimize,
+        });
+        ngtcp2_h.addIncludePath(.{ .cwd_relative = ngtcp2_include });
+        ngtcp2_h.addIncludePath(.{ .cwd_relative = openssl_include });
+
+        const mod = b.createModule(.{
+            .root_source_file = b.path("vendor/httpz/src/h3/quic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        mod.addImport("openssl_c", openssl_c.createModule());
+        mod.addImport("ngtcp2_c", ngtcp2_h.createModule());
+        mod.addLibraryPath(.{ .cwd_relative = openssl_lib });
+        mod.addLibraryPath(.{ .cwd_relative = ngtcp2_lib });
+        mod.addRPath(.{ .cwd_relative = openssl_lib });
+        mod.addRPath(.{ .cwd_relative = ngtcp2_lib });
+        // pkg-config on this machine resolves `ssl` to OpenSSL 4, while
+        // libngtcp2_crypto_ossl is built against OpenSSL 3. Force the 3.x paths.
+        const lib_opts: std.Build.Module.LinkSystemLibraryOptions = .{ .use_pkg_config = .no };
+        mod.linkSystemLibrary("ssl", lib_opts);
+        mod.linkSystemLibrary("crypto", lib_opts);
+        mod.linkSystemLibrary("ngtcp2", lib_opts);
+        mod.linkSystemLibrary("ngtcp2_crypto_ossl", lib_opts);
+        break :blk mod;
+    };
+
+    const Wire = struct {
+        quic_options: *std.Build.Module,
+        httpz: ?*std.Build.Module,
+        openssl_lib: []const u8,
+        ngtcp2_lib: []const u8,
+
+        fn attach(self: @This(), module: *std.Build.Module, bld: *std.Build, dep_mod: *std.Build.Module) void {
             module.addAnonymousImport("io_instance", .{ .root_source_file = bld.path("src/io_instance.zig") });
             module.addImport("blst", dep_mod);
+            module.addImport("quic_options", self.quic_options);
+            if (self.httpz) |quic_mod| {
+                module.addImport("httpz_quic", quic_mod);
+                module.addLibraryPath(.{ .cwd_relative = self.openssl_lib });
+                module.addLibraryPath(.{ .cwd_relative = self.ngtcp2_lib });
+                module.addRPath(.{ .cwd_relative = self.openssl_lib });
+                module.addRPath(.{ .cwd_relative = self.ngtcp2_lib });
+                const lib_opts: std.Build.Module.LinkSystemLibraryOptions = .{ .use_pkg_config = .no };
+                module.linkSystemLibrary("ssl", lib_opts);
+                module.linkSystemLibrary("crypto", lib_opts);
+                module.linkSystemLibrary("ngtcp2", lib_opts);
+                module.linkSystemLibrary("ngtcp2_crypto_ossl", lib_opts);
+            }
         }
+    };
+    const wire = Wire{
+        .quic_options = quic_options.createModule(),
+        .httpz = httpz_quic_mod,
+        .openssl_lib = openssl_lib,
+        .ngtcp2_lib = ngtcp2_lib,
     };
 
     // Main library module
@@ -25,7 +99,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    WireImports.attach(root_module, b, blst_mod);
+    wire.attach(root_module, b, blst_mod);
 
     // Static library
     const lib = b.addLibrary(.{
@@ -45,7 +119,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
-    WireImports.attach(test_module, b, blst_mod);
+    wire.attach(test_module, b, blst_mod);
 
     // Unit-only tests — fast, no filesystem/network dependencies
     const unit_module = b.createModule(.{
@@ -54,7 +128,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
-    WireImports.attach(unit_module, b, blst_mod);
+    wire.attach(unit_module, b, blst_mod);
     const unit_tests = b.addTest(.{ .root_module = unit_module });
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const unit_test_step = b.step("test-unit", "Run unit tests (fast, no I/O)");
@@ -84,7 +158,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
-    WireImports.attach(formal_proofs_module, b, blst_mod);
+    wire.attach(formal_proofs_module, b, blst_mod);
     const formal_proofs = b.addTest(.{ .root_module = formal_proofs_module });
     const run_formal_proofs = b.addRunArtifact(formal_proofs);
     const formal_step = b.step("test-formal", "Run executable formal proofs");
@@ -101,7 +175,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
         .link_libc = true,
     });
-    WireImports.attach(formal_module, b, blst_mod);
+    wire.attach(formal_module, b, blst_mod);
 
     const formal_exporter = b.addExecutable(.{
         .name = "zknot3-formal-export",
@@ -141,7 +215,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .link_libc = true,
     });
-    WireImports.attach(bench_module, b, blst_mod);
+    wire.attach(bench_module, b, blst_mod);
     const bench_exe = b.addTest(.{ .root_module = bench_module });
     const run_bench = b.addRunArtifact(bench_exe);
     const bench_step = b.step("benchmark", "Run benchmarks (ReleaseFast)");
@@ -154,12 +228,25 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
         .link_libc = true,
     });
-    WireImports.attach(profiler_module, b, blst_mod);
+    wire.attach(profiler_module, b, blst_mod);
     const profiler = b.addExecutable(.{
         .name = "zknot3-profiler",
         .root_module = profiler_module,
     });
     b.installArtifact(profiler);
+
+    const cutover_module = b.createModule(.{
+        .root_source_file = b.path("src/cutover_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    wire.attach(cutover_module, b, blst_mod);
+    const cutover = b.addExecutable(.{
+        .name = "zknot3-cutover",
+        .root_module = cutover_module,
+    });
+    b.installArtifact(cutover);
 
     // Fast build (ReleaseFast)
     const fast_module = b.createModule(.{
@@ -168,7 +255,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
         .link_libc = true,
     });
-    WireImports.attach(fast_module, b, blst_mod);
+    wire.attach(fast_module, b, blst_mod);
     const release_fast = b.addExecutable(.{
         .name = "zknot3-node-fast",
         .root_module = fast_module,
@@ -182,7 +269,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
         .link_libc = true,
     });
-    WireImports.attach(safe_module, b, blst_mod);
+    wire.attach(safe_module, b, blst_mod);
     const release_safe = b.addExecutable(.{
         .name = "zknot3-node-safe",
         .root_module = safe_module,
@@ -196,7 +283,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .Debug,
         .link_libc = true,
     });
-    WireImports.attach(debug_module, b, blst_mod);
+    wire.attach(debug_module, b, blst_mod);
     const debug_exe = b.addExecutable(.{
         .name = "zknot3-node-debug",
         .root_module = debug_module,

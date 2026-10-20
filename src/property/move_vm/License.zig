@@ -74,6 +74,7 @@ pub const License = struct {
         var exp_bytes: [8]u8 = undefined;
         std.mem.writeInt(i64, &exp_bytes, self.expiration_secs, .big);
         try buf.appendSlice(allocator, &exp_bytes);
+        if (self.terms.len > std.math.maxInt(u16)) return error.InvalidLicense;
         const terms_len: u16 = @intCast(self.terms.len);
         var len_bytes: [2]u8 = undefined;
         std.mem.writeInt(u16, &len_bytes, terms_len, .big);
@@ -85,12 +86,14 @@ pub const License = struct {
     /// Deserialize license from bytes.
     pub fn deserialize(allocator: std.mem.Allocator, bytes: []const u8) !License {
         if (bytes.len < 1 + 2 + 8 + 2) return error.InvalidLicense;
-        const license_type: LicenseType = @fromBackingInt(@intCast(bytes[0]));
+        if (bytes[0] > @backingInt(LicenseType.Custom)) return error.InvalidLicense;
+        const license_type: LicenseType = @fromBackingInt(bytes[0]);
         const royalty_bps = std.mem.readInt(u16, bytes[1..3], .big);
         const expiration_secs = std.mem.readInt(i64, bytes[3..11], .big);
         const terms_len = std.mem.readInt(u16, bytes[11..13], .big);
         var terms: []const u8 = &.{};
-        if (terms_len > 0 and bytes.len >= 13 + terms_len) {
+        if (terms_len > 0) {
+            if (bytes.len < 13 + @as(usize, terms_len)) return error.InvalidLicense;
             terms = try allocator.dupe(u8, bytes[13 .. 13 + terms_len]);
         }
         return License{
@@ -101,10 +104,18 @@ pub const License = struct {
         };
     }
 
+    /// Basis points of `sale_price`. The product is computed in u128 so a large
+    /// price does not overflow. A quotient that does not fit in u64 saturates.
+    pub fn royaltyOf(sale_price: u64, royalty_bps: u16) u64 {
+        const product = std.math.mulWide(u64, sale_price, royalty_bps);
+        const amount = product / 10000;
+        if (amount > std.math.maxInt(u64)) return std.math.maxInt(u64);
+        return @intCast(amount);
+    }
+
     /// Calculate royalty amount for a given sale price.
     pub fn royaltyAmount(self: License, sale_price: u64) u64 {
-        if (self.royalty_bps == 0) return 0;
-        return (sale_price * self.royalty_bps) / 10000;
+        return royaltyOf(sale_price, self.royalty_bps);
     }
 
     /// Returns true if this license permits commercial use (CC0, CC-BY, MIT).
@@ -139,6 +150,25 @@ test "License royalty calculation" {
     const lic = License.cc_by(500); // 5%
     try std.testing.expectEqual(@as(u64, 50), lic.royaltyAmount(1000));
     try std.testing.expectEqual(@as(u64, 0), License.cc0().royaltyAmount(1000));
+    const max_price = std.math.maxInt(u64);
+    const five_percent: u64 = @intCast(std.math.mulWide(u64, max_price, @as(u64, 500)) / 10000);
+    try std.testing.expectEqual(five_percent, License.royaltyOf(max_price, 500));
+    try std.testing.expectEqual(max_price, License.royaltyOf(max_price, 20000));
+}
+
+test "License rejects an unknown type, truncated terms, and oversized terms" {
+    const allocator = std.testing.allocator;
+    const unknown = [_]u8{6} ++ @as([12]u8, @splat(0));
+    try std.testing.expectError(error.InvalidLicense, License.deserialize(allocator, &unknown));
+
+    var truncated: [13]u8 = @splat(0);
+    truncated[12] = 4;
+    try std.testing.expectError(error.InvalidLicense, License.deserialize(allocator, &truncated));
+
+    const terms = try allocator.alloc(u8, std.math.maxInt(u16) + 1);
+    defer allocator.free(terms);
+    @memset(terms, 'a');
+    try std.testing.expectError(error.InvalidLicense, License.custom(terms, 0).serialize(allocator));
 }
 
 test "License permissions" {

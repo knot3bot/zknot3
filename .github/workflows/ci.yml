@@ -42,6 +42,9 @@ jobs:
       - name: Quorum single-source gate
         run: bash tools/quorum_single_source_gate.sh
 
+      - name: Mainnet profile gate
+        run: bash tools/mainnet_profile_gate.sh
+
   formal:
     runs-on: ubuntu-latest
     steps:

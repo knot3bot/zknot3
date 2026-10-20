@@ -148,6 +148,50 @@ test "tx_context::epoch returns injected epoch" {
     try std.testing.expectEqual(@as(i64, 42), result.return_value.?.data.int);
 }
 
+test "tx_context::epoch_timestamp_ms returns the injected epoch time" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+    try reg.registerSuiFramework();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+
+    var tx_ctx = TxContext{
+        .sender = @as([32]u8, @splat(0x00)),
+        .tx_hash = @as([32]u8, @splat(0x00)),
+        .epoch = 42,
+        .gas_price = 1,
+        .gas_budget = 1000,
+        .epoch_timestamp_ms = 1_700_000_000_000,
+    };
+    interpreter.tx_context = &tx_ctx;
+
+    const payload = try buildCallPayload(allocator, "sui", "tx_context::epoch_timestamp_ms", 0);
+    defer allocator.free(payload);
+
+    const module = Bytecode.VerifiedModule{
+        .name = "epoch_ts_test",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .call, .payload = payload },
+            .{ .opcode = .ret, .payload = &.{} },
+        },
+        .local_count = 0,
+    };
+
+    const first = try interpreter.execute(module);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000_000), first.return_value.?.data.int);
+    interpreter.pc = 0;
+    const second = try interpreter.execute(module);
+    try std.testing.expectEqual(first.return_value.?.data.int, second.return_value.?.data.int);
+}
+
 test "event::emit collects events into ExecutionResult" {
     const allocator = std.testing.allocator;
     var reg = Registry.init(allocator);
@@ -200,6 +244,46 @@ test "event::emit collects events into ExecutionResult" {
     try std.testing.expectEqual(@as(usize, 1), result.events.len);
     try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0xCD)), &result.events[0].sender);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02, 0x03 }, result.events[0].payload);
+}
+
+test "event::emit frees the payload when a vector element is not an integer" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+    try reg.registerSuiFramework();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+    var tx_ctx = TxContext{
+        .sender = @as([32]u8, @splat(0xCD)),
+        .tx_hash = @as([32]u8, @splat(0)),
+        .epoch = 1,
+        .gas_price = 1,
+        .gas_budget = 1000,
+    };
+    interpreter.tx_context = &tx_ctx;
+
+    const elems = try allocator.alloc(Value, 2);
+    elems[0] = .{ .tag = .integer, .data = .{ .int = 1 } };
+    elems[1] = .{ .tag = .boolean, .data = .{ .bool = true } };
+    try interpreter.stack.append(allocator, .{ .tag = .vector, .data = .{ .vector = elems } });
+
+    const payload = try buildCallPayload(allocator, "sui", "event::emit", 1);
+    defer allocator.free(payload);
+    const module = Bytecode.VerifiedModule{
+        .name = "bad-event",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .call, .payload = payload },
+        },
+        .local_count = 0,
+    };
+    try std.testing.expectError(error.TypeMismatch, interpreter.execute(module));
 }
 
 test "object::new returns fresh ObjectID via tx_context" {
@@ -277,8 +361,92 @@ test "balance::split returns split amount" {
     };
 
     const result = try interpreter.execute(module);
+    // execute() pops the return value off the stack. Interpreter.deinit only
+    // frees values still on the stack, so the test owns this vector.
+    defer if (result.return_value) |returned| returned.deinit(allocator);
     try std.testing.expect(result.success);
-    try std.testing.expectEqual(@as(i64, 30), result.return_value.?.data.int);
+    try std.testing.expect(result.return_value != null);
+    const returned = result.return_value.?;
+    try std.testing.expect(returned.tag == .vector);
+    try std.testing.expectEqual(@as(usize, 2), returned.data.vector.len);
+    try std.testing.expect(returned.data.vector[0].tag == .integer);
+    try std.testing.expect(returned.data.vector[1].tag == .integer);
+    try std.testing.expectEqual(@as(i64, 70), returned.data.vector[0].data.int);
+    try std.testing.expectEqual(@as(i64, 30), returned.data.vector[1].data.int);
+    try std.testing.expectEqual(@as(i64, 100), returned.data.vector[0].data.int + returned.data.vector[1].data.int);
+}
+
+test "balance::split rejects amount above balance" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+    try reg.registerSuiFramework();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+
+    const payload = try buildCallPayload(allocator, "sui", "balance::split", 2);
+    defer allocator.free(payload);
+
+    const module = Bytecode.VerifiedModule{
+        .name = "balance_split_insufficient_test",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 100, 0, 0, 0, 0, 0, 0, 0 } }, // balance=100
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 101, 0, 0, 0, 0, 0, 0, 0 } }, // amount=101
+            .{ .opcode = .call, .payload = payload },
+            .{ .opcode = .ret, .payload = &.{} },
+        },
+        .local_count = 0,
+    };
+
+    // Failure happens before any vector is allocated, and the integer args
+    // stay on the stack until interpreter.deinit().
+    try std.testing.expectError(error.ResourceNotFound, interpreter.execute(module));
+}
+
+test "balance::split keeps a zero remainder when amount equals balance" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+    try reg.registerSuiFramework();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+
+    const payload = try buildCallPayload(allocator, "sui", "balance::split", 2);
+    defer allocator.free(payload);
+
+    const module = Bytecode.VerifiedModule{
+        .name = "balance_split_exact_test",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 100, 0, 0, 0, 0, 0, 0, 0 } }, // balance=100
+            .{ .opcode = .ld_u64, .payload = &[_]u8{ 100, 0, 0, 0, 0, 0, 0, 0 } }, // amount=100
+            .{ .opcode = .call, .payload = payload },
+            .{ .opcode = .ret, .payload = &.{} },
+        },
+        .local_count = 0,
+    };
+
+    const result = try interpreter.execute(module);
+    defer if (result.return_value) |returned| returned.deinit(allocator);
+    try std.testing.expect(result.success);
+    const returned = result.return_value.?;
+    try std.testing.expect(returned.tag == .vector);
+    try std.testing.expectEqual(@as(i64, 0), returned.data.vector[0].data.int);
+    try std.testing.expectEqual(@as(i64, 100), returned.data.vector[1].data.int);
+    try std.testing.expectEqual(@as(i64, 100), returned.data.vector[0].data.int + returned.data.vector[1].data.int);
 }
 
 test "balance::join sums two balances" {
@@ -351,4 +519,109 @@ test "pay::join_vec sums vector of balances" {
     const result = try interpreter.execute(module);
     try std.testing.expect(result.success);
     try std.testing.expectEqual(@as(i64, 60), result.return_value.?.data.int);
+}
+
+test "public_transfer requires the owner and records the recipient" {
+    const allocator = std.testing.allocator;
+    const ObjectID = @import("../../src/core.zig").ObjectID;
+    const ObjectEffect = @import("../../src/property/move_vm/Interpreter.zig").ObjectEffect;
+
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+    try reg.registerSuiFramework();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 10000, .max_gas = 100000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    const sender: [32]u8 = @splat(0x11);
+    const recipient: [32]u8 = @splat(0x33);
+    var ctx = TxContext{
+        .sender = sender,
+        .tx_hash = @splat(4),
+        .epoch = 1,
+        .gas_price = 1,
+        .gas_budget = 10000,
+    };
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+    interpreter.tx_context = &ctx;
+
+    const foreign_id = ObjectID{ .bytes = @as([32]u8, @splat(0x55)) };
+    const foreign = try move_vm.Resource.init(foreign_id, .Coin, "1", @as([32]u8, @splat(0x22)), allocator);
+    try tracker.track(foreign);
+    try interpreter.stack.append(allocator, .{
+        .tag = .resource,
+        .data = .{ .resource = .{ .id = foreign_id.bytes, .type_tag = 1 } },
+    });
+    try interpreter.stack.append(allocator, .{
+        .tag = .address,
+        .data = .{ .address = recipient },
+    });
+
+    const payload = try buildCallPayload(allocator, "sui", "transfer::public_transfer", 2);
+    defer allocator.free(payload);
+    const module = Bytecode.VerifiedModule{
+        .name = "transfer",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .call, .payload = payload },
+            .{ .opcode = .ret, .payload = &.{} },
+        },
+        .local_count = 0,
+    };
+    try std.testing.expectError(error.NotResourceOwner, interpreter.execute(module));
+    try std.testing.expect(tracker.isTracked(foreign_id));
+    interpreter.stack.clearRetainingCapacity();
+
+    const owned_id = ObjectID{ .bytes = @as([32]u8, @splat(0x66)) };
+    const owned = try move_vm.Resource.init(owned_id, .Coin, "1", sender, allocator);
+    try tracker.track(owned);
+    try interpreter.stack.append(allocator, .{
+        .tag = .resource,
+        .data = .{ .resource = .{ .id = owned_id.bytes, .type_tag = 1 } },
+    });
+    try interpreter.stack.append(allocator, .{
+        .tag = .address,
+        .data = .{ .address = recipient },
+    });
+    const transferred = try interpreter.execute(module);
+    try std.testing.expect(transferred.success);
+    try std.testing.expect(tracker.wasConsumed(owned_id));
+    try std.testing.expectEqual(@as(usize, 1), transferred.object_effects.len);
+    try std.testing.expectEqual(ObjectEffect.Kind.transfer, transferred.object_effects[0].kind);
+    try std.testing.expect(std.mem.eql(u8, &transferred.object_effects[0].recipient, &recipient));
+    try std.testing.expect(std.mem.eql(u8, &transferred.object_effects[0].object_id, &owned_id.bytes));
+}
+
+test "failed native call frees cloned vector arguments" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+
+    const elems = try allocator.alloc(Value, 1);
+    elems[0] = .{ .tag = .integer, .data = .{ .int = 7 } };
+    try interpreter.stack.append(allocator, .{ .tag = .vector, .data = .{ .vector = elems } });
+
+    const payload = try buildCallPayload(allocator, "sui", "missing::func", 1);
+    defer allocator.free(payload);
+    const module = Bytecode.VerifiedModule{
+        .name = "missing-native",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .call, .payload = payload },
+        },
+        .local_count = 0,
+    };
+    try std.testing.expectError(error.UnimplementedInstruction, interpreter.execute(module));
 }

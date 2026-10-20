@@ -458,6 +458,13 @@ pub fn main(init: std.process.Init) !void {
             ci.maybeCommit();
         }
 
+        // Periodic m4_gas_snapshot: append-only checkpoint of the gas ledger so
+        // crash recovery need not replay every m4_gas_balance since last flush.
+        // Interval from storage.gas_snapshot_interval_secs (0 = disabled).
+        if (node.isRunning()) {
+            node.maybeAppendGasSnapshotWal();
+        }
+
         // Adaptive idle backoff:
         // - Busy tick: reset the sleep floor so the next idle tick pauses just
         //   briefly, keeping accept / commit latency low under sustained load.

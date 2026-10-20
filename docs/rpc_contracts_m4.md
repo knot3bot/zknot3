@@ -48,9 +48,37 @@ These methods are executable protocol interfaces. Parameters are strongly typed
 {"sequence":9,"stateRoot":"<hex32>","proof":"<hex>","signatures":"<hex>"}
 ```
 
+### `knot3_creditGas`
+
+Admin **write** method. Requires header `X-Zknot3-Admin-Token` when `network.admin_token` is set (same gate as other write RPCs / `POST /tx`).
+
+- Params:
+  - `address` (hex string, 32 bytes)
+  - `amount` (u64; credits the in-memory gas ledger)
+- Result:
+```json
+{"balance":1000}
+```
+
+**Semantics (honest scope):** updates the executor’s address→balance map used when `vm.enforce_gas_payment` is true. This is **not** full gas-coin objects. Ledger is in-memory today; durable via per-op `m4_gas_balance` WAL records, plus periodic absolute `m4_gas_snapshot` appends (`storage.gas_snapshot_interval_secs`, default 300s; `0` disables) and a clean-shutdown snapshot — the snapshots shrink crash-recovery replay of long balance tails without replacing per-op durability. Charging on execute is gated by `vm.enforce_gas_payment` (default off). Overflow on credit returns JSON-RPC **`-32603`**.
+
+### `knot3_getGasBalance`
+
+Read method (no admin token).
+
+- Params:
+  - `address` (hex string, 32 bytes)
+- Result:
+```json
+{"balance":1000}
+```
+
+Unknown addresses return `balance: 0`. Same in-memory / optional `m4_gas_balance` WAL ledger as `knot3_creditGas`; not gas-coin objects.
+
 ## Error codes
 
-- **`-32602` `invalid_params`**: missing `params`, not an object, missing required field, bad hex length, `amount == 0`, unknown `action` / `kind`, empty `title` / `description`, or invalid `sequence`.
+- **`-32602` `invalid_params`**: missing `params`, not an object, missing required field, bad hex length, `amount == 0` (stake only), unknown `action` / `kind`, empty `title` / `description`, or invalid `sequence`.
+- **`-32603` `internal error`**: e.g. `knot3_creditGas` u64 overflow on credit.
 
 ## Compatibility Notes
 
@@ -59,5 +87,5 @@ These methods are executable protocol interfaces. Parameters are strongly typed
   - async HTTP `/rpc` dispatcher (`src/form/network/AsyncHTTPServer.zig`)
   - sync HTTP `/rpc` dispatcher (`src/form/network/HTTPServer.zig`)
   - SDK method list (`src/app/ClientSDK.zig`)
-  - GraphQL bridge layer (`src/app/GraphQL.zig`) — uses `M4RpcParams` plain-arg parsing for strict parity with RPC
   - Shared parser: `src/form/network/M4RpcParams.zig`
+- GraphQL bridge (`src/app/GraphQL.zig`) covers stake / governance / checkpoint-proof with `M4RpcParams` plain-arg parsing. **Gas ledger RPCs (`knot3_creditGas` / `knot3_getGasBalance`) are JSON-RPC only** — not in the GraphQL schema yet.

@@ -1,9 +1,6 @@
 //! Resource - Linear type system for Move resources
 //!
-//! Implements compile-time verification of linear type constraints:
-//! - Resources cannot be copied (use-after-move semantics)
-//! - Resources must be consumed exactly once
-//! - No resource leaks at runtime
+//! Linear constraints (no copy, consume-once, no leak) are enforced at runtime by ResourceTracker, not at compile time.
 
 const std = @import("std");
 const core = @import("../../core.zig");
@@ -171,22 +168,25 @@ pub const ResourceTracker = struct {
     pub fn track(self: *Self, resource: *Resource) !void {
         if (self.active_resources.contains(resource.id)) return error.ResourceAlreadyTracked;
         try self.active_resources.put(self.allocator, resource.id, resource);
-        self.total_created += 1;
+        self.total_created = saturatingAdd(self.total_created, 1);
+    }
+
+    fn releaseActive(self: *Self, resource_id: core.ObjectID) void {
+        const resource = self.active_resources.get(resource_id) orelse return;
+        _ = self.active_resources.orderedRemove(resource_id);
+        resource.deinit(self.allocator);
+        self.allocator.destroy(resource);
     }
 
     pub fn recordMove(self: *Self, resource_id: core.ObjectID) !void {
-        if (self.active_resources.contains(resource_id)) {
-            _ = self.active_resources.orderedRemove(resource_id);
-        }
         try self.moved_resources.put(self.allocator, resource_id, {});
-        self.total_transferred += 1;
+        self.releaseActive(resource_id);
+        self.total_transferred = saturatingAdd(self.total_transferred, 1);
     }
 
     pub fn recordConsume(self: *Self, resource_id: core.ObjectID) !void {
-        if (self.active_resources.contains(resource_id)) {
-            _ = self.active_resources.orderedRemove(resource_id);
-        }
         try self.consumed_resources.put(self.allocator, resource_id, {});
+        self.releaseActive(resource_id);
     }
 
     pub fn getCreated(self: Self) ![]const core.ObjectID {
@@ -219,6 +219,10 @@ pub const ResourceTracker = struct {
         return self.active_resources.contains(id);
     }
 
+    pub fn get(self: Self, id: core.ObjectID) ?*Resource {
+        return self.active_resources.get(id);
+    }
+
     pub fn wasMoved(self: Self, id: core.ObjectID) bool {
         return self.moved_resources.contains(id);
     }
@@ -239,6 +243,10 @@ pub const ResourceTracker = struct {
         return self.total_transferred;
     }
 };
+
+fn saturatingAdd(total: usize, amount: usize) usize {
+    return std.math.add(usize, total, amount) catch std.math.maxInt(usize);
+}
 
 test "Resource lifecycle" {
     const allocator = std.testing.allocator;
@@ -304,19 +312,18 @@ test "ResourceTracker move tracking" {
     defer tracker.deinit();
 
     const id = core.ObjectID.hash("test");
-    var resource = try Resource.init(
+    const resource = try Resource.init(
         id,
         .Coin,
         "1000",
         null,
         allocator,
     );
-    defer {
+    tracker.track(resource) catch |err| {
         resource.deinit(allocator);
         allocator.destroy(resource);
-    }
-
-    try tracker.track(resource);
+        return err;
+    };
     try std.testing.expect(tracker.isTracked(id));
 
     try tracker.recordMove(id);
@@ -330,21 +337,41 @@ test "ResourceTracker consume tracking" {
     defer tracker.deinit();
 
     const id = core.ObjectID.hash("test");
-    var resource = try Resource.init(
+    const resource = try Resource.init(
         id,
         .Coin,
         "1000",
         null,
         allocator,
     );
-    defer {
+    tracker.track(resource) catch |err| {
         resource.deinit(allocator);
         allocator.destroy(resource);
-    }
-
-    try tracker.track(resource);
+        return err;
+    };
     try tracker.recordConsume(id);
     try std.testing.expect(!tracker.isTracked(id));
     try std.testing.expect(tracker.wasConsumed(id));
     try tracker.checkLeaks();
+}
+
+test "ResourceTracker creation and transfer counts saturate" {
+    const allocator = std.testing.allocator;
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+    tracker.total_created = std.math.maxInt(usize);
+    tracker.total_transferred = std.math.maxInt(usize);
+
+    const id = core.ObjectID.hash("saturate-count");
+    const resource = try Resource.init(id, .Coin, "1", null, allocator);
+    tracker.track(resource) catch |err| {
+        resource.deinit(allocator);
+        allocator.destroy(resource);
+        return err;
+    };
+    try std.testing.expectEqual(std.math.maxInt(usize), tracker.getTotalCreated());
+    try tracker.recordMove(id);
+    try std.testing.expectEqual(std.math.maxInt(usize), tracker.getTotalTransferred());
+    try std.testing.expect(tracker.wasMoved(id));
+    try std.testing.expect(!tracker.isTracked(id));
 }

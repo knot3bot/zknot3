@@ -13,8 +13,11 @@ pub const NativeError = error{
     InvalidArgumentCount,
     TypeMismatch,
     ResourceNotFound,
+    NotResourceOwner,
+    MissingSigner,
     OutOfMemory,
     UnimplementedNative,
+    ArithmeticOverflow,
 };
 
 /// Signature of a native function callable from the Move VM

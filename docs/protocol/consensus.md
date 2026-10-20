@@ -103,8 +103,14 @@ CommitCertificate {
 If a validator signs two different blocks at the same round:
 1. Both votes are recorded as `EquivocationEvidence`
 2. The equivocating validator's votes are rejected for that round
-3. Evidence is logged for potential slashing (future)
-4. No automatic slashing in current version
+3. The observing node broadcasts the evidence and slashes M4 stake on the
+   curve 10% / 25% / 50% / 100% of remaining stake, pro-rata across delegations
+4. That slash is copied into the observing node's voting power. The validator
+   is then jailed for 2, 3, or 5 epochs (first, second, and later offenses).
+   While jailed, its stake is removed from the quorum total
+5. Gossiped evidence is applied only after both Ed25519 signatures verify.
+   The slash is still not a separately finalized cross-validator transaction:
+   a validator that never sees the evidence does not slash
 
 ## Round Timeout
 

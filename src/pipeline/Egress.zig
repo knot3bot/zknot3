@@ -34,6 +34,9 @@ pub const Egress = struct {
     allocator: std.mem.Allocator,
     pending_certificates: std.ArrayList(Certificate),
     quorum_stake: u128,
+    /// Seconds stamped into commit results. The node sets this from the epoch
+    /// start so certificates do not depend on the host wall clock.
+    clock_sec: i64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, quorum_stake: u128) !*Self {
         const self = try allocator.create(Self);
@@ -41,8 +44,13 @@ pub const Egress = struct {
             .allocator = allocator,
             .pending_certificates = std.ArrayList(Certificate).empty,
             .quorum_stake = quorum_stake,
+            .clock_sec = 0,
         };
         return self;
+    }
+
+    pub fn setClock(self: *Self, epoch_start_sec: i64) void {
+        self.clock_sec = epoch_start_sec;
     }
 
     pub fn deinit(self: *Self) void {
@@ -94,11 +102,7 @@ pub const Egress = struct {
             .checkpoint_sequence = checkpoint_seq,
             .certificate = cert,
             .state_root = state_root,
-            .timestamp = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            },
+            .timestamp = self.clock_sec,
         };
     }
 
@@ -173,6 +177,21 @@ test "Egress certificate aggregation" {
     const cert = try egress.aggregate(execution, signatures);
     defer allocator.free(cert.signatures);
     try std.testing.expect(cert.stake_total == 2500); // > 2000 quorum
+}
+
+test "Egress commit stamps the epoch clock instead of the host clock" {
+    const allocator = std.testing.allocator;
+    var egress = try Egress.init(allocator, 3000);
+    defer egress.deinit();
+    egress.setClock(1_700_000_000);
+
+    const cert = Certificate{
+        .digest = @as([32]u8, @splat(1)),
+        .signatures = &.{},
+        .stake_total = 2500,
+    };
+    const result = try egress.commit(cert);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), result.timestamp);
 }
 
 test "Egress verifyCertificate rejects below-threshold stake" {

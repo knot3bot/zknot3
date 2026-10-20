@@ -187,23 +187,10 @@ pub const ConsensusIntegration = struct {
             .equivocation => |evidence| {
                 self.equivocation_events += 1;
                 try self.quarantinePeer(peer_id);
-                const ev_bytes = try evidence.serialize(self.allocator);
+                const ev_bytes = try evidence.serializeWire(self.allocator);
                 defer self.allocator.free(ev_bytes);
-                // Reuse certificate channel for evidence gossip in testnet phase.
                 try self.p2p_server.broadcastCertificate(self.validator_id, ev_bytes);
-
-                // Execute slash intent through M4 hooks exactly once per
-                // evidence digest (prevents replay-slash amplification).
-                _ = self.node.applyEquivocationEvidence(
-                    evidence.voter,
-                    evidence.voter,
-                    evidence.round.value,
-                    ev_bytes,
-                    @max(@as(u64, 1), self.node.config.consensus.min_validator_stake / 100), // 1% floor slash
-                ) catch |err| {
-                    Log.err("consensus_event=equivocation_slash_failed error={s}", .{@errorName(err)});
-                    return err;
-                };
+                try self.punishEquivocation(evidence.voter, evidence.round.value, ev_bytes);
                 Log.warn("consensus_event=equivocation_detected peer_prefix={} round={} action=quarantine_broadcast", .{
                     peer_id[0], evidence.round.value,
                 });
@@ -212,9 +199,36 @@ pub const ConsensusIntegration = struct {
         self.should_commit = true;
     }
 
-    pub fn onCertificateReceived(_self: *Self, _: [32]u8, _: []const u8) !void {
-        _ = _self;
-        Log.debug("Received certificate from peer", .{});
+    pub fn onCertificateReceived(self: *Self, _: [32]u8, payload: []const u8) !void {
+        if (payload.len < Mysticeti.EquivocationEvidence.wire_magic.len) return;
+        if (!std.mem.eql(u8, payload[0..Mysticeti.EquivocationEvidence.wire_magic.len], Mysticeti.EquivocationEvidence.wire_magic)) {
+            Log.debug("Received certificate from peer", .{});
+            return;
+        }
+        const evidence = Mysticeti.EquivocationEvidence.deserializeWire(self.allocator, payload) catch |err| {
+            Log.warn("consensus_event=equivocation_gossip_rejected error={s}", .{@errorName(err)});
+            return;
+        };
+        if (!evidence.signaturesHold()) {
+            Log.warn("consensus_event=equivocation_gossip_rejected reason=bad_signature", .{});
+            return;
+        }
+        try self.quarantinePeer(evidence.voter);
+        self.punishEquivocation(evidence.voter, evidence.round.value, payload) catch |err| {
+            Log.err("consensus_event=equivocation_slash_failed error={s}", .{@errorName(err)});
+        };
+    }
+
+    fn punishEquivocation(self: *Self, validator: [32]u8, round: u64, evidence_payload: []const u8) !void {
+        const slash_amount = self.node.scheduledSlashAmount(validator);
+        if (slash_amount == 0) return error.InsufficientStake;
+        _ = try self.node.applyEquivocationEvidence(
+            validator,
+            validator,
+            round,
+            evidence_payload,
+            slash_amount,
+        );
     }
 
     pub fn onPeerConnected(self: *Self, peer_id: [32]u8) void {
@@ -319,7 +333,7 @@ pub const ConsensusIntegration = struct {
         };
 
         if (now - self.last_round_advance >= self.node.config.consensus.round_interval_secs) {
-            self.node.advanceRound();
+            try self.node.advanceRound();
             self.last_round_advance = now;
             Log.info("Advanced to round {}", .{self.node.consensus_round});
         }

@@ -47,6 +47,7 @@ test "Property: LSMTree put and get" {
 
     try tree.put("key1", "value1");
     const value = try tree.get("key1");
+    defer if (value) |owned| allocator.free(owned);
     try std.testing.expect(std.mem.eql(u8, value.?, "value1"));
 }
 

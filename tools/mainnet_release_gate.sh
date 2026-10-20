@@ -32,23 +32,8 @@ require_no_pattern() {
   fi
 }
 
-echo "[gate:blocking] validating production profile safety defaults"
-for cfg in \
-  deploy/config/production.toml \
-  deploy/config/production-balanced.toml \
-  deploy/config/production-conservative.toml \
-  deploy/config/production-throughput.toml
-do
-  require_pattern "${cfg}" "^validator_enabled = false$"
-  require_pattern "${cfg}" "^structured = true$"
-done
-
-echo "[gate:blocking] checking reserved placeholders on m4 protocol paths"
-require_no_pattern "src/app/MainnetExtensionHooks.zig" "\"reserved\""
-require_no_pattern "src/form/network/RPC.zig" "rpc-reserved|\"reserved\""
-require_no_pattern "src/form/network/HTTPServer.zig" "\"reserved\""
-require_no_pattern "src/form/network/AsyncHTTPServer.zig" "\"reserved\""
-require_no_pattern "src/app/GraphQL.zig" "graphql-reserved|\"reserved\""
+echo "[gate:blocking] production and validator profiles"
+bash "${ROOT_DIR}/tools/mainnet_profile_gate.sh"
 
 echo "[gate:blocking] M4 strict params / GraphQL parity smoke"
 require_pattern "src/form/network/M4RpcParams.zig" "parseStakeOperationInput"

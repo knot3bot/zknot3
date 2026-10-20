@@ -77,6 +77,7 @@ pub const PublishError = error{
     IncompatibleUpgrade,
     SameBytecode,
     OutOfMemory,
+    ArithmeticOverflow,
 };
 
 pub const ModuleRegistry = struct {
@@ -144,19 +145,25 @@ pub const ModuleRegistry = struct {
 
         const gop = self.modules.getOrPut(self.allocator, id) catch return error.OutOfMemory;
         if (!gop.found_existing) {
+            errdefer _ = self.modules.orderedRemove(id);
+            const name = self.allocator.dupe(u8, payload.name) catch return error.OutOfMemory;
+            errdefer self.allocator.free(name);
+            const bytecode = self.allocator.dupe(u8, payload.bytecode) catch return error.OutOfMemory;
+            errdefer self.allocator.free(bytecode);
+            const exports_copy = dupeExports(self.allocator, payload.exports) catch return error.OutOfMemory;
             gop.value_ptr.* = .{
                 .id = id,
                 .package_id = package_id,
-                .name = self.allocator.dupe(u8, payload.name) catch return error.OutOfMemory,
+                .name = name,
                 .version = 1,
-                .bytecode = self.allocator.dupe(u8, payload.bytecode) catch return error.OutOfMemory,
-                .exports = dupeExports(self.allocator, payload.exports) catch return error.OutOfMemory,
+                .bytecode = bytecode,
+                .exports = exports_copy,
                 .publisher = publisher,
                 .policy = payload.policy,
                 .digest = digest,
                 .published_at_round = round,
             };
-            self.publish_count += 1;
+            self.notePublish();
             return .{ .id = id, .version = 1, .upgraded = false, .gas_charge = gas_charge };
         }
 
@@ -169,15 +176,22 @@ pub const ModuleRegistry = struct {
             if (!exportSetsEqual(existing.exports, payload.exports)) return error.IncompatibleUpgrade;
         }
 
+        const next_version = std.math.add(u32, existing.version, 1) catch return error.ArithmeticOverflow;
+
+        const new_bytecode = self.allocator.dupe(u8, payload.bytecode) catch return error.OutOfMemory;
+        const new_exports = dupeExports(self.allocator, payload.exports) catch |err| {
+            self.allocator.free(new_bytecode);
+            return err;
+        };
         self.allocator.free(existing.bytecode);
-        existing.bytecode = self.allocator.dupe(u8, payload.bytecode) catch return error.OutOfMemory;
+        existing.bytecode = new_bytecode;
         for (existing.exports) |exp| self.allocator.free(exp);
         self.allocator.free(existing.exports);
-        existing.exports = dupeExports(self.allocator, payload.exports) catch return error.OutOfMemory;
-        existing.version += 1;
+        existing.exports = new_exports;
+        existing.version = next_version;
         existing.digest = digest;
         existing.published_at_round = round;
-        self.publish_count += 1;
+        self.notePublish();
         return .{ .id = id, .version = existing.version, .upgraded = true, .gas_charge = gas_charge };
     }
 
@@ -193,11 +207,20 @@ pub const ModuleRegistry = struct {
         return self.modules.count();
     }
 
+    fn notePublish(self: *Self) void {
+        self.publish_count = std.math.add(u64, self.publish_count, 1) catch std.math.maxInt(u64);
+    }
+
     fn dupeExports(allocator: std.mem.Allocator, exports: []const []const u8) ![][]u8 {
         const out = try allocator.alloc([]u8, exports.len);
-        errdefer allocator.free(out);
+        var filled: usize = 0;
+        errdefer {
+            for (out[0..filled]) |exp| allocator.free(exp);
+            allocator.free(out);
+        }
         for (exports, 0..) |exp, i| {
             out[i] = try allocator.dupe(u8, exp);
+            filled += 1;
         }
         return out;
     }
@@ -225,6 +248,13 @@ pub fn encodePublishPayload(
     exports: []const []const u8,
     bytecode: []const u8,
 ) ![]u8 {
+    if (name.len == 0 or name.len > max_module_name) return error.NameTooLong;
+    if (exports.len > max_exports) return error.TooManyExports;
+    if (bytecode.len == 0 or bytecode.len > max_module_bytes) return error.ModuleTooLarge;
+    for (exports) |exp| {
+        if (exp.len > std.math.maxInt(u16)) return error.NameTooLong;
+    }
+
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
     try buf.appendSlice(allocator, ModuleRegistry.magic);
@@ -338,6 +368,68 @@ test "module publish lifecycle: publish, lookup, upgrade policies" {
     try std.testing.expectError(error.ModuleImmutable, registry.publish(package, publisher, frozen2, 2));
 }
 
+test "module upgrade refuses to wrap the version" {
+    const allocator = std.testing.allocator;
+    var registry = ModuleRegistry.init(allocator);
+    defer registry.deinit();
+
+    const package = @as([32]u8, @splat(0x51));
+    const publisher = @as([32]u8, @splat(0x99));
+    const current = try encodePublishPayload(allocator, "cap", .free, &[_][]const u8{"run"}, &[_]u8{0x01});
+    defer allocator.free(current);
+    const out = try registry.publish(package, publisher, current, 1);
+    registry.modules.getPtr(out.id).?.version = std.math.maxInt(u32);
+
+    const next = try encodePublishPayload(allocator, "cap", .free, &[_][]const u8{"run"}, &[_]u8{0x02});
+    defer allocator.free(next);
+    try std.testing.expectError(error.ArithmeticOverflow, registry.publish(package, publisher, next, 2));
+    const stored = registry.modules.getPtr(out.id).?;
+    try std.testing.expectEqual(std.math.maxInt(u32), stored.version);
+    try std.testing.expectEqual(@as(u8, 0x01), stored.bytecode[0]);
+}
+
+const AllocBudget = struct {
+    parent: std.mem.Allocator,
+    left: usize,
+
+    fn allocator(self: *AllocBudget) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = free,
+        } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *AllocBudget = @ptrCast(@alignCast(ctx));
+        if (self.left == 0) return null;
+        self.left -= 1;
+        return self.parent.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *AllocBudget = @ptrCast(@alignCast(ctx));
+        return self.parent.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *AllocBudget = @ptrCast(@alignCast(ctx));
+        return self.parent.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *AllocBudget = @ptrCast(@alignCast(ctx));
+        self.parent.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+test "dupeExports frees partial copies when a later allocation fails" {
+    var budget = AllocBudget{ .parent = std.testing.allocator, .left = 2 };
+    const exports = [_][]const u8{ "one", "two" };
+    try std.testing.expectError(error.OutOfMemory, ModuleRegistry.dupeExports(budget.allocator(), &exports));
+}
+
 test "module payload codec roundtrip and rejection of corrupt input" {
     const allocator = std.testing.allocator;
 
@@ -365,4 +457,37 @@ test "module payload codec roundtrip and rejection of corrupt input" {
     const id_c = ModuleRegistry.moduleId(@as([32]u8, @splat(1)), "other");
     try std.testing.expectEqual(id_a, id_b);
     try std.testing.expect(!std.mem.eql(u8, &id_a, &id_c));
+}
+
+test "encodePublishPayload rejects lengths that do not fit the container" {
+    const allocator = std.testing.allocator;
+    const long_name = try allocator.alloc(u8, max_module_name + 1);
+    defer allocator.free(long_name);
+    @memset(long_name, 'a');
+    try std.testing.expectError(error.NameTooLong, encodePublishPayload(allocator, long_name, .free, &.{}, &[_]u8{1}));
+
+    var exports: [max_exports + 1][]const u8 = undefined;
+    for (&exports) |*exp| exp.* = "e";
+    try std.testing.expectError(error.TooManyExports, encodePublishPayload(allocator, "m", .free, &exports, &[_]u8{1}));
+
+    const long_export = try allocator.alloc(u8, std.math.maxInt(u16) + 1);
+    defer allocator.free(long_export);
+    @memset(long_export, 'x');
+    try std.testing.expectError(error.NameTooLong, encodePublishPayload(allocator, "m", .free, &.{long_export}, &[_]u8{1}));
+}
+
+test "module publish count saturates at the u64 limit" {
+    const allocator = std.testing.allocator;
+    var registry = ModuleRegistry.init(allocator);
+    defer registry.deinit();
+    registry.publish_count = std.math.maxInt(u64);
+
+    const package = @as([32]u8, @splat(0x11));
+    const publisher = @as([32]u8, @splat(0x22));
+    const blob = try encodePublishPayload(allocator, "sat", .free, &.{}, &[_]u8{0x01});
+    defer allocator.free(blob);
+    const outcome = try registry.publish(package, publisher, blob, 1);
+    try std.testing.expectEqual(@as(u64, 1), outcome.version);
+    try std.testing.expectEqual(std.math.maxInt(u64), registry.publish_count);
+    try std.testing.expect(registry.get(outcome.id) != null);
 }

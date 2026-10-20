@@ -13,7 +13,112 @@
 //! - Simplified refresh logic
 
 const std = @import("std");
-const core = @import("../../core.zig");
+
+/// Max peers sharing one IPv4 /16, IPv6 /48, or the shared unresolved
+/// (hostname / unparseable) prefix inside a single KBucket.
+/// Callers (e.g. `PeerManager.addPeer`) should pass a DNS-resolved dial
+/// string when possible so hostname peers hit IP prefix caps instead.
+pub const MAX_PEERS_PER_PREFIX: usize = 4;
+/// Classic Kademlia k parameter (peers per bucket).
+pub const MAX_BUCKET_SIZE: usize = 20;
+
+/// Parsed address prefix used for bucket diversity checks.
+/// Hostnames and unparseable forms share one synthetic `.unknown` prefix so
+/// they cannot unbounded-fill a bucket (no DNS; not geo-diverse).
+const AddressPrefix = union(enum) {
+    ipv4_16: u16,
+    ipv6_48: [6]u8,
+    /// Hostname or unparseable address — all share one diversity budget.
+    unknown,
+
+    fn eql(self: AddressPrefix, other: AddressPrefix) bool {
+        return switch (self) {
+            .unknown => other == .unknown,
+            .ipv4_16 => |a| switch (other) {
+                .ipv4_16 => |b| a == b,
+                else => false,
+            },
+            .ipv6_48 => |a| switch (other) {
+                .ipv6_48 => |b| std.mem.eql(u8, &a, &b),
+                else => false,
+            },
+        };
+    }
+};
+
+/// Strip optional `:port` / `[host]:port` wrapper, returning the host part.
+fn hostFromAddress(address: []const u8) []const u8 {
+    if (address.len == 0) return address;
+    if (address[0] == '[') {
+        if (std.mem.indexOfScalar(u8, address, ']')) |end| {
+            return address[1..end];
+        }
+        return address;
+    }
+    // IPv4 host:port has exactly one ':'; bare IPv6 has more.
+    if (std.mem.count(u8, address, ":") == 1) {
+        if (std.mem.lastIndexOfScalar(u8, address, ':')) |idx| {
+            return address[0..idx];
+        }
+    }
+    return address;
+}
+
+fn ipv4Prefix16FromHost(host: []const u8) ?u16 {
+    const addr = std.Io.net.IpAddress.parseIp4(host, 0) catch return null;
+    return switch (addr) {
+        .ip4 => |ip| blk: {
+            const prefix = std.mem.readInt(u16, ip.bytes[0..2], .big);
+            break :blk if (prefix == 0) null else prefix;
+        },
+        .ip6 => null,
+    };
+}
+
+fn ipv6Prefix48FromHost(host: []const u8) ?[6]u8 {
+    const addr = std.Io.net.IpAddress.parseIp6(host, 0) catch return null;
+    return switch (addr) {
+        .ip4 => null,
+        .ip6 => |ip| blk: {
+            if (std.mem.eql(u8, &ip.bytes, &@as([16]u8, @splat(0)))) break :blk null;
+            // IPv4-mapped ::ffff:a.b.c.d → treat as IPv4 /16 (handled separately).
+            if (std.mem.eql(u8, ip.bytes[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
+                break :blk null;
+            }
+            break :blk ip.bytes[0..6].*;
+        },
+    };
+}
+
+fn ipv4MappedPrefix16FromHost(host: []const u8) ?u16 {
+    const addr = std.Io.net.IpAddress.parseIp6(host, 0) catch return null;
+    return switch (addr) {
+        .ip4 => null,
+        .ip6 => |ip| blk: {
+            if (!std.mem.eql(u8, ip.bytes[0..12], &.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
+                break :blk null;
+            }
+            const prefix = std.mem.readInt(u16, ip.bytes[12..14], .big);
+            break :blk if (prefix == 0) null else prefix;
+        },
+    };
+}
+
+/// Extract diversity prefix from an address string (`"a.b.c.d:port"`, `[v6]:port`, …).
+/// Hostnames and unparseable forms yield `.unknown` (shared unresolved budget).
+fn parseAddressPrefix(address: []const u8) AddressPrefix {
+    const host = hostFromAddress(address);
+    if (ipv4Prefix16FromHost(host)) |p| return .{ .ipv4_16 = p };
+    if (ipv4MappedPrefix16FromHost(host)) |p| return .{ .ipv4_16 = p };
+    if (ipv6Prefix48FromHost(host)) |p| return .{ .ipv6_48 = p };
+    return .unknown;
+}
+
+fn nowSecs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return ts.sec;
+}
 
 pub const KBucket = struct {
     const Self = @This();
@@ -70,17 +175,38 @@ pub const KBucket = struct {
         return xorDistance(self.local_peer_id, peer_id);
     }
 
-    /// Add a peer to this bucket
+    fn countPeersWithPrefix(self: *Self, prefix: AddressPrefix) usize {
+        var n: usize = 0;
+        var it = self.peers.iterator();
+        while (it.next()) |entry| {
+            if (parseAddressPrefix(entry.value_ptr.address).eql(prefix)) n += 1;
+        }
+        return n;
+    }
+
+    /// Add a peer to this bucket. Enforces `MAX_PEERS_PER_PREFIX` per IPv4 /16,
+    /// IPv6 /48, or the shared unresolved (hostname) prefix. Re-adding an
+    /// existing peer_id refreshes its entry without re-checking diversity.
     pub fn addPeer(self: *Self, peer_id: [32]u8, address: []const u8, port: u16) !void {
+        if (self.peers.getPtr(peer_id)) |existing| {
+            const new_addr = try self.allocator.dupe(u8, address);
+            self.allocator.free(existing.address);
+            existing.address = new_addr;
+            existing.port = port;
+            existing.last_seen = nowSecs();
+            return;
+        }
+
+        const prefix = parseAddressPrefix(address);
+        if (self.countPeersWithPrefix(prefix) >= MAX_PEERS_PER_PREFIX) {
+            return error.PrefixDiversityLimit;
+        }
+
         const entry = PeerEntry{
             .peer_id = peer_id,
             .address = try self.allocator.dupe(u8, address),
             .port = port,
-            .last_seen = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            },
+            .last_seen = nowSecs(),
             .successful_pings = 0,
             .failed_pings = 0,
         };
@@ -98,11 +224,7 @@ pub const KBucket = struct {
     /// Update peer last_seen timestamp
     pub fn touchPeer(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
-            entry.last_seen = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            };
+            entry.last_seen = nowSecs();
         }
     }
 
@@ -110,11 +232,7 @@ pub const KBucket = struct {
     pub fn recordPingSuccess(self: *Self, peer_id: [32]u8) void {
         if (self.peers.getPtr(peer_id)) |entry| {
             entry.successful_pings += 1;
-            entry.last_seen = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            };
+            entry.last_seen = nowSecs();
         }
     }
 
@@ -142,7 +260,6 @@ pub const KBucket = struct {
 pub const RoutingTable = struct {
     const Self = @This();
     const BUCKET_COUNT = 256; // One bucket per bit of XOR distance
-    const MAX_BUCKET_SIZE = 20;
 
     allocator: std.mem.Allocator,
     local_peer_id: [32]u8,
@@ -219,19 +336,20 @@ pub const RoutingTable = struct {
     }
 
     /// Get all known peer IDs
-    pub fn getAllPeers(self: *Self) []const [32]u8 {
-        var result = std.ArrayList([32]u8).init(self.allocator);
+    pub fn getAllPeers(self: *Self) ![]const [32]u8 {
+        var result: std.ArrayList([32]u8) = .empty;
+        errdefer result.deinit(self.allocator);
 
         for (self.buckets) |bucket| {
             if (bucket) |b| {
                 var it = b.peers.iterator();
                 while (it.next()) |entry| {
-                    try result.append(entry.key_ptr.*);
+                    try result.append(self.allocator, entry.key_ptr.*);
                 }
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     /// Get peers closest to a target ID
@@ -293,7 +411,7 @@ pub const RoutingTable = struct {
     /// Estimate how close the local routing table is to a target.
     /// Returns 0.0-1.0 where 1.0 means we have peers in the target's bucket.
     pub fn proximityScore(self: *const Self, target_id: [32]u8) f64 {
-        const bucket_idx = self.getBucketIndex(target_id);
+        const bucket_idx = getBucketIndex(target_id, self.local_peer_id);
         var peer_count: usize = 0;
         if (self.buckets[bucket_idx]) |bucket| {
             peer_count = bucket.peerCount();
@@ -512,4 +630,172 @@ test "KadMessage ping/pong" {
     defer decoded2.deinit(allocator);
 
     try std.testing.expectEqual(KadMessageType.pong, decoded2.msg_type);
+}
+
+/// Peer IDs that share bucket 255 when local_id is all zeros (MSB of byte0 set).
+fn peerIdInFarBucket(n: u8) [32]u8 {
+    var id: [32]u8 = @splat(0);
+    id[0] = 0x80 | (n & 0x7f);
+    id[31] = n;
+    return id;
+}
+
+test "parseAddressPrefix ipv4 host:port and ipv4-mapped" {
+    try std.testing.expect(parseAddressPrefix("172.20.0.4:8083").eql(.{ .ipv4_16 = 0xac14 }));
+    try std.testing.expect(parseAddressPrefix("172.20.1.9").eql(.{ .ipv4_16 = 0xac14 }));
+    try std.testing.expect(parseAddressPrefix("10.1.2.3:9").eql(.{ .ipv4_16 = 0x0a01 }));
+    try std.testing.expect(parseAddressPrefix("::ffff:172.20.0.4").eql(.{ .ipv4_16 = 0xac14 }));
+    try std.testing.expect(parseAddressPrefix("peer.example.com:8083") == .unknown);
+}
+
+test "parseAddressPrefix ipv6 /48" {
+    const p = parseAddressPrefix("[2001:db8:abcd::1]:8083");
+    try std.testing.expect(p == .ipv6_48);
+    try std.testing.expectEqual(@as(u8, 0x20), p.ipv6_48[0]);
+    try std.testing.expectEqual(@as(u8, 0x01), p.ipv6_48[1]);
+    try std.testing.expectEqual(@as(u8, 0x0d), p.ipv6_48[2]);
+    try std.testing.expectEqual(@as(u8, 0xb8), p.ipv6_48[3]);
+    try std.testing.expectEqual(@as(u8, 0xab), p.ipv6_48[4]);
+    try std.testing.expectEqual(@as(u8, 0xcd), p.ipv6_48[5]);
+
+    const same = parseAddressPrefix("2001:db8:abcd::99");
+    try std.testing.expect(same.eql(p));
+    const other = parseAddressPrefix("2001:db8:abce::1");
+    try std.testing.expect(!other.eql(p));
+}
+
+test "KBucket ipv4 /16 prefix diversity limit" {
+    const allocator = std.testing.allocator;
+    const local_id = @as([32]u8, @splat(0x00));
+
+    const rt = try RoutingTable.init(allocator, local_id);
+    defer rt.deinit();
+
+    // Fill MAX_PEERS_PER_PREFIX from 172.20/16 into the same far bucket.
+    var i: u8 = 0;
+    while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
+        var addr_buf: [32]u8 = undefined;
+        const addr = try std.fmt.bufPrint(&addr_buf, "172.20.0.{d}:8083", .{i + 1});
+        try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
+    }
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+
+    // Fifth peer from the same /16 must be rejected.
+    try std.testing.expectError(
+        error.PrefixDiversityLimit,
+        rt.addPeer(peerIdInFarBucket(MAX_PEERS_PER_PREFIX), "172.20.9.9:8083", 8083),
+    );
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+
+    // A different /16 in the same bucket is still admitted.
+    try rt.addPeer(peerIdInFarBucket(MAX_PEERS_PER_PREFIX + 1), "10.0.0.1:8083", 8083);
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX + 1), rt.totalPeers());
+}
+
+test "KBucket ipv6 /48 prefix diversity limit" {
+    const allocator = std.testing.allocator;
+    const local_id = @as([32]u8, @splat(0x00));
+
+    const rt = try RoutingTable.init(allocator, local_id);
+    defer rt.deinit();
+
+    var i: u8 = 0;
+    while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
+        var addr_buf: [64]u8 = undefined;
+        const addr = try std.fmt.bufPrint(&addr_buf, "[2001:db8:abcd::{d}]:9000", .{i + 1});
+        try rt.addPeer(peerIdInFarBucket(i), addr, 9000);
+    }
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+
+    try std.testing.expectError(
+        error.PrefixDiversityLimit,
+        rt.addPeer(peerIdInFarBucket(MAX_PEERS_PER_PREFIX), "[2001:db8:abcd::99]:9000", 9000),
+    );
+
+    // Different /48 may join the same bucket.
+    try rt.addPeer(peerIdInFarBucket(MAX_PEERS_PER_PREFIX + 1), "[2001:db8:abce::1]:9000", 9000);
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX + 1), rt.totalPeers());
+}
+
+test "KBucket prefix diversity allows refresh of existing peer" {
+    const allocator = std.testing.allocator;
+    const local_id = @as([32]u8, @splat(0x00));
+    const rt = try RoutingTable.init(allocator, local_id);
+    defer rt.deinit();
+
+    var i: u8 = 0;
+    while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
+        var addr_buf: [32]u8 = undefined;
+        const addr = try std.fmt.bufPrint(&addr_buf, "172.20.0.{d}", .{i + 1});
+        try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
+    }
+
+    // Refreshing an existing peer_id must not hit PrefixDiversityLimit.
+    try rt.addPeer(peerIdInFarBucket(0), "172.20.0.1:9999", 9999);
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+}
+
+test "KBucket unresolved hostname prefix diversity limit" {
+    const allocator = std.testing.allocator;
+    const local_id = @as([32]u8, @splat(0x00));
+    const rt = try RoutingTable.init(allocator, local_id);
+    defer rt.deinit();
+
+    // Distinct hostnames share one synthetic unresolved prefix.
+    var i: u8 = 0;
+    while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
+        var addr_buf: [64]u8 = undefined;
+        const addr = try std.fmt.bufPrint(&addr_buf, "peer{d}.example.com:8083", .{i});
+        try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
+    }
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+
+    try std.testing.expectError(
+        error.PrefixDiversityLimit,
+        rt.addPeer(peerIdInFarBucket(MAX_PEERS_PER_PREFIX), "overflow.example.com:8083", 8083),
+    );
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+
+    // Refresh of an existing hostname peer_id still allowed.
+    try rt.addPeer(peerIdInFarBucket(0), "peer0.example.com:9999", 9999);
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
+}
+
+test "KBucket hostname and ipv4 prefix caps are independent" {
+    const allocator = std.testing.allocator;
+    const local_id = @as([32]u8, @splat(0x00));
+    const rt = try RoutingTable.init(allocator, local_id);
+    defer rt.deinit();
+
+    // Fill IPv4 /16 budget.
+    var i: u8 = 0;
+    while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
+        var addr_buf: [32]u8 = undefined;
+        const addr = try std.fmt.bufPrint(&addr_buf, "172.20.0.{d}:8083", .{i + 1});
+        try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
+    }
+
+    // Hostnames use a separate unresolved budget — still admitted.
+    var h: u8 = 0;
+    while (h < MAX_PEERS_PER_PREFIX) : (h += 1) {
+        var addr_buf: [64]u8 = undefined;
+        const addr = try std.fmt.bufPrint(&addr_buf, "host{d}.example.net:8083", .{h});
+        try rt.addPeer(peerIdInFarBucket(@as(u8, @intCast(MAX_PEERS_PER_PREFIX)) + h), addr, 8083);
+    }
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX * 2), rt.totalPeers());
+
+    // Fifth hostname rejected; fifth IP from same /16 still rejected.
+    try std.testing.expectError(
+        error.PrefixDiversityLimit,
+        rt.addPeer(peerIdInFarBucket(@as(u8, @intCast(MAX_PEERS_PER_PREFIX * 2))), "extra.example.net:8083", 8083),
+    );
+    try std.testing.expectError(
+        error.PrefixDiversityLimit,
+        rt.addPeer(peerIdInFarBucket(@as(u8, @intCast(MAX_PEERS_PER_PREFIX * 2 + 1))), "172.20.9.9:8083", 8083),
+    );
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX * 2), rt.totalPeers());
+
+    // A different IPv4 /16 is still independent of both caps.
+    try rt.addPeer(peerIdInFarBucket(@as(u8, @intCast(MAX_PEERS_PER_PREFIX * 2 + 2))), "10.0.0.1:8083", 8083);
+    try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX * 2 + 1), rt.totalPeers());
 }

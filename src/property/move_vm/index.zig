@@ -7,6 +7,7 @@ pub const Bytecode = @import("Bytecode.zig");
 pub const Interpreter = @import("Interpreter.zig").Interpreter;
 pub const NativeFunction = @import("NativeFunction.zig");
 pub const Registry = NativeFunction.Registry;
+pub const stdlib = @import("stdlib.zig");
 pub const TxContext = @import("TxContext.zig").TxContext;
 pub const EventEmitter = @import("EventEmitter.zig");
 pub const Event = EventEmitter.Event;

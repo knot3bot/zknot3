@@ -150,8 +150,8 @@ test "DependencyGraph no overlap => single batch" {
     const allocator = std.testing.allocator;
 
     const txs = &[_]Ingress.Transaction{
-        .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{core.ObjectID.fromBytes(&@as([32]u8, @splat(1)))}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{core.ObjectID.fromBytes(&@as([32]u8, @splat(2)))}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{.{ .bytes = @as([32]u8, @splat(1)) }}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{.{ .bytes = @as([32]u8, @splat(2)) }}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
     };
 
     var graph = try DependencyGraph.init(allocator, txs);
@@ -169,7 +169,7 @@ test "DependencyGraph no overlap => single batch" {
 
 test "DependencyGraph overlap => two batches" {
     const allocator = std.testing.allocator;
-    const shared = core.ObjectID.fromBytes(&@as([32]u8, @splat(0xAA)));
+    const shared: core.ObjectID = .{ .bytes = @as([32]u8, @splat(0xAA)) };
 
     const txs = &[_]Ingress.Transaction{
         .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{shared}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
@@ -195,13 +195,13 @@ test "DependencyGraph overlap => two batches" {
 
 test "DependencyGraph chain of overlaps" {
     const allocator = std.testing.allocator;
-    const id_a = core.ObjectID.fromBytes(&@as([32]u8, @splat(0xAA)));
-    const id_b = core.ObjectID.fromBytes(&@as([32]u8, @splat(0xBB)));
+    const id_a: core.ObjectID = .{ .bytes = @as([32]u8, @splat(0xAA)) };
+    const id_b: core.ObjectID = .{ .bytes = @as([32]u8, @splat(0xBB)) };
 
     const txs = &[_]Ingress.Transaction{
         .{ .sender = @as([32]u8, @splat(1)), .inputs = &.{id_a}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
-        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{ id_a, id_b }, .program = &.{}, .gas_budget = 100, .sequence = 0 },
         .{ .sender = @as([32]u8, @splat(3)), .inputs = &.{id_b}, .program = &.{}, .gas_budget = 100, .sequence = 0 },
+        .{ .sender = @as([32]u8, @splat(2)), .inputs = &.{ id_a, id_b }, .program = &.{}, .gas_budget = 100, .sequence = 0 },
     };
 
     var graph = try DependencyGraph.init(allocator, txs);
@@ -213,7 +213,7 @@ test "DependencyGraph chain of overlaps" {
         allocator.free(batches);
     }
 
-    // tx0 and tx2 are independent (no shared inputs), tx1 depends on both
+    // tx0 and tx1 touch different objects. tx2 overlaps both, so it waits.
     try std.testing.expectEqual(@as(usize, 2), batches.len);
     try std.testing.expectEqual(@as(usize, 2), batches[0].len);
     try std.testing.expectEqual(@as(usize, 1), batches[1].len);

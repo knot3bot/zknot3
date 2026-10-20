@@ -96,6 +96,28 @@ pub const Instruction = struct {
 
         // Unknown/Invalid
         invalid = 0xFF,
+
+        /// Reject bytes that are not a defined opcode. `@fromBackingInt` on a hole
+        /// is a safety panic, and malformed bytecode must not crash the node.
+        pub fn fromByte(byte: u8) ?OpCode {
+            return switch (byte) {
+                0x00...0x03,
+                0x10...0x12,
+                0x20...0x21,
+                0x30...0x39,
+                0x40...0x45,
+                0x50...0x54,
+                0x60...0x65,
+                0x70...0x72,
+                0x80...0x87,
+                0x90...0x96,
+                0xA0...0xA1,
+                0xB0...0xB3,
+                0xFF,
+                => @as(OpCode, @fromBackingInt(byte)),
+                else => null,
+            };
+        }
     };
 
     /// Complexity score for gas metering
@@ -144,7 +166,7 @@ pub const BytecodeVerifier = struct {
 
         var offset: usize = 0;
         while (offset < bytecode.len) {
-            const opcode: Instruction.OpCode = @fromBackingInt(@intCast(bytecode[offset]));
+            const opcode = Instruction.OpCode.fromByte(bytecode[offset]) orelse return error.InvalidBytecode;
             offset += 1;
 
             // Parse instruction-specific payload with bounds checks

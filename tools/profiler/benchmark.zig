@@ -146,7 +146,7 @@ pub fn benchLSMTreePutGet(iterations: u64) !BenchmarkResult {
     var i: u64 = 0;
     while (i < iterations) : (i += 1) {
         try tree.put(&key, &value);
-        _ = try tree.get(&key);
+        if (try tree.get(&key)) |got| allocator.free(got);
     }
     const end = blk: {
         var ts: std.c.timespec = undefined;

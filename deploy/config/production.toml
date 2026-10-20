@@ -5,7 +5,11 @@
 bind_address = "0.0.0.0"
 rpc_port = 9003
 p2p_enabled = true
+transport = "tcp"
 p2p_address = "0.0.0.0"
+# Public dialable host:port for handshake listen trailer (quality redial).
+# Required when p2p_address is a wildcard bind; unsigned advertisement.
+# p2p_advertise_address = "203.0.113.10:8083"
 p2p_port = 8083
 max_connections = 1024
 connection_timeout = 30
@@ -19,6 +23,9 @@ min_validators = 4
 target_validators = 100
 max_validators = 500
 epoch_duration_secs = 86400
+# Stake units minted each epoch and split pro-rata across delegations.
+# Every validator must use the same value. Zero disables minting.
+epoch_reward = 0
 quorum_threshold = 200
 vote_quorum = 3
 round_interval_secs = 2
@@ -60,6 +67,9 @@ min_gas_price = 1000
 max_bytecode_size = 65536
 base_instruction_gas = 1
 storage_gas_per_byte = 10
+# Gas ledger (Executor balances). Keep false for docker smoke / free-gas paths.
+# enforce_gas_payment = true
+# initial_gas_balance = 1000000000
 
 [authority]
 address = "127.0.0.1"

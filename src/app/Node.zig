@@ -18,6 +18,8 @@ const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
 const P2PServer_module = @import("../form/network/P2PServer.zig");
 const P2PServer = P2PServer_module.P2PServer;
 const TxnAdmission = @import("TxnAdmission.zig");
+const Genesis = @import("Genesis.zig");
+const CutoverSignals = @import("CutoverSignals.zig");
 const BlockCommit = @import("BlockCommit.zig");
 const BlockExecution = @import("BlockExecution.zig");
 const TxExecutionCoordinator = @import("TxExecutionCoordinator.zig");
@@ -31,11 +33,34 @@ const TxnPoolCoordinator = @import("TxnPoolCoordinator.zig");
 const CommitCoordinator = @import("CommitCoordinator.zig");
 const VoteIngressResult = @import("ConsensusIngressCoordinator.zig").VoteIngressResult;
 const MainnetExtensionHooks = @import("MainnetExtensionHooks.zig");
+const Marketplace = @import("../property/move_vm/marketplace.zig").Marketplace;
+const AgentMessaging = @import("../property/move_vm/agent_messaging.zig").AgentMessaging;
+const AgentRegistry = @import("../property/move_vm/agent_registry.zig").AgentRegistry;
+const StateSnapshot = @import("../form/storage/StateSnapshot.zig");
 const wal_mod = @import("../form/storage/WAL.zig");
 const WAL = wal_mod.WAL;
 const WalRecordType = wal_mod.WalRecordType;
 const SigCrypto = @import("../property/crypto/Signature.zig");
 const Bls = core.Bls;
+
+/// Move one validator's pool balance to `target`. Increases are recorded as
+/// self-stake. Decreases drain self-stake first, then delegated stake.
+fn setPoolVotingPower(pool: *StakePool, validator: [32]u8, target: u128) !void {
+    const current = pool.getVotingPower(validator);
+    if (target == current) return;
+    if (target > current) {
+        try pool.addStake(validator, target - current, true);
+        return;
+    }
+    var delta = current - target;
+    const self_stake = pool.validator_self_stake.get(validator) orelse 0;
+    const from_self = @min(self_stake, delta);
+    if (from_self > 0) {
+        try pool.removeStake(validator, from_self, true);
+        delta -= from_self;
+    }
+    if (delta > 0) try pool.removeStake(validator, delta, false);
+}
 
 fn appendM4CheckpointProofSig(
     allocator: std.mem.Allocator,
@@ -78,6 +103,7 @@ pub const NodeError = error{
     QuorumNotReached,
     InvalidSignature,
     MissingSigningKey,
+    BrokenCheckpointChain,
 };
 
 /// Node dependencies
@@ -117,10 +143,17 @@ pub const Node = struct {
     consensus_round: u64 = 0,
     txn_pool: *pipeline.TxnPool,
     executor: *pipeline.Executor,
+    /// Owned domain services whose clocks follow `syncExecutorEpoch`.
+    marketplace: ?*Marketplace = null,
+    agent_messaging: ?*AgentMessaging = null,
+    agent_registry: ?*AgentRegistry = null,
     runtime_metrics: ?*RuntimeMetrics.RuntimeMetricsCollector = null,
     mainnet_hooks: *MainnetExtensionHooks.Manager,
     /// M4 protocol WAL (separate from LSM); optional if init fails.
     m4_wal: ?*WAL = null,
+    /// Wall-clock seconds of the last successful periodic `m4_gas_snapshot`.
+    /// `0` means never flushed this process; used by `maybeAppendGasSnapshotWal`.
+    last_gas_snapshot_at: i64 = 0,
     /// Epoch management (Phase 0: default primary path)
     epoch_manager: ?*EpochManager = null,
     stake_pool: ?*StakePool = null,
@@ -130,6 +163,9 @@ pub const Node = struct {
     indexer: ?*Indexer = null,
     /// Phase 1: atomic trace ID counter for observability
     trace_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Blake3 of the loaded genesis body. All-zero when no file is configured.
+    genesis_digest: [32]u8 = @splat(0),
+    cutover: CutoverSignals.State = .{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -152,12 +188,28 @@ pub const Node = struct {
         const txn_pool = try pipeline.TxnPool.init(allocator, .{});
         var txn_pool_owned_locally = true;
         errdefer if (txn_pool_owned_locally) txn_pool.deinit();
+        // Parallelism is worker-thread count, not txs-per-block. Cap to the
+        // Executor pool limit so Node.init does not spawn thousands of threads.
         const exec = try pipeline.Executor.init(allocator, .{
-            .parallelism = owned_config.consensus.max_txs_per_block,
+            .parallelism = @min(
+                @as(usize, owned_config.consensus.max_txs_per_block),
+                pipeline.Executor.MAX_WORKER_POOL_SIZE,
+            ),
             .max_gas = owned_config.vm.max_gas_budget,
         });
         var exec_owned_locally = true;
         errdefer if (exec_owned_locally) exec.deinit();
+
+        // Wire Executor gas ledger when enabled. Allowlist can be seeded immediately;
+        // local authority pubkey is seeded after `resolveSigningKey` (may still be null here).
+        // No zero-key seeding — if no 32-byte local address is available, allowlist only.
+        if (owned_config.vm.enforce_gas_payment) {
+            exec.enforce_gas_payment = true;
+            const seed_amount = owned_config.vm.initial_gas_balance;
+            for (owned_config.authority.gas_station_allowlist) |addr| {
+                try exec.setGasBalance(addr, seed_amount);
+            }
+        }
 
         // Phase 2: set up native function registry for Move VM.
         // On success `exec` owns the registry (`Executor.deinit` frees it), so
@@ -170,6 +222,19 @@ pub const Node = struct {
             try vm_registry.registerSuiFramework();
             exec.registry = vm_registry;
         }
+
+        const marketplace = try Marketplace.init(allocator);
+        var marketplace_owned_locally = true;
+        errdefer if (marketplace_owned_locally) marketplace.deinit();
+        const agent_messaging = try AgentMessaging.init(allocator);
+        var agent_messaging_owned_locally = true;
+        errdefer if (agent_messaging_owned_locally) agent_messaging.deinit();
+        const agent_registry = try AgentRegistry.init(allocator);
+        var agent_registry_owned_locally = true;
+        errdefer if (agent_registry_owned_locally) agent_registry.deinit();
+        exec.marketplace = marketplace;
+        exec.agent_messaging = agent_messaging;
+        exec.agent_registry = agent_registry;
 
         const self_ptr = try allocator.create(Self);
         // `deinit` ends in `allocator.destroy(self)`, so once it is armed below
@@ -204,6 +269,9 @@ pub const Node = struct {
         self_ptr.consensus_round = 0;
         self_ptr.txn_pool = txn_pool;
         self_ptr.executor = exec;
+        self_ptr.marketplace = marketplace;
+        self_ptr.agent_messaging = agent_messaging;
+        self_ptr.agent_registry = agent_registry;
         self_ptr.runtime_metrics = null;
         self_ptr.runtime_metrics = try RuntimeMetrics.RuntimeMetricsCollector.init(allocator, 100);
         // Needed only until `deinit` is armed below, which tears down
@@ -216,12 +284,15 @@ pub const Node = struct {
         };
         self_ptr.mainnet_hooks = try MainnetExtensionHooks.Manager.init(allocator);
         self_ptr.m4_wal = null;
+        self_ptr.last_gas_snapshot_at = 0;
         // allocator.create(Self) yields undefined memory: field defaults do
         // NOT apply. The blanket errdefer below runs deinit on partially
         // initialized state, so every optional member must be explicitly
         // nulled here (deinit dereferences them) — this was a segfault on
         // any init error between this point and their real assignment.
         self_ptr.epoch_manager = null;
+        self_ptr.genesis_digest = @splat(0);
+        self_ptr.cutover = .{};
         self_ptr.stake_pool = null;
         self_ptr.quorum = null;
         self_ptr.epoch_bridge = null;
@@ -234,12 +305,18 @@ pub const Node = struct {
         locals_owned_by_node = true;
         exec_owned_locally = false;
         txn_pool_owned_locally = false;
+        marketplace_owned_locally = false;
+        agent_messaging_owned_locally = false;
+        agent_registry_owned_locally = false;
 
         self_ptr.object_store = try ObjectStore.init(
             allocator,
             .{},
             owned_config.storage.data_dir,
         );
+        if (self_ptr.object_store) |store| {
+            self_ptr.executor.attachObjectStore(store);
+        }
 
         // Phase 0: initialize epoch bridge as the default primary path
         const epoch_manager = try EpochManager.init(allocator, .{
@@ -275,6 +352,7 @@ pub const Node = struct {
         }
 
         self_ptr.epoch_manager = epoch_manager;
+        self_ptr.syncExecutorEpoch();
         self_ptr.stake_pool = stake_pool;
         // Publish the pool so `votingPowerOf` (a free function, required by the
         // ingress API) can resolve authoritative vote weights.
@@ -295,22 +373,65 @@ pub const Node = struct {
             m4_wal_ptr.* = wal_val;
             self_ptr.m4_wal = m4_wal_ptr;
             self_ptr.mainnet_hooks.setM4Wal(m4_wal_ptr);
+            self_ptr.wireGasBalanceWalHook();
         } else |err| {
             Log.warn("M4 WAL init failed: {s}", .{@errorName(err)});
         }
 
+        try @import("Config.zig").Config.resolveSigningKey(&owned_config.authority, allocator);
+        // Seed local gas payer after signing key resolution (Ed25519 pubkey as address).
+        if (owned_config.vm.enforce_gas_payment) {
+            if (owned_config.authority.signing_key) |sk| {
+                if (std.crypto.sign.Ed25519.KeyPair.generateDeterministic(sk)) |kp| {
+                    try self_ptr.executor.setGasBalance(kp.public_key.toBytes(), owned_config.vm.initial_gas_balance);
+                } else |_| {
+                    Log.warn("[init] enforce_gas_payment: cannot derive local pubkey; seeded allowlist only", .{});
+                }
+            } else {
+                Log.warn("[init] enforce_gas_payment: no local signing_key; seeded allowlist only", .{});
+            }
+        }
+        const loaded_genesis = try Genesis.load(allocator, owned_config.network.genesis_path, owned_config.is_dev);
+        self_ptr.genesis_digest = loaded_genesis.digest;
+        if (std.mem.eql(u8, owned_config.network.transport, "quic") and !@import("quic_options").enabled) {
+            return error.QuicTransportRequiresBuildFlag;
+        }
+
         if (owned_config.network.p2p_enabled) {
+            // Same u256 big-endian decode as stake bootstrap / genesisValidatorId
+            // so the handshake Ed25519 peer key matches configured hex. Invalid
+            // entries are skipped; an empty result refuses advertised redial.
+            const kvs = owned_config.network.known_validators;
+            const known_keys = try self_ptr.config_arena.allocator().alloc([32]u8, kvs.len);
+            var nkeys: usize = 0;
+            for (kvs) |kv| {
+                const pk = std.fmt.parseInt(u256, kv.public_key_hex, 16) catch |err| {
+                    Log.warn("[init] invalid known_validator public_key_hex for redial trust: {s}", .{@errorName(err)});
+                    continue;
+                };
+                std.mem.writeInt(u256, &known_keys[nkeys], pk, .big);
+                nkeys += 1;
+            }
             const p2p_config = P2PServer_module.P2PServerConfig{
                 .bind_address = owned_config.network.p2p_address,
                 .max_connections = 256,
                 .bootstrap_peers = owned_config.network.bootstrap_peers,
                 .dial_bootstrap = true,
+                .transport_type = if (std.mem.eql(u8, owned_config.network.transport, "quic")) .quic else .tcp,
+                .genesis_digest = self_ptr.genesis_digest,
                 .validator_key = owned_config.authority.signing_key,
                 .allow_unauthenticated_handshake = owned_config.allow_unauthenticated_p2p,
                 .max_messages_per_second_per_peer = owned_config.network.p2p_max_messages_per_peer_per_second,
                 .max_messages_per_second_per_type = owned_config.network.p2p_max_messages_per_type_per_second,
                 .peer_score_ban_threshold = owned_config.network.p2p_peer_score_ban_threshold,
                 .peer_ban_seconds = owned_config.network.p2p_peer_ban_seconds,
+                .max_peers_per_16 = owned_config.network.p2p_max_peers_per_16,
+                .max_peers_per_48 = owned_config.network.p2p_max_peers_per_48,
+                .reserved_outbound_slots = owned_config.network.p2p_reserved_outbound_slots,
+                .peer_rotation_interval_secs = owned_config.network.p2p_peer_rotation_interval_secs,
+                .inbound_ratio_limit = owned_config.network.p2p_inbound_ratio_limit,
+                .advertise_address = owned_config.network.resolveP2pAdvertiseAddress(),
+                .known_validator_keys = known_keys[0..nkeys],
             };
 
             self_ptr.p2p_server = try P2PServer.init(allocator, p2p_config);
@@ -352,18 +473,33 @@ pub const Node = struct {
                 Log.warn("[WARN] Failed to save checkpoint sequence to {s}: {s}", .{ p, @errorName(err) });
             };
         }
-        // Truncate WAL after checkpoint — data is safely in SSTables
+        // Truncate WAL after checkpoint — data is safely in SSTables.
+        // Clean shutdown writes ONE m4_gas_snapshot (plus m4ss) instead of
+        // flushing every account as m4_gas_balance — runtime still logs
+        // per-op balances and may append periodic m4_gas_snapshot (see
+        // maybeAppendGasSnapshotWal); skip appendAllGasBalancesWal here.
+        // Gas snapshot must run before executor.deinit (accounts live there).
         if (self.m4_wal) |w| {
             w.truncate() catch |err| {
                 Log.warn("[WARN] Failed to truncate WAL after checkpoint: {s}", .{@errorName(err)});
             };
         }
-        self.checkpoint_store.deinit();
-        self.txn_pool.deinit();
-        self.executor.deinit();
         self.mainnet_hooks.appendStateSnapshotWal() catch |err| {
             Log.warn("[WARN] Failed to append M4 state snapshot on shutdown: {s}", .{@errorName(err)});
         };
+        self.appendGasSnapshotWal() catch |err| {
+            Log.warn("[WARN] Failed to append gas snapshot to M4 WAL on shutdown: {s}", .{@errorName(err)});
+        };
+        self.checkpoint_store.deinit();
+        self.txn_pool.deinit();
+        self.executor.marketplace = null;
+        self.executor.agent_messaging = null;
+        self.executor.agent_registry = null;
+        self.executor.setGasBalanceWalHook(null, null);
+        self.executor.deinit();
+        if (self.marketplace) |mp| mp.deinit();
+        if (self.agent_messaging) |am| am.deinit();
+        if (self.agent_registry) |reg| reg.deinit();
         self.mainnet_hooks.setM4Wal(null);
         if (self.m4_wal) |w| {
             w.deinit();
@@ -401,6 +537,11 @@ pub const Node = struct {
             if (cfg.consensus.min_validators < 4) return error.InvalidConfig;
             if (cfg.consensus.max_validators < cfg.consensus.min_validators) return error.InvalidConfig;
             if (cfg.authority.signing_key == null) return error.InvalidConfig;
+            if (cfg.authority.stake == 0) return error.InvalidConfig;
+            if (!cfg.network.p2p_enabled) return error.InvalidConfig;
+        }
+        if (std.mem.eql(u8, cfg.network.transport, "quic") and !@import("quic_options").enabled) {
+            return error.QuicTransportRequiresBuildFlag;
         }
         // Network: non-loopback bind requires admin token
         if (!std.mem.eql(u8, cfg.network.bind_address, "127.0.0.1") and
@@ -412,6 +553,7 @@ pub const Node = struct {
         if (cfg.storage.cache_size == 0) return error.InvalidConfig;
         // Max connections must be > 0 if P2P enabled
         if (cfg.network.p2p_enabled and cfg.network.max_connections == 0) return error.InvalidConfig;
+        if (cfg.network.p2p_inbound_ratio_limit > 100) return error.InvalidConfig;
         // Consensus budget sanity
         if (cfg.consensus.epoch_duration_secs == 0) return error.InvalidConfig;
     }
@@ -451,8 +593,33 @@ pub const Node = struct {
         return self.p2p_server;
     }
 
+    fn noteCheckpointAdvanced(self: *Self) void {
+        const epoch = if (self.epoch_manager) |em| em.getCurrentEpoch().number else 0;
+        self.cutover.noteCheckpoint(epoch);
+    }
+
+    pub fn cutoverGauges(self: *Self) CutoverSignals.Gauges {
+        const epoch = if (self.epoch_manager) |em| em.getCurrentEpoch().number else 0;
+        const bans = if (self.p2p_server) |p2p| p2p.getRateLimitStats().banned_peers_total else 0;
+        return self.cutover.gauges(epoch, bans);
+    }
+
+    fn monotonicElapsedNs(started: std.c.timespec, ended: std.c.timespec) u64 {
+        const s = @as(i128, ended.sec - started.sec) * std.time.ns_per_s + @as(i128, ended.nsec - started.nsec);
+        if (s <= 0) return 0;
+        if (s > std.math.maxInt(u64)) return std.math.maxInt(u64);
+        return @intCast(s);
+    }
+
     /// Recover node state from disk (checkpoint + WAL)
     pub fn recoverFromDisk(self: *Self) !void {
+        var started: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &started);
+        defer {
+            var ended: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ended);
+            self.cutover.noteRecovery(monotonicElapsedNs(started, ended));
+        }
         try NodeLifecycleCoordinator.recoverFromDisk(self.object_store);
         // Phase 2+: replay M4 WAL to restore stake/governance/epoch state
         try self.replayMainnetM4Wal();
@@ -473,12 +640,16 @@ pub const Node = struct {
         }
     }
 
-    /// Replay M4 extension WAL into `mainnet_hooks` after object-store recovery.
-    /// Temporarily clears `m4_wal` on the hooks so replay does not append duplicate records.
+    /// Replay M4 extension WAL into `mainnet_hooks` / executor after object-store recovery.
+    /// Temporarily clears hooks + gas WAL callback so replay does not append duplicates.
     pub fn replayMainnetM4Wal(self: *Self) !void {
         const w = self.m4_wal orelse return;
         self.mainnet_hooks.setM4Wal(null);
-        defer self.mainnet_hooks.setM4Wal(w);
+        self.executor.setGasBalanceWalHook(null, null);
+        defer {
+            self.mainnet_hooks.setM4Wal(w);
+            self.wireGasBalanceWalHook();
+        }
 
         const Cb = struct {
             fn onReplay(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) !void {
@@ -497,6 +668,20 @@ pub const Node = struct {
                         const payload = value orelse return error.InvalidWalPayload;
                         try node.mainnet_hooks.replayWalExtension(op, payload);
                     },
+                    .m4_gas_balance => {
+                        const payload = value orelse return error.InvalidWalPayload;
+                        if (payload.len != 40) return error.InvalidWalPayload;
+                        var addr: [32]u8 = undefined;
+                        @memcpy(&addr, payload[0..32]);
+                        const amount = std.mem.readInt(u64, payload[32..40], .big);
+                        // Hook cleared above — setGasBalance must not re-append.
+                        try node.executor.setGasBalance(addr, amount);
+                    },
+                    .m4_gas_snapshot => {
+                        const payload = value orelse return error.InvalidWalPayload;
+                        // Hook cleared above — wipe+set must not re-append.
+                        try node.applyGasSnapshotPayload(payload);
+                    },
                     else => {},
                 }
             }
@@ -508,6 +693,118 @@ pub const Node = struct {
             .skip_corrupted = self.config.storage.recovery_skip_corrupted,
         });
         if (result.errors > 0) return error.ReadFailed;
+    }
+
+    fn wireGasBalanceWalHook(self: *Self) void {
+        if (self.m4_wal == null) {
+            self.executor.setGasBalanceWalHook(null, null);
+            return;
+        }
+        const Cb = struct {
+            fn onChanged(ctx: *anyopaque, addr: [32]u8, balance: u64) anyerror!void {
+                const node: *Self = @ptrCast(@alignCast(ctx));
+                try node.appendGasBalanceWal(addr, balance);
+            }
+        };
+        self.executor.setGasBalanceWalHook(self, Cb.onChanged);
+    }
+
+    /// Append absolute gas balance to M4 WAL. No-op when WAL absent.
+    /// Payload: `address[32] || amount_be64[8]`.
+    pub fn appendGasBalanceWal(self: *Self, addr: [32]u8, balance: u64) !void {
+        const w = self.m4_wal orelse return;
+        var payload: [40]u8 = undefined;
+        @memcpy(payload[0..32], &addr);
+        std.mem.writeInt(u64, payload[32..40], balance, .big);
+        try w.logExtensionRecord(.m4_gas_balance, &payload);
+    }
+
+    /// Append full gas ledger snapshot for fast recovery.
+    /// Payload: `u32_be count || count * (address[32] || amount_be64[8])`, addresses sorted.
+    /// Clean shutdown uses this instead of `appendAllGasBalancesWal`.
+    /// Periodic runtime flushes (`maybeAppendGasSnapshotWal`) also call this —
+    /// append-only, never truncates — so crash recovery can skip long
+    /// `m4_gas_balance` tails while per-op records still cover the gap.
+    pub fn appendGasSnapshotWal(self: *Self) !void {
+        const w = self.m4_wal orelse return;
+        const count = self.executor.gas_accounts.count();
+        const Entry = struct { addr: [32]u8, amount: u64 };
+        const entries = try self.allocator.alloc(Entry, count);
+        defer self.allocator.free(entries);
+        var i: usize = 0;
+        var it = self.executor.gas_accounts.iterator();
+        while (it.next()) |entry| : (i += 1) {
+            entries[i] = .{ .addr = entry.key_ptr.*, .amount = entry.value_ptr.* };
+        }
+        std.mem.sort(Entry, entries, {}, struct {
+            fn lessThan(_: void, a: Entry, b: Entry) bool {
+                return std.mem.order(u8, &a.addr, &b.addr) == .lt;
+            }
+        }.lessThan);
+
+        const payload_len = 4 + count * 40;
+        const payload = try self.allocator.alloc(u8, payload_len);
+        defer self.allocator.free(payload);
+        std.mem.writeInt(u32, payload[0..4], @intCast(count), .big);
+        var off: usize = 4;
+        for (entries) |e| {
+            @memcpy(payload[off .. off + 32], &e.addr);
+            std.mem.writeInt(u64, payload[off + 32 ..][0..8], e.amount, .big);
+            off += 40;
+        }
+        try w.logExtensionRecord(.m4_gas_snapshot, payload);
+    }
+
+    /// Append `m4_gas_snapshot` when `storage.gas_snapshot_interval_secs` has
+    /// elapsed since `last_gas_snapshot_at`. Append-only (no WAL truncate).
+    /// No-op when interval is `0`, M4 WAL is absent, or the interval has not
+    /// elapsed. Empty ledgers are still snapshotted (valid wipe baseline).
+    pub fn maybeAppendGasSnapshotWal(self: *Self) void {
+        const interval = self.config.storage.gas_snapshot_interval_secs;
+        if (interval <= 0) return;
+        if (self.m4_wal == null) return;
+
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        const now: i64 = ts.sec;
+        if (self.last_gas_snapshot_at != 0 and now - self.last_gas_snapshot_at < interval) return;
+
+        self.appendGasSnapshotWal() catch |err| {
+            Log.warn("[WARN] Periodic gas snapshot WAL append failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.last_gas_snapshot_at = now;
+    }
+
+    /// Replace `executor.gas_accounts` from an `m4_gas_snapshot` payload (true restore).
+    fn applyGasSnapshotPayload(self: *Self, payload: []const u8) !void {
+        if (payload.len < 4) return error.InvalidWalPayload;
+        const count = std.mem.readInt(u32, payload[0..4], .big);
+        const expected = 4 + @as(usize, count) * 40;
+        if (payload.len != expected) return error.InvalidWalPayload;
+
+        self.executor.gas_accounts.clearRetainingCapacity();
+        var off: usize = 4;
+        var n: u32 = 0;
+        while (n < count) : (n += 1) {
+            var addr: [32]u8 = undefined;
+            @memcpy(&addr, payload[off .. off + 32]);
+            const amount = std.mem.readInt(u64, payload[off + 32 ..][0..8], .big);
+            off += 40;
+            // Caller must clear gas WAL hook during replay so this does not re-append.
+            try self.executor.setGasBalance(addr, amount);
+        }
+    }
+
+    /// Flush every in-memory gas account as absolute M4 records.
+    /// Not used on clean shutdown (prefer `appendGasSnapshotWal`); kept for
+    /// callers that need a per-account absolute dump without a snapshot.
+    fn appendAllGasBalancesWal(self: *Self) !void {
+        if (self.m4_wal == null) return;
+        var it = self.executor.gas_accounts.iterator();
+        while (it.next()) |entry| {
+            try self.appendGasBalanceWal(entry.key_ptr.*, entry.value_ptr.*);
+        }
     }
 
     pub fn getNodeInfo(self: *Self) NodeInfo {
@@ -619,8 +916,8 @@ pub const Node = struct {
         return self.pending_blocks.getPtr(block.digest);
     }
 
-    pub fn advanceRound(self: *Self) void {
-        self.consensus_round += 1;
+    pub fn advanceRound(self: *Self) error{ArithmeticOverflow}!void {
+        self.consensus_round = std.math.add(u64, self.consensus_round, 1) catch return error.ArithmeticOverflow;
         NodeStatsCoordinator.onRoundAdvanced(&self.stats, self.consensus_round);
     }
 
@@ -689,13 +986,17 @@ pub const Node = struct {
                         res.deinit(typed_ctx.node.allocator);
                     }
                     typed_ctx.node.allocator.free(exec_results);
-                    _ = typed_ctx.node.checkpoint_store.advance();
-                    const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
-                    if (cp_path) |p| {
-                        defer typed_ctx.node.allocator.free(p);
-                        typed_ctx.node.checkpoint_store.save(p) catch |err| {
-                            Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
-                        };
+                    if (typed_ctx.node.checkpoint_store.advance()) |_| {
+                        typed_ctx.node.noteCheckpointAdvanced();
+                        const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
+                        if (cp_path) |p| {
+                            defer typed_ctx.node.allocator.free(p);
+                            typed_ctx.node.checkpoint_store.save(p) catch |err| {
+                                Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
+                            };
+                        }
+                    } else |err| {
+                        Log.warn("[WARN] Failed to advance checkpoint sequence: {s}", .{@errorName(err)});
                     }
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
@@ -779,13 +1080,17 @@ pub const Node = struct {
                         res.deinit(typed_ctx.node.allocator);
                     }
                     typed_ctx.node.allocator.free(exec_results);
-                    _ = typed_ctx.node.checkpoint_store.advance();
-                    const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
-                    if (cp_path) |p| {
-                        defer typed_ctx.node.allocator.free(p);
-                        typed_ctx.node.checkpoint_store.save(p) catch |err| {
-                            Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
-                        };
+                    if (typed_ctx.node.checkpoint_store.advance()) |_| {
+                        typed_ctx.node.noteCheckpointAdvanced();
+                        const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
+                        if (cp_path) |p| {
+                            defer typed_ctx.node.allocator.free(p);
+                            typed_ctx.node.checkpoint_store.save(p) catch |err| {
+                                Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
+                            };
+                        }
+                    } else |err| {
+                        Log.warn("[WARN] Failed to advance checkpoint sequence: {s}", .{@errorName(err)});
                     }
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
@@ -1057,9 +1362,45 @@ pub const Node = struct {
         return self.state == .running;
     }
 
+    /// Credit gas ledger for `addr` by `amount`. Returns the new balance.
+    /// Persists absolute balance via M4 WAL when present.
+    pub fn creditGas(self: *Self, addr: [32]u8, amount: u64) !u64 {
+        try self.executor.creditGasBalance(addr, amount);
+        const balance = self.executor.getGasBalance(addr);
+        try self.appendGasBalanceWal(addr, balance);
+        return balance;
+    }
+
+    /// Read gas ledger balance; unset addresses are 0.
+    pub fn getGasBalance(self: *const Self, addr: [32]u8) u64 {
+        return self.executor.getGasBalance(addr);
+    }
+
     /// M4 reserved hook: submit stake/unstake/reward/slash operation envelope.
+    /// The resulting validator stake is copied into `stake_pool` so consensus
+    /// voting power follows the same number.
     pub fn submitStakeOperation(self: *Self, input: MainnetExtensionHooks.StakeOperationInput) !u64 {
-        return self.mainnet_hooks.submitStakeOperation(input);
+        const id = try self.mainnet_hooks.submitStakeOperation(input);
+        try self.syncValidatorVotingPower(input.validator);
+        return id;
+    }
+
+    pub fn scheduledSlashAmount(self: *const Self, validator: [32]u8) u64 {
+        return self.mainnet_hooks.scheduledSlashAmount(validator);
+    }
+
+    fn syncValidatorVotingPower(self: *Self, validator: [32]u8) !void {
+        const pool = self.stake_pool orelse return;
+        const target: u128 = self.mainnet_hooks.getValidatorStake(validator);
+        try setPoolVotingPower(pool, validator, target);
+    }
+
+    fn syncAllM4VotingPower(self: *Self) !void {
+        const pool = self.stake_pool orelse return;
+        var it = self.mainnet_hooks.validator_stake.iterator();
+        while (it.next()) |entry| {
+            try setPoolVotingPower(pool, entry.key_ptr.*, entry.value_ptr.*);
+        }
     }
 
     /// M4 reserved hook: submit governance proposal envelope.
@@ -1075,7 +1416,12 @@ pub const Node = struct {
         const proof_bytes = try self.allocator.dupe(u8, &msg);
         errdefer self.allocator.free(proof_bytes);
 
-        const primary = self.config.authority.signing_key orelse return error.MissingSigningKey;
+        const primary = self.config.authority.signing_key orelse {
+            self.cutover.noteProof(false);
+            return error.MissingSigningKey;
+        };
+        var proof_recorded = false;
+        errdefer if (!proof_recorded) self.cutover.noteProof(false);
 
         var pairs = std.ArrayList(M.ProofSigPair).empty;
         defer pairs.deinit(self.allocator);
@@ -1118,6 +1464,8 @@ pub const Node = struct {
         const bls_signer_bitmap = try bls_bitmap.toOwnedSlice(self.allocator);
         errdefer self.allocator.free(bls_signer_bitmap);
 
+        proof_recorded = true;
+        self.cutover.noteProof(true);
         return .{
             .sequence = req.sequence,
             .object_id = req.object_id,
@@ -1144,13 +1492,47 @@ pub const Node = struct {
         evidence_payload: []const u8,
         slash_amount: u64,
     ) !bool {
-        return self.mainnet_hooks.applyEquivocationEvidence(
+        const applied = try self.mainnet_hooks.applyEquivocationEvidence(
             validator,
             delegator,
             round,
             evidence_payload,
             slash_amount,
         );
+        if (applied) {
+            try self.syncValidatorVotingPower(validator);
+            self.suspendIfJailed(validator);
+        }
+        return applied;
+    }
+
+    pub fn validatorIsJailed(self: *const Self, validator: [32]u8) bool {
+        return self.mainnet_hooks.isJailed(validator);
+    }
+
+    fn suspendIfJailed(self: *Self, validator: [32]u8) void {
+        if (!self.mainnet_hooks.isJailed(validator)) return;
+        const quorum = self.quorum orelse return;
+        quorum.setMemberActive(validator, false);
+    }
+
+    fn reapplyJails(self: *Self) void {
+        const quorum = self.quorum orelse return;
+        var it = self.mainnet_hooks.jailed_until.iterator();
+        while (it.next()) |entry| {
+            if (self.mainnet_hooks.isJailed(entry.key_ptr.*)) {
+                quorum.setMemberActive(entry.key_ptr.*, false);
+            }
+        }
+    }
+
+    /// Replace object-store state with a verified snapshot, then require every
+    /// later checkpoint to continue from that snapshot's checkpoint digest.
+    pub fn fastSyncFromSnapshot(self: *Self, bytes: []const u8, later: []const StateSnapshot.ChainLink) !StateSnapshot.Header {
+        const store = self.object_store orelse return error.ObjectStoreNotAvailable;
+        const hdr = try StateSnapshot.header(bytes);
+        if (!StateSnapshot.verifyContinuation(hdr.checkpoint_digest, later)) return error.BrokenCheckpointChain;
+        return store.importStateSnapshot(bytes);
     }
 
     /// M4: validator stake tracked by mainnet hooks (after WAL replay / live ops).
@@ -1171,11 +1553,27 @@ pub const Node = struct {
         return self.mainnet_hooks.getValidatorSetHash();
     }
 
+    fn syncExecutorEpoch(self: *Self) void {
+        const em = self.epoch_manager orelse return;
+        const epoch = em.getCurrentEpoch();
+        const ms: u64 = if (epoch.start_time > 0)
+            std.math.mul(u64, @as(u64, @intCast(epoch.start_time)), 1000) catch std.math.maxInt(u64)
+        else
+            0;
+        self.executor.setEpoch(epoch.number, ms);
+        self.mainnet_hooks.setClock(epoch.start_time);
+    }
+
     /// Phase 2: advance epoch, sync stake changes to quorum, execute approved proposals.
     pub fn advanceEpoch(self: *Self) !void {
         const sp = self.stake_pool orelse return error.NotRunning;
         const quorum = self.quorum orelse return error.NotRunning;
         const epoch_bridge = self.epoch_bridge orelse return error.NotRunning;
+
+        if (self.config.consensus.epoch_reward > 0) {
+            _ = try self.mainnet_hooks.distributeEpochRewards(self.config.consensus.epoch_reward);
+            try self.syncAllM4VotingPower();
+        }
 
         // Sync stake_pool changes into quorum
         var it = sp.validators.iterator();
@@ -1189,6 +1587,8 @@ pub const Node = struct {
         // Update mainnet hooks epoch
         const new_epoch = self.epoch_manager.?.getCurrentEpoch().number;
         try self.mainnet_hooks.advanceEpoch(new_epoch);
+        self.syncExecutorEpoch();
+        self.reapplyJails();
 
         // Execute approved governance proposals
         for (self.mainnet_hooks.proposals.items) |*p| {
@@ -1257,6 +1657,272 @@ test "Node initialization" {
         std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
     }
     try std.testing.expect(node.state == .initializing);
+}
+
+test "Node wires enforce_gas_payment and seeds allowlist plus local pubkey" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_ledger";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+
+    const sponsor: [32]u8 = @splat(0xA1);
+    const seed_sk: [32]u8 = @splat(0x42);
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic(seed_sk);
+    const local_addr = kp.public_key.toBytes();
+
+    const allowlist = try allocator.dupe([32]u8, &[_][32]u8{sponsor});
+    defer allocator.free(allowlist);
+
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    config.vm.enforce_gas_payment = true;
+    config.vm.initial_gas_balance = 777_000;
+    config.authority.signing_key = seed_sk;
+    config.authority.gas_station_allowlist = allowlist;
+
+    const node = try Node.init(allocator, config, .{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
+
+    try std.testing.expect(node.executor.enforce_gas_payment);
+    try std.testing.expectEqual(@as(u64, 777_000), node.executor.getGasBalance(sponsor));
+    try std.testing.expectEqual(@as(u64, 777_000), node.executor.getGasBalance(local_addr));
+    try std.testing.expect(node.executor.object_store != null);
+}
+
+test "Node creditGas and getGasBalance wrappers" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_credit";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    // enforce_gas_payment stays false (default); ledger APIs still work.
+
+    const node = try Node.init(allocator, config, .{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
+
+    const addr: [32]u8 = @splat(0xB2);
+    try std.testing.expectEqual(@as(u64, 0), node.getGasBalance(addr));
+    try std.testing.expectEqual(@as(u64, 1000), try node.creditGas(addr, 1000));
+    try std.testing.expectEqual(@as(u64, 1500), try node.creditGas(addr, 500));
+    try std.testing.expectEqual(@as(u64, 1500), node.getGasBalance(addr));
+}
+
+test "Node gas balance M4 WAL credit survives restart replay" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_wal_restart";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+
+    const addr: [32]u8 = @splat(0xC3);
+    const addr2: [32]u8 = @splat(0xC4);
+
+    {
+        const config = try allocator.create(Config);
+        config.* = Config.default();
+        config.storage.data_dir = test_dir;
+        const node = try Node.init(allocator, config, .{});
+        defer {
+            node.deinit();
+            allocator.destroy(config);
+        }
+        try node.start();
+        try std.testing.expect(node.m4_wal != null);
+        try std.testing.expectEqual(@as(u64, 2000), try node.creditGas(addr, 2000));
+        try std.testing.expectEqual(@as(u64, 500), try node.creditGas(addr2, 500));
+        try std.testing.expectEqual(@as(u64, 2500), try node.creditGas(addr, 500));
+        // Absolute set via executor hook also WAL-logs.
+        try node.executor.setGasBalance(addr2, 42);
+        try std.testing.expectEqual(@as(u64, 42), node.getGasBalance(addr2));
+    }
+
+    {
+        const config2 = try allocator.create(Config);
+        config2.* = Config.default();
+        config2.storage.data_dir = test_dir;
+        const node2 = try Node.init(allocator, config2, .{});
+        defer {
+            node2.deinit();
+            allocator.destroy(config2);
+            std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+        }
+        try node2.start();
+        try std.testing.expectEqual(@as(u64, 2500), node2.getGasBalance(addr));
+        try std.testing.expectEqual(@as(u64, 42), node2.getGasBalance(addr2));
+    }
+}
+
+test "Node gas snapshot WAL restores exact map on clean restart" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_snapshot_wal";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+
+    // Unsorted insert order; snapshot sorts addresses. `addr_gone` is removed
+    // before shutdown so clean-shutdown snapshot must not revive it.
+    const addr_hi: [32]u8 = @splat(0xF0);
+    const addr_lo: [32]u8 = @splat(0x01);
+    const addr_mid: [32]u8 = @splat(0x80);
+    const addr_gone: [32]u8 = @splat(0xEE);
+
+    {
+        const config = try allocator.create(Config);
+        config.* = Config.default();
+        config.storage.data_dir = test_dir;
+        const node = try Node.init(allocator, config, .{});
+        defer {
+            node.deinit();
+            allocator.destroy(config);
+        }
+        try node.start();
+        try std.testing.expect(node.m4_wal != null);
+        try node.executor.setGasBalance(addr_hi, 300);
+        try node.executor.setGasBalance(addr_lo, 100);
+        try node.executor.setGasBalance(addr_mid, 200);
+        try node.executor.setGasBalance(addr_gone, 999);
+        _ = node.executor.gas_accounts.remove(addr_gone);
+        // Explicit snapshot + clean deinit (truncate → m4ss → m4_gas_snapshot).
+        try node.appendGasSnapshotWal();
+    }
+
+    {
+        const config2 = try allocator.create(Config);
+        config2.* = Config.default();
+        config2.storage.data_dir = test_dir;
+        const node2 = try Node.init(allocator, config2, .{});
+        defer {
+            node2.deinit();
+            allocator.destroy(config2);
+            std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+        }
+        try node2.start();
+        try std.testing.expectEqual(@as(u64, 100), node2.getGasBalance(addr_lo));
+        try std.testing.expectEqual(@as(u64, 200), node2.getGasBalance(addr_mid));
+        try std.testing.expectEqual(@as(u64, 300), node2.getGasBalance(addr_hi));
+        try std.testing.expectEqual(@as(u64, 0), node2.getGasBalance(addr_gone));
+        try std.testing.expectEqual(@as(usize, 3), node2.executor.gas_accounts.count());
+    }
+}
+
+test "Node maybeAppendGasSnapshotWal respects interval and last_*" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_snapshot_maybe";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+
+    // interval=0 → always no-op; last_gas_snapshot_at stays 0.
+    {
+        const config = try allocator.create(Config);
+        config.* = Config.default();
+        config.storage.data_dir = test_dir;
+        config.storage.gas_snapshot_interval_secs = 0;
+        const node = try Node.init(allocator, config, .{});
+        defer {
+            node.deinit();
+            allocator.destroy(config);
+        }
+        try node.start();
+        try std.testing.expect(node.m4_wal != null);
+        try std.testing.expectEqual(@as(i64, 0), node.last_gas_snapshot_at);
+        node.maybeAppendGasSnapshotWal();
+        try std.testing.expectEqual(@as(i64, 0), node.last_gas_snapshot_at);
+    }
+
+    // interval=1: recent last_* skips; aged last_* appends and advances stamp.
+    {
+        const config = try allocator.create(Config);
+        config.* = Config.default();
+        config.storage.data_dir = test_dir;
+        config.storage.gas_snapshot_interval_secs = 1;
+        const node = try Node.init(allocator, config, .{});
+        defer {
+            node.deinit();
+            allocator.destroy(config);
+        }
+        try node.start();
+        try std.testing.expect(node.m4_wal != null);
+
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+        const now: i64 = ts.sec;
+
+        node.last_gas_snapshot_at = now;
+        node.maybeAppendGasSnapshotWal();
+        try std.testing.expectEqual(now, node.last_gas_snapshot_at);
+
+        node.last_gas_snapshot_at = now - 10;
+        node.maybeAppendGasSnapshotWal();
+        try std.testing.expect(node.last_gas_snapshot_at >= now);
+    }
+}
+
+test "Node gas snapshot wipe replaces in-memory map on replay" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_snapshot_wipe";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+
+    const a: [32]u8 = @splat(0x11);
+    const b: [32]u8 = @splat(0x22);
+    const stale: [32]u8 = @splat(0x33);
+
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    const node = try Node.init(allocator, config, .{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+    }
+    try node.start();
+    try node.executor.setGasBalance(a, 10);
+    try node.executor.setGasBalance(b, 20);
+    try node.appendGasSnapshotWal();
+
+    // Pollute live map without appending WAL (hook off); snapshot replay must wipe.
+    node.executor.setGasBalanceWalHook(null, null);
+    try node.executor.setGasBalance(stale, 777);
+    try node.executor.setGasBalance(a, 1);
+    try node.replayMainnetM4Wal();
+    try std.testing.expectEqual(@as(u64, 10), node.getGasBalance(a));
+    try std.testing.expectEqual(@as(u64, 20), node.getGasBalance(b));
+    try std.testing.expectEqual(@as(u64, 0), node.getGasBalance(stale));
+    try std.testing.expectEqual(@as(usize, 2), node.executor.gas_accounts.count());
+}
+
+test "Node round advance refuses to wrap" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_round_overflow";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    const node = try Node.init(allocator, config, .{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
+
+    node.consensus_round = std.math.maxInt(u64) - 1;
+    try node.advanceRound();
+    try std.testing.expectEqual(std.math.maxInt(u64), node.consensus_round);
+    try std.testing.expectError(error.ArithmeticOverflow, node.advanceRound());
+    try std.testing.expectEqual(std.math.maxInt(u64), node.consensus_round);
 }
 
 test "Node outlives the caller-owned Config it was initialized from" {
@@ -1433,6 +2099,7 @@ test "Node mainnet extension hooks execute protocol state transitions" {
         .action = .stake,
     });
     try std.testing.expectEqual(@as(u64, 1), stake_id);
+    try std.testing.expectEqual(@as(u128, 100), node.stake_pool.?.getVotingPower(@as([32]u8, @splat(1))));
 
     const proposal_id = try node.submitGovernanceProposal(.{
         .proposer = @as([32]u8, @splat(3)),
@@ -1450,6 +2117,7 @@ test "Node mainnet extension hooks execute protocol state transitions" {
         .metadata = "test-equivocation",
     });
     try std.testing.expectEqual(@as(u64, 2), slash_id);
+    try std.testing.expectEqual(@as(u128, 90), node.stake_pool.?.getVotingPower(@as([32]u8, @splat(1))));
 
     const proof = try node.buildCheckpointProof(.{
         .sequence = 1,
@@ -1459,4 +2127,54 @@ test "Node mainnet extension hooks execute protocol state transitions" {
     try std.testing.expectEqual(@as(u64, 1), proof.sequence);
     try std.testing.expectEqual(@as(usize, 80), proof.proof_bytes.len);
     try std.testing.expect(std.mem.startsWith(u8, proof.signatures, "k3s1"));
+}
+
+test "fast sync replaces object state only when the checkpoint chain continues" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_fast_sync";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    const node = try Node.init(allocator, config, NodeDependencies{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+        std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    }
+
+    const store = node.object_store orelse return error.ObjectStoreNotAvailable;
+    const id = core.ObjectID.hash("fast-sync");
+    const version = core.Version{ .seq = 1, .causal = @as([16]u8, @splat(0)) };
+    const owner = core.Ownership.ownedBy(@as([32]u8, @splat(1)));
+    const data = try allocator.dupe(u8, "kept");
+    defer allocator.free(data);
+    try store.put(.{ .id = id, .version = version, .ownership = owner, .data = data, .type_tag = 1 });
+
+    const anchor = @as([32]u8, @splat(0x44));
+    const blob = try store.exportStateSnapshot(3, anchor);
+    defer allocator.free(blob);
+
+    const stale = try allocator.dupe(u8, "stale");
+    defer allocator.free(stale);
+    try store.put(.{ .id = core.ObjectID.hash("stale"), .version = version, .ownership = owner, .data = stale, .type_tag = 1 });
+
+    const broken = [_]StateSnapshot.ChainLink{
+        .{ .digest = @as([32]u8, @splat(0x55)), .previous_digest = @as([32]u8, @splat(0x01)) },
+    };
+    try std.testing.expectError(error.BrokenCheckpointChain, node.fastSyncFromSnapshot(blob, &broken));
+
+    const later = [_]StateSnapshot.ChainLink{
+        .{ .digest = @as([32]u8, @splat(0x55)), .previous_digest = anchor },
+    };
+    const hdr = try node.fastSyncFromSnapshot(blob, &later);
+    try std.testing.expectEqual(@as(u64, 3), hdr.checkpoint_sequence);
+    const restored = (try store.get(id)).?;
+    defer {
+        var copy = restored;
+        copy.deinit(allocator);
+    }
+    try std.testing.expectEqualStrings("kept", restored.data);
+    try std.testing.expect((try store.get(core.ObjectID.hash("stale"))) == null);
 }

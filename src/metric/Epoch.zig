@@ -31,10 +31,17 @@ pub const Epoch = struct {
 
     /// Create new epoch
     pub fn create(number: u64, start_time: i64, duration: u64, total_stake: u128, validator_count: usize) Self {
+        const sum = @as(i128, start_time) + @as(i128, duration);
+        const end_time: i64 = if (sum > std.math.maxInt(i64))
+            std.math.maxInt(i64)
+        else if (sum < std.math.minInt(i64))
+            std.math.minInt(i64)
+        else
+            @intCast(sum);
         return .{
             .number = number,
             .start_time = start_time,
-            .end_time = start_time + @as(i64, @intCast(duration)),
+            .end_time = end_time,
             .total_stake = total_stake,
             .validator_count = validator_count,
             .finalized = false,
@@ -54,7 +61,9 @@ pub const Epoch = struct {
     /// Get remaining duration
     pub fn remainingDuration(self: Self, current_time: i64) i64 {
         if (current_time >= self.end_time) return 0;
-        return self.end_time - current_time;
+        const remaining = @as(i128, self.end_time) - @as(i128, current_time);
+        if (remaining > std.math.maxInt(i64)) return std.math.maxInt(i64);
+        return @intCast(remaining);
     }
 
     /// Finalize epoch
@@ -92,13 +101,14 @@ pub const EpochManager = struct {
 
     /// Advance to next epoch
     pub fn advanceEpoch(self: *Self, total_stake: u128, validator_count: usize) !void {
+        const new_number = std.math.add(u64, self.current_epoch.number, 1) catch return error.ArithmeticOverflow;
+
         // Archive current epoch
         var current = self.current_epoch;
         current.finalize();
         try self.epoch_history.append(self.allocator, current);
 
         // Create new epoch
-        const new_number = current.number + 1;
         self.current_epoch = Epoch.create(
             new_number,
             current.end_time,
@@ -134,6 +144,30 @@ pub const EpochManager = struct {
             self.current_epoch.validator_count > self.config.max_validators;
     }
 };
+
+test "Epoch end time and remaining duration saturate at the i64 limit" {
+    const near_end = Epoch.create(1, std.math.maxInt(i64) - 10, 100, 0, 1);
+    try std.testing.expectEqual(std.math.maxInt(i64), near_end.end_time);
+
+    const huge = Epoch.create(1, 0, std.math.maxInt(u64), 0, 1);
+    try std.testing.expectEqual(std.math.maxInt(i64), huge.end_time);
+
+    const wide = Epoch.create(1, std.math.maxInt(i64), 0, 0, 1);
+    try std.testing.expectEqual(std.math.maxInt(i64), wide.remainingDuration(std.math.minInt(i64)));
+
+    const normal = Epoch.create(1, 1000, 86400, 0, 1);
+    try std.testing.expectEqual(@as(i64, 86400), normal.remainingDuration(1000));
+}
+
+test "Epoch advance refuses to wrap the epoch number" {
+    const allocator = std.testing.allocator;
+    var manager = try EpochManager.init(allocator, .{}, 1000);
+    defer manager.deinit();
+    manager.current_epoch.number = std.math.maxInt(u64);
+    try std.testing.expectError(error.ArithmeticOverflow, manager.advanceEpoch(1, 1));
+    try std.testing.expectEqual(std.math.maxInt(u64), manager.current_epoch.number);
+    try std.testing.expectEqual(@as(usize, 0), manager.epoch_history.items.len);
+}
 
 test "Epoch creation" {
     const epoch = Epoch.create(1, 1000, 86400, 4000, 4);

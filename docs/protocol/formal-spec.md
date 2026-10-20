@@ -132,7 +132,7 @@ Equivocating(v, r) ≡
 DetectEquivocation(v, r) → EquivocationEvidence(v, r)
 ```
 
-Equivocation evidence proves Byzantine behavior but does not yet trigger slashing.
+Equivocation evidence triggers the observing node's slash curve (10% / 25% / 50% / 100% of remaining stake). The penalty is local voting-power state, not a separately finalized transaction.
 
 ### 2.6 Liveness (Round Timeout)
 
