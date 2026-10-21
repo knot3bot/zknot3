@@ -132,6 +132,9 @@ pub const Node = struct {
     deps: NodeDependencies,
     object_store: ?*ObjectStore,
     checkpoint_store: CheckpointSequence,
+    /// Digests that fell out of the 8-slot hardened ring. Bound into
+    /// `checkpoint_store` so a replay of an older sequence can still match.
+    hardened_digest_archive: CheckpointSequence.HardenedDigestArchive = .empty,
     txn_history: std.AutoArrayHashMapUnmanaged([32]u8, pipeline.TransactionReceipt),
     committed_blocks: std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block),
     pending_blocks: std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block),
@@ -254,6 +257,9 @@ pub const Node = struct {
             Log.warn("[WARN] Failed to load checkpoint sequence from {s}: {s}, starting from 0", .{ cp_path, @errorName(err) });
             break :blk CheckpointSequence.init();
         };
+        self_ptr.hardened_digest_archive = .empty;
+        self_ptr.loadHardenedDigestArchive();
+        self_ptr.checkpoint_store.bindDigestArchive(&self_ptr.hardened_digest_archive);
         self_ptr.txn_history = std.AutoArrayHashMapUnmanaged([32]u8, pipeline.TransactionReceipt).empty;
         self_ptr.committed_blocks = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block).empty;
         self_ptr.pending_blocks = std.AutoArrayHashMapUnmanaged([32]u8, Mysticeti.Block).empty;
@@ -532,6 +538,7 @@ pub const Node = struct {
         } else |err| {
             Log.warn("[WARN] Failed to append gas snapshot to M4 WAL on shutdown: {s}", .{@errorName(err)});
         }
+        self.hardened_digest_archive.deinit(self.allocator);
         self.checkpoint_store.deinit();
         self.txn_pool.deinit();
         self.executor.marketplace = null;
@@ -640,6 +647,128 @@ pub const Node = struct {
         self.cutover.noteCheckpoint(epoch);
     }
 
+    const hardened_digest_archive_cap: usize = 4096;
+
+    fn hardenedDigestPath(self: *Self) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}/{s}/hardened.digests", .{
+            self.config.storage.data_dir,
+            self.config.storage.checkpoint_store_path,
+        });
+    }
+
+    /// Load `{checkpoint_dir}/hardened.digests` into the archive. A missing
+    /// file or a bad magic leaves the map unchanged.
+    fn loadHardenedDigestArchive(self: *Self) void {
+        const path = self.hardenedDigestPath() catch |err| {
+            Log.warn("[WARN] Hardened digest path failed: {s}", .{@errorName(err)});
+            return;
+        };
+        defer self.allocator.free(path);
+        const io = @import("io_instance").io;
+        const payload = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            self.allocator,
+            std.Io.Limit.limited(2 * 1024 * 1024),
+        ) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => {
+                Log.warn("[WARN] Failed to read hardened digests: {s}", .{@errorName(err)});
+                return;
+            },
+        };
+        defer self.allocator.free(payload);
+        if (payload.len < 6 or !std.mem.eql(u8, payload[0..6], "k3hd01")) return;
+        var off: usize = 6;
+        while (off + 40 <= payload.len) {
+            const seq = std.mem.readInt(u64, payload[off..][0..8], .big);
+            off += 8;
+            var digest: [32]u8 = undefined;
+            @memcpy(&digest, payload[off..][0..32]);
+            off += 32;
+            if (self.hardened_digest_archive.get(seq) != null) continue;
+            self.hardened_digest_archive.put(self.allocator, seq, digest) catch |err| {
+                Log.warn("[WARN] Hardened digest archive insert failed: {s}", .{@errorName(err)});
+                break;
+            };
+        }
+        self.trimHardenedDigestArchive();
+    }
+
+    fn lowestArchivedSequence(self: *Self) ?u64 {
+        var min_seq: ?u64 = null;
+        var it = self.hardened_digest_archive.keyIterator();
+        while (it.next()) |key| {
+            if (min_seq == null or key.* < min_seq.?) min_seq = key.*;
+        }
+        return min_seq;
+    }
+
+    fn trimHardenedDigestArchive(self: *Self) void {
+        while (self.hardened_digest_archive.count() > hardened_digest_archive_cap) {
+            const min_seq = self.lowestArchivedSequence() orelse break;
+            _ = self.hardened_digest_archive.remove(min_seq);
+        }
+    }
+
+    /// Move digests that just left the ring into the archive and rewrite the file.
+    pub fn retainEvictedHardenedDigests(self: *Self) void {
+        var changed = false;
+        while (self.checkpoint_store.takeEvictedDigest()) |mark| {
+            if (self.hardened_digest_archive.get(mark.sequence) != null) continue;
+            if (self.hardened_digest_archive.count() >= hardened_digest_archive_cap) {
+                const min_seq = self.lowestArchivedSequence() orelse continue;
+                if (mark.sequence <= min_seq) continue;
+                _ = self.hardened_digest_archive.remove(min_seq);
+            }
+            self.hardened_digest_archive.put(self.allocator, mark.sequence, mark.digest) catch |err| {
+                Log.warn("[WARN] Failed to retain evicted hardened digest: {s}", .{@errorName(err)});
+                continue;
+            };
+            changed = true;
+        }
+        if (!changed) return;
+        self.writeHardenedDigestArchive() catch |err| {
+            Log.warn("[WARN] Failed to write hardened digest archive: {s}", .{@errorName(err)});
+        };
+    }
+
+    fn writeHardenedDigestArchive(self: *Self) !void {
+        const dest = try self.hardenedDigestPath();
+        defer self.allocator.free(dest);
+        const count = self.hardened_digest_archive.count();
+        const payload = try self.allocator.alloc(u8, 6 + count * 40);
+        defer self.allocator.free(payload);
+        @memcpy(payload[0..6], "k3hd01");
+        var off: usize = 6;
+        var it = self.hardened_digest_archive.iterator();
+        while (it.next()) |entry| {
+            std.mem.writeInt(u64, payload[off..][0..8], entry.key_ptr.*, .big);
+            off += 8;
+            @memcpy(payload[off..][0..32], entry.value_ptr);
+            off += 32;
+        }
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{dest});
+        defer self.allocator.free(tmp_path);
+        const io = @import("io_instance").io;
+        const cwd = std.Io.Dir.cwd();
+        if (std.fs.path.dirname(dest)) |dir_path| {
+            var dir = try cwd.createDirPathOpen(io, dir_path, .{});
+            dir.close(io);
+        }
+        {
+            const file = try cwd.createFile(io, tmp_path, .{ .truncate = true });
+            defer file.close(io);
+            errdefer cwd.deleteFile(io, tmp_path) catch {};
+            try file.writeStreamingAll(io, payload);
+            try file.sync(io);
+        }
+        cwd.rename(tmp_path, cwd, dest, io) catch |err| {
+            cwd.deleteFile(io, tmp_path) catch {};
+            return err;
+        };
+    }
+
     /// Quorum commit already succeeded and the block executed. Record the
     /// issued checkpoint sequence and harden through it, keeping `block.digest`
     /// (the canonical `Block.computeDigest` result) so a later replay of that
@@ -650,6 +779,7 @@ pub const Node = struct {
             return;
         };
         self.checkpoint_store.hardenThrough(issued, block.digest);
+        self.retainEvictedHardenedDigests();
         self.noteCheckpointAdvanced();
         const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
         if (cp_path) |p| {
@@ -693,6 +823,7 @@ pub const Node = struct {
             if (CheckpointSequence.load(p)) |recovered_cs| {
                 self.checkpoint_store.deinit();
                 self.checkpoint_store = recovered_cs;
+                self.checkpoint_store.bindDigestArchive(&self.hardened_digest_archive);
                 Log.info("Loaded checkpoint sequence state from disk (seq: {})", .{self.checkpoint_store.getLatestSequence()});
             } else |err| {
                 if (err != error.FileNotFound) {
@@ -1014,6 +1145,64 @@ pub const Node = struct {
     pub fn hardenedCheckpoint(self: *const Self) ?struct { sequence: u64, digest: [32]u8 } {
         const tip = self.checkpoint_store.hardenedTip() orelse return null;
         return .{ .sequence = tip.sequence, .digest = tip.digest };
+    }
+
+    /// JSON object for `knot3_getHardenedCheckpoint`: tip plus the recent ring.
+    /// Null when `hardenedCheckpoint` is null. Caller frees the slice.
+    pub fn formatHardenedCheckpointJson(self: *const Self, allocator: std.mem.Allocator) !?[]u8 {
+        const tip = self.checkpoint_store.hardenedTip() orelse return null;
+        var history: [8]CheckpointSequence.HardenedTip = undefined;
+        const n = self.checkpoint_store.copyHardenedHistory(&history);
+        var body: std.ArrayList(u8) = .empty;
+        errdefer body.deinit(allocator);
+        try body.append(allocator, '{');
+        try appendHardenedMark(&body, allocator, tip, false);
+        try body.appendSlice(allocator, ",\"history\":[");
+        var seen_tip = false;
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            if (i != 0) try body.append(allocator, ',');
+            try appendHardenedMark(&body, allocator, history[i], true);
+            if (history[i].sequence == tip.sequence) seen_tip = true;
+        }
+        if (!seen_tip) {
+            if (n != 0) try body.append(allocator, ',');
+            try appendHardenedMark(&body, allocator, tip, true);
+        }
+        try body.appendSlice(allocator, "]}");
+        return try body.toOwnedSlice(allocator);
+    }
+
+    /// Tip JSON when `sequence` is null. One stored digest when `sequence` is set,
+    /// including digests that have fallen out of the 8-slot ring into the archive.
+    /// Null when that sequence has no stored digest.
+    pub fn formatHardenedCheckpointFor(self: *const Self, allocator: std.mem.Allocator, sequence: ?u64) !?[]u8 {
+        const seq = sequence orelse return self.formatHardenedCheckpointJson(allocator);
+        const digest = self.checkpoint_store.storedDigest(seq) orelse return null;
+        var body: std.ArrayList(u8) = .empty;
+        errdefer body.deinit(allocator);
+        try body.append(allocator, '{');
+        try appendHardenedMark(&body, allocator, .{ .sequence = seq, .digest = digest }, false);
+        try body.append(allocator, '}');
+        return try body.toOwnedSlice(allocator);
+    }
+
+    fn appendHardenedMark(
+        body: *std.ArrayList(u8),
+        allocator: std.mem.Allocator,
+        mark: CheckpointSequence.HardenedTip,
+        object: bool,
+    ) !void {
+        const hex = std.fmt.bytesToHex(mark.digest, .lower);
+        var seq_buf: [32]u8 = undefined;
+        const seq_text = std.fmt.bufPrint(&seq_buf, "{d}", .{mark.sequence}) catch return error.InvalidSequence;
+        if (object) try body.append(allocator, '{');
+        try body.appendSlice(allocator, "\"sequence\":");
+        try body.appendSlice(allocator, seq_text);
+        try body.appendSlice(allocator, ",\"digest\":\"");
+        try body.appendSlice(allocator, &hex);
+        try body.append(allocator, '"');
+        if (object) try body.append(allocator, '}');
     }
 
     pub fn getNodeInfo(self: *Self) NodeInfo {

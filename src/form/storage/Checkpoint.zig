@@ -350,6 +350,12 @@ pub const CheckpointSequence = struct {
     /// In-memory head whose digest can be compared with a hardened sequence.
     head_sequence: ?u64 = null,
     head_digest: ?[32]u8 = null,
+    /// Digests that fell out of the 8-slot ring. The node owns the map.
+    /// Null keeps the ring-only match.
+    archive: ?*HardenedDigestArchive = null,
+    /// At most two digests can leave the ring in one `hardenThrough`.
+    evicted: [2]?HardenedMark = @splat(null),
+    evicted_count: u8 = 0,
 
     const Self = @This();
 
@@ -500,6 +506,22 @@ pub const CheckpointSequence = struct {
         return .{ .sequence = sequence, .digest = digest };
     }
 
+    pub const HardenedDigestArchive = std.AutoHashMapUnmanaged(u64, [32]u8);
+
+    pub fn bindDigestArchive(self: *Self, archive: *HardenedDigestArchive) void {
+        self.archive = archive;
+    }
+
+    /// Copies the stored ring, oldest first, into `out`. Returns how many fit.
+    pub fn copyHardenedHistory(self: Self, out: []HardenedTip) usize {
+        const n = @min(out.len, self.hardened_count);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            out[i] = .{ .sequence = self.hardened_ring[i].seq, .digest = self.hardened_ring[i].digest };
+        }
+        return n;
+    }
+
     pub fn deinit(self: *Self) void {
         // No-op: CheckpointSequence has no heap allocations
         _ = self;
@@ -527,6 +549,10 @@ pub const CheckpointSequence = struct {
             self.hardened_count += 1;
             return;
         }
+        if (self.evicted_count < self.evicted.len) {
+            self.evicted[self.evicted_count] = self.hardened_ring[0];
+            self.evicted_count += 1;
+        }
         var j: usize = 1;
         while (j < ring_cap) : (j += 1) {
             self.hardened_ring[j - 1] = self.hardened_ring[j];
@@ -542,14 +568,31 @@ pub const CheckpointSequence = struct {
         return null;
     }
 
-    /// Digest kept for `sequence`: the ring entry, otherwise `hardened_digest`
-    /// when that field belongs to this sequence.
+    /// Digest kept for `sequence`: the ring entry, then the archive of digests
+    /// that fell out of the ring, then `hardened_digest` when it belongs to
+    /// this sequence.
     pub fn storedDigest(self: Self, sequence: u64) ?[32]u8 {
         if (self.ringDigest(sequence)) |digest| return digest;
+        if (self.archive) |map| {
+            if (map.get(sequence)) |digest| return digest;
+        }
         if (self.hardened_sequence) |hardened| {
             if (hardened == sequence) return self.hardened_digest;
         }
         return null;
+    }
+
+    /// Pops one digest dropped by the latest `hardenThrough`, oldest first.
+    pub fn takeEvictedDigest(self: *Self) ?HardenedTip {
+        if (self.evicted_count == 0) return null;
+        const mark = self.evicted[0] orelse return null;
+        var i: usize = 1;
+        while (i < self.evicted_count) : (i += 1) {
+            self.evicted[i - 1] = self.evicted[i];
+        }
+        self.evicted_count -= 1;
+        self.evicted[self.evicted_count] = null;
+        return .{ .sequence = mark.seq, .digest = mark.digest };
     }
 
     /// Persist sequence state to disk.
@@ -1145,6 +1188,29 @@ test "hardened digest ring keeps the last eight sequences" {
     const issued = try seq.advance();
     try std.testing.expectEqual(@as(u64, 10), issued);
     try std.testing.expectEqual(@as(u64, 11), seq.getLatestSequence());
+}
+
+test "evicted hardened digest stays matchable once archived" {
+    const allocator = std.testing.allocator;
+    var archive: CheckpointSequence.HardenedDigestArchive = .empty;
+    defer archive.deinit(allocator);
+
+    var seq = CheckpointSequence.init();
+    seq.bindDigestArchive(&archive);
+    var n: u64 = 1;
+    while (n <= 9) : (n += 1) {
+        var digest: [32]u8 = @splat(0);
+        digest[0] = @intCast(n);
+        seq.hardenThrough(n, digest);
+        while (seq.takeEvictedDigest()) |mark| {
+            try archive.put(allocator, mark.sequence, mark.digest);
+        }
+    }
+    var first: [32]u8 = @splat(0);
+    first[0] = 1;
+    try seq.verifyCheckpoint(1, first, @as([32]u8, @splat(0)));
+    const stored = seq.storedDigest(1) orelse return error.MissingHardenedDigest;
+    try std.testing.expectEqualSlices(u8, &first, &stored);
 }
 
 test "hardened tip prefers the ring digest, else the marker digest" {

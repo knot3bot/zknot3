@@ -436,17 +436,17 @@ fn handleCreditGas(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
     return RPCResponse.success(null, body);
 }
 
-fn handleGetHardenedCheckpoint(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+fn handleGetHardenedCheckpoint(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
     const node_ptr = ctx.user_data orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
     const node: *Node = @ptrCast(@alignCast(node_ptr));
-    const tip = node.hardenedCheckpoint() orelse {
+    const sequence = M4RpcParams.parseOptionalHardenedSequence(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getHardenedCheckpoint params");
+    };
+    const body = (try node.formatHardenedCheckpointFor(ctx.allocator, sequence)) orelse {
         return RPCResponse.makeError(null, .knot3_hardened_checkpoint_unavailable, "hardened checkpoint unavailable");
     };
-    const digest_hex = try MainnetExtensionHooks.allocHexLower(ctx.allocator, &tip.digest);
-    defer ctx.allocator.free(digest_hex);
-    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"sequence\":{d},\"digest\":\"{s}\"}}", .{ tip.sequence, digest_hex });
     return RPCResponse.success(null, body);
 }
 
@@ -606,5 +606,34 @@ test "RPC m4 methods call node mainnet hooks" {
     const tip_hex = std.fmt.bytesToHex(tip_digest, .lower);
     try std.testing.expect(hardened.err == null);
     try std.testing.expect(std.mem.indexOf(u8, hardened.result.?.success, "\"sequence\":9") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hardened.result.?.success, "\"history\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, hardened.result.?.success, tip_hex[0..]) != null);
+
+    node.hardened_digest_archive.clearRetainingCapacity();
+    node.checkpoint_store = @TypeOf(node.checkpoint_store).init();
+    node.checkpoint_store.bindDigestArchive(&node.hardened_digest_archive);
+    var archived_n: u64 = 1;
+    while (archived_n <= 9) : (archived_n += 1) {
+        var archived_digest: [32]u8 = @splat(0);
+        archived_digest[0] = @intCast(archived_n);
+        node.checkpoint_store.hardenThrough(archived_n, archived_digest);
+    }
+    node.retainEvictedHardenedDigests();
+    var old_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"sequence\":1}", .{ .ignore_unknown_fields = true });
+    defer old_params.deinit();
+    const archived = try handleGetHardenedCheckpoint(&ctx, old_params.value);
+    defer if (archived.result) |r| allocator.free(r.success);
+    var want: [32]u8 = @splat(0);
+    want[0] = 1;
+    const want_hex = std.fmt.bytesToHex(want, .lower);
+    try std.testing.expect(archived.err == null);
+    try std.testing.expect(std.mem.indexOf(u8, archived.result.?.success, "\"sequence\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, archived.result.?.success, want_hex[0..]) != null);
+    try std.testing.expect(std.mem.indexOf(u8, archived.result.?.success, "\"history\"") == null);
+
+    var bad_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"sequence\":\"nope\"}", .{ .ignore_unknown_fields = true });
+    defer bad_params.deinit();
+    const bad = try handleGetHardenedCheckpoint(&ctx, bad_params.value);
+    try std.testing.expect(bad.err != null);
+    try std.testing.expectEqual(ErrorCode.invalid_params, bad.err.?.code);
 }

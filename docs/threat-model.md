@@ -67,7 +67,7 @@ occupying all its peer slots with malicious nodes.
 - Outbound quality-weighted dial: on disconnect, remember `{address, reputation, latency_ms}` (cap 64, LRU); `maintainBootstrapConnections` fills leftover outbound slots by dialing the highest-`peerRotationQuality` remembered peer that is not connected and passes subnet caps; bootstrap list still has dial priority
 - Dial / quality-memory hostname resolve: `resolveDialAddress` turns `hostname:port` into canonical `a.b.c.d:port` / `[v6]:port` via DNS when possible so TCP /16·/48 caps and quality-memory keys match numeric peers; Kademlia `PeerManager.addPeer` stores the resolved form when resolve succeeds
 - Outbound-only fallback (`p2p_inbound_ratio_limit`, percent 0–100, default 80; 0 disables): the inbound side is published inbound TCP+QUIC peers plus in-flight inbound handshake workers (outbound dials are not included). When that inbound side plus published outbound peers is ≥ 4 and `inbound * 100 > total * limit`, new inbound TCP accepts and QUIC inbound connections are rejected (`error.InboundPaused`). Outbound `dial` still uses the reserved-slot budget, and `maintainBootstrapConnections` keeps dialing bootstrap peers and quality-weighted remembered peers
-- Authenticated handshake listen trailer: optional `u16_be len` + UTF-8 `host:port` after the signed response (responder) and ack (initiator) cores (`network.p2p_advertise_address`, else dialable `p2p_address`); outbound dial string wins when both are present. An advertised dial string is quality-remembered only when the signer's Ed25519 public key is in `network.known_validators` (empty list stores none). When that validator's `dial_address` is non-empty, the advertised `host:port` must equal it literally; an empty `dial_address` still allows any signed advertise from that key. A dial string this node opened is remembered on disconnect regardless. Ed25519 covers `listen_commitment = Blake3(advertise_utf8)` (or 32 zero bytes when empty); verifier rebuilds commitment from trailer bytes. Unsigned request does not carry authoritative advertise. Authenticated path context `zknot3_p2p_handshake_v3` (breaking vs v2 signed transcript; unauthenticated handshake unchanged).
+- Authenticated handshake listen trailer: optional `u16_be len` + UTF-8 `host:port` after the signed response (responder) and ack (initiator) cores (`network.p2p_advertise_address`, else dialable `p2p_address`); outbound dial string wins when both are present. An advertised dial string is quality-remembered only when the signer's Ed25519 public key is in `network.known_validators` (empty list stores none) and the advertised `host:port` equals that validator's non-empty `dial_address`. A missing or empty `dial_address` refuses the advertisement. A dial string this node opened is remembered on disconnect regardless. Ed25519 covers `listen_commitment = Blake3(advertise_utf8)` (or 32 zero bytes when empty); verifier rebuilds commitment from trailer bytes. Unsigned request does not carry authoritative advertise. Authenticated path context `zknot3_p2p_handshake_v3` (breaking vs v2 signed transcript; unauthenticated handshake unchanged).
 
 **Current Limitations**:
 - Hostname dial/subnet now apply after DNS resolve; residual is weaker than before but still present without DNSSEC (spoofed answers can steer peers) and unresolved/unparseable names still share one Kademlia unknown-prefix budget (not geo-diverse)
@@ -137,7 +137,7 @@ existing votes. If a different block_digest is found for the same `(voter, round
   slash record is replayed
 
 **Current Limitations**:
-- Recent evidence is rebroadcast, and a restart reloads the same 16-slot ring from `{data_dir}/m4_state.equiv.ring`. A node that never connects still cannot slash
+- Recent evidence is rebroadcast, and a restart reloads the same 16-slot ring from `{data_dir}/m4_state.equiv.ring`. A peer that connects is sent every payload still in that ring, without waiting for the next 30s tick. A node that never connects still cannot slash
 - The slash is not a separately finalized cross-validator transaction
 
 ---
@@ -216,7 +216,7 @@ exhaust the node's connection slots and prevent honest peers from connecting.
 
 **Current Limitations**:
 - After DNS resolve, hostname peers hit the same TCP /16·/48 and Kademlia IP-prefix caps as numeric peers; unresolved names still share one unknown-prefix budget. Residual: no DNSSEC, so poisoned DNS can still cluster peers
-- Quality redial remembers a signed listen advertise only for peers in the configured known-validator set (empty set: advertised addresses are not remembered). Arbitrary advertise remains only when that validator has no configured `dial_address`; a non-empty `dial_address` pins the remembered `host:port` to that literal string. Outbound dials this node initiated stay rememberable. Set a real public `p2p_advertise_address` so known peers can redial this node.
+- Quality redial remembers a signed listen advertise only when that known validator's `dial_address` is non-empty and the advertised `host:port` equals it. A missing or empty `dial_address` does not accept a self-claimed address. Outbound dials this node initiated stay rememberable. Set a real public `p2p_advertise_address` so known peers can redial this node.
 
 ---
 
@@ -280,7 +280,7 @@ alternative chain, and presents it to new nodes.
 - Stake-weighted voting: attacker needs > 2/3 stake to finalize
 
 **Current Limitations**:
-- Hardened sequence is recorded after quorum verify. Recent hardened digests are stored with that marker; this is still not a certificate chain, and light clients still pin a trusted hash.
+- Hardened sequence is recorded after quorum verify. `knot3_getHardenedCheckpoint` returns that tip plus the recent digest ring (at most 8). Passing `sequence` returns one stored digest from that ring or from `{checkpoint_dir}/hardened.digests` (up to 4096). A replay of an archived sequence must still match. This is still not a certificate chain, and light clients still pin a trusted hash.
 - Light clients must be configured with a trusted checkpoint hash
 
 ---

@@ -64,16 +64,24 @@ Admin **write** method. Requires header `X-Zknot3-Admin-Token` when `network.adm
 
 ### `knot3_getHardenedCheckpoint`
 
-Read method (no admin token). No parameters; a missing `params` field is accepted and ignored.
+Read method (no admin token). `params` may be omitted. An object may carry `sequence` (non-negative integer).
 
-Returns this node's **local hardened tip**: the highest stored hardened checkpoint sequence and the digest kept for that sequence (the ring entry for the sequence, otherwise `hardened_digest`). That is the last digest this node stored. It is **not** a BFT certificate. Light clients still check the digest against a trusted hash.
+Without `sequence`, returns this node's **local hardened tip** plus the recent ring. With `sequence`, returns only that stored digest when the ring or the `{checkpoint_dir}/hardened.digests` archive still has it. It is **not** a BFT certificate. Light clients still check the digest against a trusted hash.
 
-- Result:
+- Result, no `sequence`:
 ```json
-{"sequence":9,"digest":"<64 lowercase hex digits>"}
+{"sequence":9,"digest":"<64 lowercase hex digits>","history":[{"sequence":9,"digest":"<64 lowercase hex digits>"}]}
 ```
 
-- No hardened marker, or a marker with no stored digest — JSON-RPC **`-32011`** `knot3_hardened_checkpoint_unavailable`, message `hardened checkpoint unavailable`.
+`history` is the stored ring, oldest first, at most 8 entries. The tip is included when the ring does not already hold that sequence.
+
+- Result, `{"sequence":1}` when that digest is still stored:
+```json
+{"sequence":1,"digest":"<64 lowercase hex digits>"}
+```
+
+- No hardened marker, a marker with no stored digest, or a `sequence` this node did not keep — JSON-RPC **`-32011`** `knot3_hardened_checkpoint_unavailable`, message `hardened checkpoint unavailable`.
+- `params` that is not an object, or a `sequence` that is not a non-negative integer — **`-32602`**.
 
 ### `knot3_getGasBalance`
 

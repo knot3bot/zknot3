@@ -207,6 +207,24 @@ pub const EquivocationEvidenceRing = struct {
     }
 };
 
+/// Sends every occupied ring slot on the certificate channel. An empty peer
+/// table still returns the number of payloads that were offered. Does not
+/// clear the ring.
+pub fn broadcastEvidencePayloads(
+    p2p: *P2PServer,
+    validator_id: [32]u8,
+    ring: *EquivocationEvidenceRing,
+) !usize {
+    var sent: usize = 0;
+    var i: usize = 0;
+    while (i < ring.count) : (i += 1) {
+        const payload = ring.slots[i] orelse continue;
+        try p2p.broadcastCertificate(validator_id, payload);
+        sent += 1;
+    }
+    return sent;
+}
+
 fn realtimeSecs() i64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
@@ -456,11 +474,13 @@ pub const ConsensusIntegration = struct {
     }
 
     pub fn onPeerConnected(self: *Self, peer_id: [32]u8) void {
-        Log.info("Peer connected, total peers: {}", .{
-            self.p2p_server.peerCount(),
-            self.p2p_server.peerCount(),
-        });
         _ = peer_id;
+        Log.info("Peer connected, total peers: {}", .{self.p2p_server.peerCount()});
+        const sent = broadcastEvidencePayloads(self.p2p_server, self.validator_id, &self.evidence_ring) catch |err| {
+            Log.warn("consensus_event=equivocation_catchup_failed error={s}", .{@errorName(err)});
+            return;
+        };
+        if (sent > 0) self.evidence_ring.last_sent_secs = realtimeSecs();
     }
 
     pub fn onPeerDisconnected(self: *Self, peer_id: [32]u8) void {
@@ -1050,4 +1070,18 @@ test "equivocation evidence ring reloads the last 16 payloads and ignores a bad 
     try std.testing.expectEqual(evidence_ring_cap, capped.count);
     try std.testing.expectEqual(@as(u8, 4), capped.slots[0].?[0]);
     try std.testing.expectEqual(@as(u8, 19), capped.slots[evidence_ring_cap - 1].?[0]);
+}
+
+test "retained equivocation evidence is offered once per occupied slot" {
+    const allocator = std.testing.allocator;
+    var ring: EquivocationEvidenceRing = .{};
+    defer ring.deinit(allocator);
+    const empty = try P2PServer.init(allocator, .{});
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), try broadcastEvidencePayloads(empty, @as([32]u8, @splat(1)), &ring));
+
+    _ = ring.insert(allocator, try allocator.dupe(u8, "one"));
+    _ = ring.insert(allocator, try allocator.dupe(u8, "two"));
+    try std.testing.expectEqual(@as(usize, 2), try broadcastEvidencePayloads(empty, @as([32]u8, @splat(1)), &ring));
+    try std.testing.expectEqual(@as(usize, 2), ring.count);
 }

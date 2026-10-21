@@ -1341,7 +1341,28 @@ pub const HTTPServer = struct {
                         try err_resp.send(conn);
                         return;
                     };
-                    const tip = node.hardenedCheckpoint() orelse {
+                    const asked = M4RpcParams.parseOptionalHardenedSequence(parsed.value.object.get("params")) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getHardenedCheckpoint params\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.badRequest(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    break :blk node.formatHardenedCheckpointFor(self.allocator, asked) catch {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    } orelse {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
                             "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32011,\"message\":\"hardened checkpoint unavailable\"},\"id\":",
                             id_str,
@@ -1352,9 +1373,6 @@ pub const HTTPServer = struct {
                         try err_resp.send(conn);
                         return;
                     };
-                    const digest_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, &tip.digest);
-                    defer self.allocator.free(digest_hex);
-                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"sequence\":{d},\"digest\":\"{s}\"}}", .{ tip.sequence, digest_hex });
                 } else null;
                 if (result_json) |r| {
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ "{\"jsonrpc\":\"2.0\",\"result\":", r, ",\"id\":", id_str, "}" });

@@ -178,6 +178,25 @@ pub fn parseGetGasBalanceParams(params: ?std.json.Value) ParseError!GetGasBalanc
     return .{ .address = address };
 }
 
+/// `knot3_getHardenedCheckpoint` may omit `params`. An object without
+/// `sequence` also means "the local tip". A present `sequence` must be a
+/// non-negative integer.
+pub fn parseOptionalHardenedSequence(params: ?std.json.Value) ParseError!?u64 {
+    const root = params orelse return null;
+    const o = switch (root) {
+        .object => |obj| obj,
+        else => return error.NotObject,
+    };
+    const seq_v = o.get("sequence") orelse return null;
+    return switch (seq_v) {
+        .integer => |n| blk: {
+            if (n < 0) return error.InvalidSequence;
+            break :blk @as(u64, @intCast(n));
+        },
+        else => error.InvalidSequence,
+    };
+}
+
 pub fn parseCheckpointProofRequest(params: ?std.json.Value) ParseError!MainnetExtensionHooks.CheckpointProofRequest {
     const root = params orelse return error.MissingParams;
     const o = switch (root) {
