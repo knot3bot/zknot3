@@ -25,6 +25,9 @@ pub const NetworkConfig = struct {
         public_key_hex: []const u8,
         name: []const u8 = "",
         stake: u64 = 0,
+        /// Operator dial `host:port` for this validator. Empty means any
+        /// signed listen advertise from this key may still be quality-remembered.
+        dial_address: []const u8 = "",
     };
 
     /// Bind address for HTTP/RPC server
@@ -127,6 +130,7 @@ pub const NetworkConfig = struct {
                     .public_key_hex = try allocator.dupe(u8, kv.public_key_hex),
                     .name = try allocator.dupe(u8, kv.name),
                     .stake = kv.stake,
+                    .dial_address = try allocator.dupe(u8, kv.dial_address),
                 };
             }
             out.known_validators = kvs;
@@ -633,6 +637,29 @@ pub const Metrics = struct {
         return @as(f64, @floatFromInt(self.tx_count)) / 60.0; // Simplified
     }
 };
+
+test "KnownValidator dial_address defaults empty, parses, and dupes" {
+    const bare = NetworkConfig.KnownValidator{ .public_key_hex = "aa" };
+    try std.testing.expectEqualStrings("", bare.dial_address);
+
+    const parsed = try std.json.parseFromSlice(
+        NetworkConfig,
+        std.testing.allocator,
+        \\{"known_validators":[{"public_key_hex":"aa","name":"v","stake":1,"dial_address":"10.0.0.1:8083"},{"public_key_hex":"bb"}]}
+    ,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("10.0.0.1:8083", parsed.value.known_validators[0].dial_address);
+    try std.testing.expectEqualStrings("", parsed.value.known_validators[1].dial_address);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const duped = try parsed.value.dupe(arena.allocator());
+    try std.testing.expectEqualStrings("10.0.0.1:8083", duped.known_validators[0].dial_address);
+    try std.testing.expectEqualStrings("", duped.known_validators[1].dial_address);
+    try std.testing.expect(duped.known_validators[0].dial_address.ptr != parsed.value.known_validators[0].dial_address.ptr);
+}
 
 test "NetworkConfig.resolveP2pAdvertiseAddress prefers explicit then dialable bind" {
     var net = NetworkConfig{};

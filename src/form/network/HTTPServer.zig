@@ -858,6 +858,10 @@ pub const HTTPServer = struct {
                         "# TYPE zknot3_genesis_info gauge\n" ++
                         "zknot3_genesis_info{{digest=\"{s}\"}} 1\n" ++
                         "\n" ++
+                        "# HELP zknot3_checkpoint_hardened_sequence Highest quorum-hardened checkpoint sequence (0 if none)\n" ++
+                        "# TYPE zknot3_checkpoint_hardened_sequence gauge\n" ++
+                        "zknot3_checkpoint_hardened_sequence {}\n" ++
+                        "\n" ++
                         "# HELP zknot3_checkpoint_stall_epochs Epochs since the last committed checkpoint\n" ++
                         "# TYPE zknot3_checkpoint_stall_epochs gauge\n" ++
                         "zknot3_checkpoint_stall_epochs {}\n" ++
@@ -913,6 +917,7 @@ pub const HTTPServer = struct {
                         xiang_da,
                         zi_zai,
                         &genesis_hex,
+                        info.checkpoint_hardened_sequence,
                         cut.stall_epochs,
                         cut.rollback_stall,
                         cut.proof_attempts,
@@ -1324,6 +1329,32 @@ pub const HTTPServer = struct {
                     };
                     const balance = node.getGasBalance(input.address);
                     break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
+                } else if (std.mem.eql(u8, method_val.string, "knot3_getHardenedCheckpoint")) blk: {
+                    const node = self.node orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.internalError(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const tip = node.hardenedCheckpoint() orelse {
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{
+                            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32011,\"message\":\"hardened checkpoint unavailable\"},\"id\":",
+                            id_str,
+                            "}",
+                        });
+                        var err_resp = Response.ok(response_body);
+                        _ = try err_resp.withJSONContentType(self.allocator);
+                        try err_resp.send(conn);
+                        return;
+                    };
+                    const digest_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, &tip.digest);
+                    defer self.allocator.free(digest_hex);
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"sequence\":{d},\"digest\":\"{s}\"}}", .{ tip.sequence, digest_hex });
                 } else null;
                 if (result_json) |r| {
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ "{\"jsonrpc\":\"2.0\",\"result\":", r, ",\"id\":", id_str, "}" });
@@ -1373,6 +1404,7 @@ test "rpcBodyHasWriteMethod flags creditGas not getGasBalance" {
     const allocator = std.testing.allocator;
     try std.testing.expect(rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_creditGas\"}"));
     try std.testing.expect(!rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_getGasBalance\"}"));
+    try std.testing.expect(!rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_getHardenedCheckpoint\"}"));
     try std.testing.expect(rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_submitStakeOperation\"}"));
 }
 

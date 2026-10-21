@@ -43,6 +43,176 @@ fn isFatalPeerError(err: anyerror) bool {
     };
 }
 
+/// Recent equivocation wire payloads retained for peers that missed the
+/// first gossip. One slot is rebroadcast per elapsed interval.
+pub const evidence_ring_cap: usize = 16;
+pub const default_equivocation_rebroadcast_interval_secs: i64 = 30;
+
+pub const EvidencePick = struct {
+    index: usize,
+    next_cursor: usize,
+};
+
+/// Chooses at most one occupied ring slot.
+/// `interval_secs == 0` disables rebroadcast. Does not allocate or send.
+pub fn nextEvidence(
+    count: usize,
+    cursor: usize,
+    last_sent_secs: i64,
+    now_secs: i64,
+    interval_secs: i64,
+) ?EvidencePick {
+    if (interval_secs == 0 or count == 0) return null;
+    if (now_secs -| last_sent_secs < interval_secs) return null;
+    return .{
+        .index = cursor % count,
+        .next_cursor = cursor +% 1,
+    };
+}
+
+pub const EquivocationEvidenceRing = struct {
+    slots: [evidence_ring_cap]?[]u8 = @as([evidence_ring_cap]?[]u8, @splat(null)),
+    count: usize = 0,
+    cursor: usize = 0,
+    /// Next physical slot replaced once the ring is full.
+    evict_at: usize = 0,
+    last_sent_secs: i64 = 0,
+    /// Invoked after a new payload is stored or an old one is evicted.
+    /// Duplicate inserts do not call it. `loadFromFile` does not call it.
+    on_changed: ?*const fn (*anyopaque) void = null,
+    on_changed_ctx: ?*anyopaque = null,
+
+    /// Takes ownership of `payload`. Frees it when an equal payload is already
+    /// stored, and returns the bytes that remain in the ring.
+    pub fn insert(self: *EquivocationEvidenceRing, allocator: std.mem.Allocator, payload: []u8) []u8 {
+        return self.insertOwned(allocator, payload, true);
+    }
+
+    fn insertOwned(self: *EquivocationEvidenceRing, allocator: std.mem.Allocator, payload: []u8, notify: bool) []u8 {
+        var i: usize = 0;
+        while (i < self.count) : (i += 1) {
+            const existing = self.slots[i] orelse continue;
+            if (std.mem.eql(u8, existing, payload)) {
+                allocator.free(payload);
+                return existing;
+            }
+        }
+        if (self.count < evidence_ring_cap) {
+            self.slots[self.count] = payload;
+            self.count += 1;
+            if (notify) self.fireChanged();
+            return payload;
+        }
+        const idx = self.evict_at % evidence_ring_cap;
+        if (self.slots[idx]) |old| allocator.free(old);
+        self.slots[idx] = payload;
+        self.evict_at +%= 1;
+        if (notify) self.fireChanged();
+        return payload;
+    }
+
+    fn fireChanged(self: *EquivocationEvidenceRing) void {
+        const cb = self.on_changed orelse return;
+        const ctx = self.on_changed_ctx orelse return;
+        cb(ctx);
+    }
+
+    pub fn deinit(self: *EquivocationEvidenceRing, allocator: std.mem.Allocator) void {
+        for (self.slots[0..self.count]) |slot| {
+            if (slot) |bytes| allocator.free(bytes);
+        }
+        self.* = .{};
+    }
+
+    /// `{m4_base}.equiv.ring`: `k3eq01` + u8 count + repeated `u32be len || bytes`.
+    /// Temp file, fsync, then rename. Count is at most `evidence_ring_cap`.
+    pub fn saveToFile(self: EquivocationEvidenceRing, allocator: std.mem.Allocator, path: []const u8) !void {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(allocator);
+        try body.appendSlice(allocator, "k3eq01");
+        const count_at = body.items.len;
+        try body.append(allocator, 0);
+        var written: u8 = 0;
+        var i: usize = 0;
+        while (i < self.count and i < evidence_ring_cap) : (i += 1) {
+            const bytes = self.slots[i] orelse continue;
+            var lenb: [4]u8 = undefined;
+            std.mem.writeInt(u32, &lenb, @intCast(bytes.len), .big);
+            try body.appendSlice(allocator, &lenb);
+            try body.appendSlice(allocator, bytes);
+            written += 1;
+        }
+        body.items[count_at] = written;
+
+        const io = @import("io_instance").io;
+        const cwd = std.Io.Dir.cwd();
+        const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+        defer allocator.free(tmp_path);
+        {
+            const file = try cwd.createFile(io, tmp_path, .{ .truncate = true });
+            defer file.close(io);
+            errdefer cwd.deleteFile(io, tmp_path) catch {};
+            try file.writeStreamingAll(io, body.items);
+            try file.sync(io);
+        }
+        cwd.rename(tmp_path, cwd, path, io) catch |err| {
+            cwd.deleteFile(io, tmp_path) catch {};
+            return err;
+        };
+    }
+
+    /// Loads payloads into this ring. A bad magic or a short file leaves the ring
+    /// unchanged. A truncated length returns `error.InvalidEvidenceRing` before
+    /// any insert. More than 16 entries keep the last 16. A missing file is
+    /// `error.FileNotFound`.
+    pub fn loadFromFile(self: *EquivocationEvidenceRing, allocator: std.mem.Allocator, path: []const u8) !void {
+        const io = @import("io_instance").io;
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            allocator,
+            std.Io.Limit.limited(2 * 1024 * 1024),
+        );
+        defer allocator.free(bytes);
+        if (bytes.len < 7 or !std.mem.eql(u8, bytes[0..6], "k3eq01")) return;
+        const declared: usize = bytes[6];
+        var parsed: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (parsed.items) |item| allocator.free(item);
+            parsed.deinit(allocator);
+        }
+        var off: usize = 7;
+        var n: usize = 0;
+        while (n < declared) : (n += 1) {
+            if (off + 4 > bytes.len) return error.InvalidEvidenceRing;
+            const len = std.mem.readInt(u32, bytes[off..][0..4], .big);
+            off += 4;
+            if (len > 1024 * 1024 or off + len > bytes.len) return error.InvalidEvidenceRing;
+            const copy = try allocator.dupe(u8, bytes[off..][0..len]);
+            errdefer allocator.free(copy);
+            try parsed.append(allocator, copy);
+            off += len;
+        }
+        const start = if (parsed.items.len > evidence_ring_cap)
+            parsed.items.len - evidence_ring_cap
+        else
+            0;
+        var drop: usize = 0;
+        while (drop < start) : (drop += 1) allocator.free(parsed.items[drop]);
+        var keep: usize = start;
+        while (keep < parsed.items.len) : (keep += 1) {
+            _ = self.insertOwned(allocator, parsed.items[keep], false);
+        }
+        parsed.deinit(allocator);
+    }
+};
+
+fn realtimeSecs() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return ts.sec;
+}
+
 /// Handle an inbound block announced by a peer.
 pub const ConsensusIntegration = struct {
     allocator: std.mem.Allocator,
@@ -84,6 +254,11 @@ pub const ConsensusIntegration = struct {
     last_commit_drain: usize = 0,
     quarantined_peers: std.AutoArrayHashMapUnmanaged([32]u8, i64) = .empty,
     equivocation_events: u64 = 0,
+    /// Owned `k3eq01` payloads. `0` disables `rebroadcastEquivocation`.
+    evidence_ring: EquivocationEvidenceRing = .{},
+    /// Owned path `{data_dir}/m4_state.equiv.ring`. Null skips disk reload.
+    evidence_ring_path: ?[]u8 = null,
+    equivocation_rebroadcast_interval_secs: i64 = default_equivocation_rebroadcast_interval_secs,
     /// Deferred commit flag. Set when a vote/block suggests a commit may be
     /// possible; cleared by `maybeCommit` in the main loop. Prevents the
     /// heavy commit path from blocking P2P message processing.
@@ -138,8 +313,28 @@ pub const ConsensusIntegration = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.evidence_ring.deinit(self.allocator);
+        if (self.evidence_ring_path) |path| self.allocator.free(path);
         self.quarantined_peers.deinit(self.allocator);
         self.allocator.destroy(self);
+    }
+
+    /// Copies `path` (`{m4_base}.equiv.ring`). A previous path is freed.
+    /// Insert and eviction call `evidence_ring.on_changed` so the owner can
+    /// rewrite this file. `loadEvidenceRing` does not.
+    pub fn setEvidenceRingPath(self: *Self, path: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, path);
+        if (self.evidence_ring_path) |old| self.allocator.free(old);
+        self.evidence_ring_path = owned;
+    }
+
+    /// Reloads `{m4_base}.equiv.ring` when a path is set. Missing file is success.
+    pub fn loadEvidenceRing(self: *Self) void {
+        const path = self.evidence_ring_path orelse return;
+        self.evidence_ring.loadFromFile(self.allocator, path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => Log.warn("consensus_event=equivocation_ring_load_failed error={s}", .{@errorName(err)}),
+        };
     }
 
     /// Handle a block announced by a peer.
@@ -188,9 +383,14 @@ pub const ConsensusIntegration = struct {
                 self.equivocation_events += 1;
                 try self.quarantinePeer(peer_id);
                 const ev_bytes = try evidence.serializeWire(self.allocator);
-                defer self.allocator.free(ev_bytes);
+                var release_bytes = true;
+                defer if (release_bytes) self.allocator.free(ev_bytes);
                 try self.p2p_server.broadcastCertificate(self.validator_id, ev_bytes);
-                try self.punishEquivocation(evidence.voter, evidence.round.value, ev_bytes);
+                // The immediate send counts toward the rebroadcast interval.
+                self.evidence_ring.last_sent_secs = realtimeSecs();
+                const retained = self.evidence_ring.insert(self.allocator, ev_bytes);
+                release_bytes = false;
+                try self.punishEquivocation(evidence.voter, evidence.round.value, retained);
                 Log.warn("consensus_event=equivocation_detected peer_prefix={} round={} action=quarantine_broadcast", .{
                     peer_id[0], evidence.round.value,
                 });
@@ -214,9 +414,33 @@ pub const ConsensusIntegration = struct {
             return;
         }
         try self.quarantinePeer(evidence.voter);
+        // Slash stays on `applyEquivocationEvidence`, which ignores a repeated digest.
         self.punishEquivocation(evidence.voter, evidence.round.value, payload) catch |err| {
             Log.err("consensus_event=equivocation_slash_failed error={s}", .{@errorName(err)});
         };
+        const copy = self.allocator.dupe(u8, payload) catch |err| {
+            Log.err("consensus_event=equivocation_evidence_retain_failed error={s}", .{@errorName(err)});
+            return;
+        };
+        _ = self.evidence_ring.insert(self.allocator, copy);
+    }
+
+    /// Sends one retained payload when `equivocation_rebroadcast_interval_secs`
+    /// has elapsed since the previous certificate broadcast. Interval `0` returns
+    /// without sending. `broadcastCertificate` borrows `payload` for the call:
+    /// `sendMessage` serializes a frame and frees that frame before returning.
+    pub fn rebroadcastEquivocation(self: *Self, now: i64) !void {
+        const pick = nextEvidence(
+            self.evidence_ring.count,
+            self.evidence_ring.cursor,
+            self.evidence_ring.last_sent_secs,
+            now,
+            self.equivocation_rebroadcast_interval_secs,
+        ) orelse return;
+        const payload = self.evidence_ring.slots[pick.index] orelse return;
+        try self.p2p_server.broadcastCertificate(self.validator_id, payload);
+        self.evidence_ring.cursor = pick.next_cursor;
+        self.evidence_ring.last_sent_secs = now;
     }
 
     fn punishEquivocation(self: *Self, validator: [32]u8, round: u64, evidence_payload: []const u8) !void {
@@ -713,4 +937,117 @@ test "peer read errors: only fatal ones evict a peer" {
     // reports EOF itself.
     try std.testing.expect(!isFatalPeerError(error.OutOfMemory));
     try std.testing.expect(!isTransientReadError(error.OutOfMemory));
+}
+
+test "equivocation evidence ring stores one payload and nextEvidence honors the interval" {
+    const allocator = std.testing.allocator;
+    var ring: EquivocationEvidenceRing = .{};
+    defer ring.deinit(allocator);
+
+    const payload = try allocator.dupe(u8, "k3eq-one");
+    _ = ring.insert(allocator, payload);
+    try std.testing.expectEqual(@as(usize, 1), ring.count);
+
+    const duplicate = try allocator.dupe(u8, "k3eq-one");
+    _ = ring.insert(allocator, duplicate);
+    try std.testing.expectEqual(@as(usize, 1), ring.count);
+    try std.testing.expectEqual(evidence_ring_cap, ring.slots.len);
+    try std.testing.expectEqual(@as(i64, 30), default_equivocation_rebroadcast_interval_secs);
+
+    // Interval 0 disables the picker. Cursor and last-sent stay put.
+    try std.testing.expect(nextEvidence(ring.count, ring.cursor, ring.last_sent_secs, 10_000, 0) == null);
+    try std.testing.expectEqual(@as(usize, 0), ring.cursor);
+
+    ring.last_sent_secs = 1_000;
+    try std.testing.expect(nextEvidence(ring.count, ring.cursor, ring.last_sent_secs, 1_029, 30) == null);
+
+    const picked = nextEvidence(ring.count, ring.cursor, ring.last_sent_secs, 1_030, 30).?;
+    try std.testing.expectEqual(@as(usize, 0), picked.index);
+    try std.testing.expectEqual(@as(usize, 1), picked.next_cursor);
+    try std.testing.expect(std.mem.eql(u8, ring.slots[picked.index].?, "k3eq-one"));
+
+    const Hit = struct { n: usize = 0 };
+    var hit: Hit = .{};
+    ring.on_changed = struct {
+        fn cb(ctx: *anyopaque) void {
+            const h: *Hit = @ptrCast(@alignCast(ctx));
+            h.n += 1;
+        }
+    }.cb;
+    ring.on_changed_ctx = &hit;
+    _ = ring.insert(allocator, try allocator.dupe(u8, "k3eq-two"));
+    try std.testing.expectEqual(@as(usize, 1), hit.n);
+    _ = ring.insert(allocator, try allocator.dupe(u8, "k3eq-two"));
+    try std.testing.expectEqual(@as(usize, 1), hit.n);
+    while (ring.count < evidence_ring_cap) {
+        var byte: [1]u8 = .{@intCast(ring.count)};
+        _ = ring.insert(allocator, try allocator.dupe(u8, &byte));
+    }
+    const filled = hit.n;
+    _ = ring.insert(allocator, try allocator.dupe(u8, "evicted"));
+    try std.testing.expectEqual(filled + 1, hit.n);
+    try std.testing.expectEqual(evidence_ring_cap, ring.count);
+    try std.testing.expect(std.mem.eql(u8, ring.slots[0].?, "evicted"));
+    const persist_hook: *const fn (*anyopaque) void = @import("../../app/Node.zig").Node.onEvidenceRingChanged;
+    _ = persist_hook;
+}
+
+test "equivocation evidence ring reloads the last 16 payloads and ignores a bad magic" {
+    const allocator = std.testing.allocator;
+    const io = @import("io_instance").io;
+    const cwd = std.Io.Dir.cwd();
+    const path = "/tmp/zknot3_equiv_ring_reload.equiv.ring";
+    const bad_path = "/tmp/zknot3_equiv_ring_bad_magic.equiv.ring";
+    const over_path = "/tmp/zknot3_equiv_ring_over.equiv.ring";
+    defer cwd.deleteFile(io, path) catch {};
+    defer cwd.deleteFile(io, bad_path) catch {};
+    defer cwd.deleteFile(io, over_path) catch {};
+
+    var ring: EquivocationEvidenceRing = .{};
+    defer ring.deinit(allocator);
+    _ = ring.insert(allocator, try allocator.dupe(u8, "aaa"));
+    _ = ring.insert(allocator, try allocator.dupe(u8, "bbb"));
+    try ring.saveToFile(allocator, path);
+
+    var loaded: EquivocationEvidenceRing = .{};
+    defer loaded.deinit(allocator);
+    try loaded.loadFromFile(allocator, path);
+    try std.testing.expectEqual(@as(usize, 2), loaded.count);
+    try std.testing.expect(std.mem.eql(u8, loaded.slots[0].?, "aaa"));
+    try std.testing.expect(std.mem.eql(u8, loaded.slots[1].?, "bbb"));
+
+    {
+        const file = try cwd.createFile(io, bad_path, .{ .truncate = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, "XXXXXX");
+    }
+    var ignored: EquivocationEvidenceRing = .{};
+    defer ignored.deinit(allocator);
+    _ = ignored.insert(allocator, try allocator.dupe(u8, "keep"));
+    try ignored.loadFromFile(allocator, bad_path);
+    try std.testing.expectEqual(@as(usize, 1), ignored.count);
+    try std.testing.expect(std.mem.eql(u8, ignored.slots[0].?, "keep"));
+
+    var over: std.ArrayList(u8) = .empty;
+    defer over.deinit(allocator);
+    try over.appendSlice(allocator, "k3eq01");
+    try over.append(allocator, 20);
+    var n: usize = 0;
+    while (n < 20) : (n += 1) {
+        var lenb: [4]u8 = undefined;
+        std.mem.writeInt(u32, &lenb, 1, .big);
+        try over.appendSlice(allocator, &lenb);
+        try over.append(allocator, @intCast(n));
+    }
+    {
+        const file = try cwd.createFile(io, over_path, .{ .truncate = true });
+        defer file.close(io);
+        try file.writeStreamingAll(io, over.items);
+    }
+    var capped: EquivocationEvidenceRing = .{};
+    defer capped.deinit(allocator);
+    try capped.loadFromFile(allocator, over_path);
+    try std.testing.expectEqual(evidence_ring_cap, capped.count);
+    try std.testing.expectEqual(@as(u8, 4), capped.slots[0].?[0]);
+    try std.testing.expectEqual(@as(u8, 19), capped.slots[evidence_ring_cap - 1].?[0]);
 }

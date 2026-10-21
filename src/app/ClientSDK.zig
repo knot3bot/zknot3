@@ -70,6 +70,7 @@ pub const RPCMethod = struct {
 pub const KNOT3_RPC_METHODS = &[_]RPCMethod{
     .{ .name = "knot3_getObject", .params = &.{"id"}, .return_type = "Knot3Object" },
     .{ .name = "knot3_getCheckpoint", .params = &.{"id"}, .return_type = "Checkpoint" },
+    .{ .name = "knot3_getHardenedCheckpoint", .params = &.{}, .return_type = "HardenedCheckpoint" },
     .{ .name = "knot3_getCoins", .params = &.{ "owner", "coinType" }, .return_type = "Coin[]" },
     .{ .name = "knot3_getTransactionBlock", .params = &.{"digest"}, .return_type = "TransactionBlock" },
     .{ .name = "knot3_getLatestCheckpointSequenceNumber", .params = &.{}, .return_type = "number" },

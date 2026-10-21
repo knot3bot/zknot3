@@ -403,6 +403,7 @@ pub const Node = struct {
             // entries are skipped; an empty result refuses advertised redial.
             const kvs = owned_config.network.known_validators;
             const known_keys = try self_ptr.config_arena.allocator().alloc([32]u8, kvs.len);
+            const known_dials = try self_ptr.config_arena.allocator().alloc(P2PServer_module.KnownValidatorDial, kvs.len);
             var nkeys: usize = 0;
             for (kvs) |kv| {
                 const pk = std.fmt.parseInt(u256, kv.public_key_hex, 16) catch |err| {
@@ -410,6 +411,11 @@ pub const Node = struct {
                     continue;
                 };
                 std.mem.writeInt(u256, &known_keys[nkeys], pk, .big);
+                // Empty dial_address stays unrestricted for this key.
+                known_dials[nkeys] = .{
+                    .key = known_keys[nkeys],
+                    .dial = kv.dial_address,
+                };
                 nkeys += 1;
             }
             const p2p_config = P2PServer_module.P2PServerConfig{
@@ -432,6 +438,7 @@ pub const Node = struct {
                 .inbound_ratio_limit = owned_config.network.p2p_inbound_ratio_limit,
                 .advertise_address = owned_config.network.resolveP2pAdvertiseAddress(),
                 .known_validator_keys = known_keys[0..nkeys],
+                .known_validator_dials = known_dials[0..nkeys],
             };
 
             self_ptr.p2p_server = try P2PServer.init(allocator, p2p_config);
@@ -478,7 +485,26 @@ pub const Node = struct {
         // flushing every account as m4_gas_balance — runtime still logs
         // per-op balances and may append periodic m4_gas_snapshot (see
         // maybeAppendGasSnapshotWal); skip appendAllGasBalancesWal here.
-        // Gas snapshot must run before executor.deinit (accounts live there).
+        //
+        // Gas ledger shutdown order (closes the truncate→snapshot crash window):
+        //   1. Durable sibling `{m4_base}.gas.snap` (same bytes as m4_gas_snapshot),
+        //      temp file → fsync → rename, BEFORE truncate. `m4_base` is the
+        //      path passed to WAL.init (`{data_dir}/m4_state`); the WAL file
+        //      is `{m4_base}.wal`.
+        //   2. Truncate the M4 WAL, then append the m4 state snapshot and the
+        //      in-WAL `m4_gas_snapshot` so a finished shutdown replays as before.
+        //   3. Flush the WAL so the in-WAL gas snapshot is durable, then delete
+        //      the sibling. If the flush fails, keep the sibling. If the
+        //      delete fails, replay still prefers the WAL snapshot.
+        // A crash after truncate and before the in-WAL gas snapshot drops
+        // per-op `m4_gas_balance` records; startup loads the sibling only when
+        // replay saw no `m4_gas_snapshot`. Gas bytes must be captured before
+        // executor.deinit (accounts live there).
+        if (self.m4_wal != null) {
+            self.writeGasSiblingSnapshot() catch |err| {
+                Log.warn("[WARN] Failed to write gas sibling snapshot before WAL truncate: {s}", .{@errorName(err)});
+            };
+        }
         if (self.m4_wal) |w| {
             w.truncate() catch |err| {
                 Log.warn("[WARN] Failed to truncate WAL after checkpoint: {s}", .{@errorName(err)});
@@ -487,9 +513,25 @@ pub const Node = struct {
         self.mainnet_hooks.appendStateSnapshotWal() catch |err| {
             Log.warn("[WARN] Failed to append M4 state snapshot on shutdown: {s}", .{@errorName(err)});
         };
-        self.appendGasSnapshotWal() catch |err| {
+        if (self.appendGasSnapshotWal()) {
+            // `appendGasSnapshotWal` may only buffer. Do not drop the sibling
+            // until that record is flushed (fsync) — otherwise a crash here
+            // loses both copies.
+            var gas_snapshot_durable = true;
+            if (self.m4_wal) |w| {
+                w.flushAsync() catch |err| {
+                    gas_snapshot_durable = false;
+                    Log.warn("[WARN] Failed to flush M4 WAL gas snapshot; keeping sibling file: {s}", .{@errorName(err)});
+                };
+            }
+            if (gas_snapshot_durable) {
+                self.deleteGasSiblingSnapshot() catch |err| {
+                    Log.warn("[WARN] Failed to delete gas sibling snapshot after WAL snapshot: {s}", .{@errorName(err)});
+                };
+            }
+        } else |err| {
             Log.warn("[WARN] Failed to append gas snapshot to M4 WAL on shutdown: {s}", .{@errorName(err)});
-        };
+        }
         self.checkpoint_store.deinit();
         self.txn_pool.deinit();
         self.executor.marketplace = null;
@@ -598,6 +640,26 @@ pub const Node = struct {
         self.cutover.noteCheckpoint(epoch);
     }
 
+    /// Quorum commit already succeeded and the block executed. Record the
+    /// issued checkpoint sequence and harden through it, keeping `block.digest`
+    /// (the canonical `Block.computeDigest` result) so a later replay of that
+    /// sequence must match.
+    fn recordQuorumCheckpoint(self: *Self, block: *const Mysticeti.Block) void {
+        const issued = self.checkpoint_store.advance() catch |err| {
+            Log.warn("[WARN] Failed to advance checkpoint sequence: {s}", .{@errorName(err)});
+            return;
+        };
+        self.checkpoint_store.hardenThrough(issued, block.digest);
+        self.noteCheckpointAdvanced();
+        const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
+        if (cp_path) |p| {
+            defer self.allocator.free(p);
+            self.checkpoint_store.save(p) catch |err| {
+                Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
     pub fn cutoverGauges(self: *Self) CutoverSignals.Gauges {
         const epoch = if (self.epoch_manager) |em| em.getCurrentEpoch().number else 0;
         const bans = if (self.p2p_server) |p2p| p2p.getRateLimitStats().banned_peers_total else 0;
@@ -651,10 +713,17 @@ pub const Node = struct {
             self.wireGasBalanceWalHook();
         }
 
+        const ReplayCtx = struct {
+            node: *Self,
+            saw_gas_snapshot: bool = false,
+        };
+        var replay_ctx: ReplayCtx = .{ .node = self };
+
         const Cb = struct {
             fn onReplay(op: WalRecordType, key: []const u8, value: ?[]const u8, ctx: *anyopaque) !void {
                 _ = key;
-                const node: *Self = @ptrCast(@alignCast(ctx));
+                const replay: *ReplayCtx = @ptrCast(@alignCast(ctx));
+                const node = replay.node;
                 switch (op) {
                     .m4_stake_operation,
                     .m4_governance_proposal,
@@ -680,6 +749,9 @@ pub const Node = struct {
                     .m4_gas_snapshot => {
                         const payload = value orelse return error.InvalidWalPayload;
                         // Hook cleared above — wipe+set must not re-append.
+                        // Any in-WAL gas snapshot suppresses the sibling file:
+                        // the WAL copy is newer or equal.
+                        replay.saw_gas_snapshot = true;
                         try node.applyGasSnapshotPayload(payload);
                     },
                     else => {},
@@ -687,12 +759,20 @@ pub const Node = struct {
             }
         };
 
-        const result = try w.replayWithOptions(Cb.onReplay, self, .{
+        const result = try w.replayWithOptions(Cb.onReplay, &replay_ctx, .{
             .max_record_type = 20,
             .validate_types = true,
             .skip_corrupted = self.config.storage.recovery_skip_corrupted,
         });
         if (result.errors > 0) return error.ReadFailed;
+
+        // Sibling is a baseline only when this replay saw no m4_gas_snapshot
+        // (crash after truncate, before appendGasSnapshotWal). Applying it
+        // here replaces the map; it is not merged on top of a WAL snapshot.
+        // Hooks are still cleared, so the restore does not re-append.
+        if (!replay_ctx.saw_gas_snapshot) {
+            try self.loadGasSiblingSnapshot();
+        }
     }
 
     fn wireGasBalanceWalHook(self: *Self) void {
@@ -727,6 +807,62 @@ pub const Node = struct {
     /// `m4_gas_balance` tails while per-op records still cover the gap.
     pub fn appendGasSnapshotWal(self: *Self) !void {
         const w = self.m4_wal orelse return;
+        const payload = try self.buildGasSnapshotPayload();
+        defer self.allocator.free(payload);
+        try w.logExtensionRecord(.m4_gas_snapshot, payload);
+    }
+
+    /// `{m4_base}.gas.snap` beside the M4 WAL.
+    /// `WAL.init` stores `file_path` as `{m4_base}.wal` where `m4_base` is
+    /// `{data_dir}/m4_state` (see `Node.init`).
+    fn gasSnapSiblingPath(self: *Self) ![]u8 {
+        const w = self.m4_wal orelse return error.NoM4Wal;
+        const wal_suffix = ".wal";
+        if (!std.mem.endsWith(u8, w.file_path, wal_suffix)) return error.InvalidPath;
+        const base = w.file_path[0 .. w.file_path.len - wal_suffix.len];
+        return std.fmt.allocPrint(self.allocator, "{s}.gas.snap", .{base});
+    }
+
+    /// `{m4_base}.equiv.ring` beside the M4 WAL. `m4_base` is the path passed
+    /// to `WAL.init` (`{data_dir}/m4_state`); the WAL file is `{m4_base}.wal`.
+    fn equivRingSiblingPath(self: *Self) ![]u8 {
+        const w = self.m4_wal orelse return error.NoM4Wal;
+        const wal_suffix = ".wal";
+        if (!std.mem.endsWith(u8, w.file_path, wal_suffix)) return error.InvalidPath;
+        const base = w.file_path[0 .. w.file_path.len - wal_suffix.len];
+        return std.fmt.allocPrint(self.allocator, "{s}.equiv.ring", .{base});
+    }
+
+    /// After consensus integration exists and M4 WAL replay has finished, point
+    /// the rebroadcast ring at `{m4_base}.equiv.ring` and load it. Later inserts
+    /// and evictions rewrite that file through `on_changed`.
+    pub fn bindEvidenceRing(self: *Self, ci: anytype) void {
+        const path = self.equivRingSiblingPath() catch |err| {
+            Log.warn("[WARN] Equivocation evidence ring path unavailable: {s}", .{@errorName(err)});
+            return;
+        };
+        defer self.allocator.free(path);
+        ci.setEvidenceRingPath(path) catch |err| {
+            Log.warn("[WARN] Failed to retain equivocation evidence ring path: {s}", .{@errorName(err)});
+            return;
+        };
+        ci.evidence_ring.on_changed = onEvidenceRingChanged;
+        ci.evidence_ring.on_changed_ctx = ci;
+        ci.loadEvidenceRing();
+    }
+
+    /// Rewrites `{m4_base}.equiv.ring` after the ring stores or evicts a payload.
+    pub fn onEvidenceRingChanged(ctx: *anyopaque) void {
+        const CI = @import("../form/consensus/ConsensusIntegration.zig");
+        const ci: *CI.ConsensusIntegration = @ptrCast(@alignCast(ctx));
+        const path = ci.evidence_ring_path orelse return;
+        ci.evidence_ring.saveToFile(ci.allocator, path) catch |err| {
+            Log.warn("[WARN] Failed to persist equivocation evidence ring: {s}", .{@errorName(err)});
+        };
+    }
+
+    /// Same bytes as an `m4_gas_snapshot` record: `u32be count || sorted address||amount`.
+    fn buildGasSnapshotPayload(self: *Self) ![]u8 {
         const count = self.executor.gas_accounts.count();
         const Entry = struct { addr: [32]u8, amount: u64 };
         const entries = try self.allocator.alloc(Entry, count);
@@ -744,7 +880,7 @@ pub const Node = struct {
 
         const payload_len = 4 + count * 40;
         const payload = try self.allocator.alloc(u8, payload_len);
-        defer self.allocator.free(payload);
+        errdefer self.allocator.free(payload);
         std.mem.writeInt(u32, payload[0..4], @intCast(count), .big);
         var off: usize = 4;
         for (entries) |e| {
@@ -752,7 +888,72 @@ pub const Node = struct {
             std.mem.writeInt(u64, payload[off + 32 ..][0..8], e.amount, .big);
             off += 40;
         }
-        try w.logExtensionRecord(.m4_gas_snapshot, payload);
+        return payload;
+    }
+
+    /// Write the gas map to `{m4_base}.gas.snap` before WAL truncate.
+    /// Temp file, fsync, then rename over the sibling.
+    fn writeGasSiblingSnapshot(self: *Self) !void {
+        if (self.m4_wal == null) return;
+        const dest = try self.gasSnapSiblingPath();
+        defer self.allocator.free(dest);
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{dest});
+        defer self.allocator.free(tmp_path);
+
+        const payload = try self.buildGasSnapshotPayload();
+        defer self.allocator.free(payload);
+
+        const io = @import("io_instance").io;
+        const cwd = std.Io.Dir.cwd();
+        {
+            const file = try cwd.createFile(io, tmp_path, .{ .truncate = true });
+            defer file.close(io);
+            errdefer cwd.deleteFile(io, tmp_path) catch {};
+            try file.writeStreamingAll(io, payload);
+            try file.sync(io);
+        }
+        cwd.rename(tmp_path, cwd, dest, io) catch |err| {
+            cwd.deleteFile(io, tmp_path) catch {};
+            return err;
+        };
+    }
+
+    /// Remove `{m4_base}.gas.snap` after a successful in-WAL gas snapshot.
+    /// Missing file is success (already deleted, or never written).
+    fn deleteGasSiblingSnapshot(self: *Self) !void {
+        const path = self.gasSnapSiblingPath() catch |err| switch (err) {
+            error.NoM4Wal => return,
+            else => return err,
+        };
+        defer self.allocator.free(path);
+        const io = @import("io_instance").io;
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
+
+    /// Load `{m4_base}.gas.snap` into `executor` gas accounts.
+    /// No-op when the file is absent. Caller must not invoke this when the
+    /// WAL replay already applied an `m4_gas_snapshot`.
+    fn loadGasSiblingSnapshot(self: *Self) !void {
+        const path = self.gasSnapSiblingPath() catch |err| switch (err) {
+            error.NoM4Wal => return,
+            else => return err,
+        };
+        defer self.allocator.free(path);
+        const io = @import("io_instance").io;
+        const payload = std.Io.Dir.cwd().readFileAlloc(
+            io,
+            path,
+            self.allocator,
+            std.Io.Limit.limited(10 * 1024 * 1024),
+        ) catch |err| switch (err) {
+            error.FileNotFound => return,
+            else => return err,
+        };
+        defer self.allocator.free(payload);
+        try self.applyGasSnapshotPayload(payload);
     }
 
     /// Append `m4_gas_snapshot` when `storage.gas_snapshot_interval_secs` has
@@ -807,6 +1008,14 @@ pub const Node = struct {
         }
     }
 
+    /// Local hardened tip stored in `checkpoint_store`.
+    /// Digest is the ring entry for that sequence, otherwise `hardened_digest`.
+    /// Null when there is no marker, or the marker has no stored digest.
+    pub fn hardenedCheckpoint(self: *const Self) ?struct { sequence: u64, digest: [32]u8 } {
+        const tip = self.checkpoint_store.hardenedTip() orelse return null;
+        return .{ .sequence = tip.sequence, .digest = tip.digest };
+    }
+
     pub fn getNodeInfo(self: *Self) NodeInfo {
         const epoch_info = self.getEpochInfo();
         return .{
@@ -815,6 +1024,7 @@ pub const Node = struct {
             .uptime_seconds = NodeMetricsCoordinator.computeUptimeSeconds(self.started_at),
             .object_store_count = self.execution_results.count(),
             .checkpoint_sequence = self.checkpoint_store.getLatestSequence(),
+            .checkpoint_hardened_sequence = self.checkpoint_store.hardenedSequenceGauge(),
             .pending_transactions = self.getPendingTxnCount(),
             .committed_blocks = self.committed_blocks.count(),
             .pending_blocks = self.pending_blocks.count(),
@@ -832,6 +1042,8 @@ pub const Node = struct {
         uptime_seconds: i64,
         object_store_count: u64,
         checkpoint_sequence: u64,
+        /// Highest quorum-hardened checkpoint sequence. 0 when none has been recorded.
+        checkpoint_hardened_sequence: u64,
         pending_transactions: usize,
         committed_blocks: usize,
         pending_blocks: usize,
@@ -986,18 +1198,7 @@ pub const Node = struct {
                         res.deinit(typed_ctx.node.allocator);
                     }
                     typed_ctx.node.allocator.free(exec_results);
-                    if (typed_ctx.node.checkpoint_store.advance()) |_| {
-                        typed_ctx.node.noteCheckpointAdvanced();
-                        const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
-                        if (cp_path) |p| {
-                            defer typed_ctx.node.allocator.free(p);
-                            typed_ctx.node.checkpoint_store.save(p) catch |err| {
-                                Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
-                            };
-                        }
-                    } else |err| {
-                        Log.warn("[WARN] Failed to advance checkpoint sequence: {s}", .{@errorName(err)});
-                    }
+                    typed_ctx.node.recordQuorumCheckpoint(block);
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
                 }
@@ -1080,18 +1281,7 @@ pub const Node = struct {
                         res.deinit(typed_ctx.node.allocator);
                     }
                     typed_ctx.node.allocator.free(exec_results);
-                    if (typed_ctx.node.checkpoint_store.advance()) |_| {
-                        typed_ctx.node.noteCheckpointAdvanced();
-                        const cp_path = std.fmt.allocPrint(typed_ctx.node.allocator, "{s}/{s}/sequence.bin", .{ typed_ctx.node.config.storage.data_dir, typed_ctx.node.config.storage.checkpoint_store_path }) catch null;
-                        if (cp_path) |p| {
-                            defer typed_ctx.node.allocator.free(p);
-                            typed_ctx.node.checkpoint_store.save(p) catch |err| {
-                                Log.warn("[WARN] Failed to save checkpoint sequence: {s}", .{@errorName(err)});
-                            };
-                        }
-                    } else |err| {
-                        Log.warn("[WARN] Failed to advance checkpoint sequence: {s}", .{@errorName(err)});
-                    }
+                    typed_ctx.node.recordQuorumCheckpoint(block);
                 } else |err| {
                     Log.err("Failed to execute block transactions: {}", .{err});
                 }
@@ -1792,7 +1982,7 @@ test "Node gas snapshot WAL restores exact map on clean restart" {
         try node.executor.setGasBalance(addr_mid, 200);
         try node.executor.setGasBalance(addr_gone, 999);
         _ = node.executor.gas_accounts.remove(addr_gone);
-        // Explicit snapshot + clean deinit (truncate → m4ss → m4_gas_snapshot).
+        // Explicit snapshot + clean deinit (sibling → truncate → m4ss → m4_gas_snapshot).
         try node.appendGasSnapshotWal();
     }
 
@@ -1903,6 +2093,96 @@ test "Node gas snapshot wipe replaces in-memory map on replay" {
     try std.testing.expectEqual(@as(usize, 2), node.executor.gas_accounts.count());
 }
 
+test "Node gas sibling snapshot restores balances when WAL has no gas snapshot" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_sibling_snap";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+
+    const addr_lo: [32]u8 = @splat(0x21);
+    const addr_hi: [32]u8 = @splat(0x90);
+
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    const node = try Node.init(allocator, config, .{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+    }
+    try node.start();
+    try std.testing.expect(node.m4_wal != null);
+
+    const wal_path = node.m4_wal.?.file_path;
+    try std.testing.expect(std.mem.endsWith(u8, wal_path, "/m4_state.wal"));
+    const sibling = try std.fmt.allocPrint(allocator, "{s}/m4_state.gas.snap", .{test_dir});
+    defer allocator.free(sibling);
+    const derived = try node.gasSnapSiblingPath();
+    defer allocator.free(derived);
+    try std.testing.expectEqualStrings(sibling, derived);
+
+    try node.executor.setGasBalance(addr_hi, 900);
+    try node.executor.setGasBalance(addr_lo, 100);
+    // Shutdown writes the sibling, then crashes before truncate's follower
+    // (the in-WAL snapshot). Simulate that by writing the sibling and
+    // truncating without appendGasSnapshotWal.
+    try node.writeGasSiblingSnapshot();
+    try node.m4_wal.?.truncate();
+    node.executor.gas_accounts.clearRetainingCapacity();
+    try std.testing.expectEqual(@as(u64, 0), node.getGasBalance(addr_lo));
+
+    try node.replayMainnetM4Wal();
+    try std.testing.expectEqual(@as(u64, 100), node.getGasBalance(addr_lo));
+    try std.testing.expectEqual(@as(u64, 900), node.getGasBalance(addr_hi));
+    try std.testing.expectEqual(@as(usize, 2), node.executor.gas_accounts.count());
+}
+
+test "Node gas WAL snapshot replaces sibling snapshot" {
+    const allocator = std.testing.allocator;
+    const test_dir = "/tmp/node_test_gas_sibling_wal_wins";
+    std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+    std.Io.Dir.cwd().createDir(std.testing.io, test_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
+
+    const addr: [32]u8 = @splat(0x44);
+    const io = @import("io_instance").io;
+
+    const config = try allocator.create(Config);
+    config.* = Config.default();
+    config.storage.data_dir = test_dir;
+    const node = try Node.init(allocator, config, .{});
+    defer {
+        node.deinit();
+        allocator.destroy(config);
+    }
+    try node.start();
+    try std.testing.expect(node.m4_wal != null);
+
+    try node.executor.setGasBalance(addr, 10);
+    try node.appendGasSnapshotWal();
+
+    // Stale sibling written after the WAL snapshot must not override it.
+    node.executor.setGasBalanceWalHook(null, null);
+    try node.executor.setGasBalance(addr, 99);
+    try node.writeGasSiblingSnapshot();
+    node.executor.gas_accounts.clearRetainingCapacity();
+
+    try node.replayMainnetM4Wal();
+    try std.testing.expectEqual(@as(u64, 10), node.getGasBalance(addr));
+    try std.testing.expectEqual(@as(usize, 1), node.executor.gas_accounts.count());
+
+    // Successful in-WAL snapshot drops the sibling; replay still uses the WAL.
+    try node.deleteGasSiblingSnapshot();
+    const sibling = try node.gasSnapSiblingPath();
+    defer allocator.free(sibling);
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().openFile(io, sibling, .{}));
+
+    node.executor.gas_accounts.clearRetainingCapacity();
+    try node.replayMainnetM4Wal();
+    try std.testing.expectEqual(@as(u64, 10), node.getGasBalance(addr));
+}
+
 test "Node round advance refuses to wrap" {
     const allocator = std.testing.allocator;
     const test_dir = "/tmp/node_test_round_overflow";
@@ -2002,6 +2282,16 @@ test "Node info" {
     }
     const info = node.getNodeInfo();
     try std.testing.expect(info.checkpoint_sequence == 0);
+    try std.testing.expectEqual(@as(u64, 0), info.checkpoint_hardened_sequence);
+    try std.testing.expect(node.hardenedCheckpoint() == null);
+    const tip_digest: [32]u8 = @splat(0xab);
+    node.checkpoint_store.hardenThrough(3, tip_digest);
+    const tip = node.hardenedCheckpoint() orelse return error.MissingHardenedCheckpoint;
+    try std.testing.expectEqual(@as(u64, 3), tip.sequence);
+    try std.testing.expectEqualSlices(u8, &tip_digest, &tip.digest);
+    node.checkpoint_store.hardened_sequence = 7;
+    const hardened = node.getNodeInfo();
+    try std.testing.expectEqual(@as(u64, 7), hardened.checkpoint_hardened_sequence);
 }
 
 test "Node start/stop" {

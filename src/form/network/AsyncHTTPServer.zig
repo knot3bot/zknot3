@@ -556,6 +556,10 @@ pub const AsyncHTTPServer = struct {
                         "# TYPE zknot3_consensus_round gauge\n" ++
                         "zknot3_consensus_round {}\n" ++
                         "\n" ++
+                        "# HELP zknot3_checkpoint_hardened_sequence Highest quorum-hardened checkpoint sequence (0 if none)\n" ++
+                        "# TYPE zknot3_checkpoint_hardened_sequence gauge\n" ++
+                        "zknot3_checkpoint_hardened_sequence {}\n" ++
+                        "\n" ++
                         "# HELP zknot3_peers_connected Number of connected peers\n" ++
                         "# TYPE zknot3_peers_connected gauge\n" ++
                         "zknot3_peers_connected {}\n" ++
@@ -613,6 +617,7 @@ pub const AsyncHTTPServer = struct {
                         "p2p_fallback_count {}\n",
                     .{
                         info.consensus_round,
+                        info.checkpoint_hardened_sequence,
                         peers,
                         dirs.inbound,
                         dirs.outbound,
@@ -929,6 +934,24 @@ pub const AsyncHTTPServer = struct {
                     };
                     const balance = node.getGasBalance(input.address);
                     break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
+                } else if (std.mem.eql(u8, method_val.string, "knot3_getHardenedCheckpoint")) blk: {
+                    const node = self.node orelse {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.internalError(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const tip = node.hardenedCheckpoint() orelse {
+                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32011,\"message\":\"hardened checkpoint unavailable\"},\"id\":";
+                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
+                        var http_resp = Response.ok(response_body);
+                        http_resp = try http_resp.withJSONContentType(self.allocator);
+                        return try http_resp.toString(self.allocator);
+                    };
+                    const digest_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, &tip.digest);
+                    defer self.allocator.free(digest_hex);
+                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"sequence\":{d},\"digest\":\"{s}\"}}", .{ tip.sequence, digest_hex });
                 } else null;
 
                 if (result_json) |r| {

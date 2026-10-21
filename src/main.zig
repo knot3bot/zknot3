@@ -383,8 +383,8 @@ pub fn main(init: std.process.Init) !void {
     // Initialize consensus integration if P2P is enabled
     var consensus_integration: ?*ConsensusIntegration = null;
     defer {
-        if (consensus_integration) |*ci| {
-            allocator.destroy(ci.*);
+        if (consensus_integration) |ci| {
+            ci.deinit();
         }
     }
     if (node.getP2PServer()) |p2p| {
@@ -396,7 +396,9 @@ pub fn main(init: std.process.Init) !void {
         const validator_id = node.selfValidatorId(validator_key);
         const validator_index = config.authority.validator_index;
         consensus_integration = ConsensusIntegration.init(allocator, node, p2p, validator_id, validator_key, validator_index) catch null;
-        if (consensus_integration) |_| {
+        if (consensus_integration) |ci| {
+            // `node.start` already replayed the M4 WAL. Load the sibling ring after CI exists.
+            node.bindEvidenceRing(ci);
             Log.info("  Consensus: Enabled (validator {})", .{validator_index});
         }
     }
@@ -456,6 +458,11 @@ pub fn main(init: std.process.Init) !void {
             // Deferred commit: heavy block execution is moved out of the
             // P2P message handler so a single vote cannot freeze the loop.
             ci.maybeCommit();
+            var rebroadcast_now: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &rebroadcast_now);
+            ci.rebroadcastEquivocation(rebroadcast_now.sec) catch |err| {
+                Log.err("[MAIN] rebroadcastEquivocation error: {s}", .{@errorName(err)});
+            };
         }
 
         // Periodic m4_gas_snapshot: append-only checkpoint of the gas ledger so

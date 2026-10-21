@@ -67,12 +67,12 @@ occupying all its peer slots with malicious nodes.
 - Outbound quality-weighted dial: on disconnect, remember `{address, reputation, latency_ms}` (cap 64, LRU); `maintainBootstrapConnections` fills leftover outbound slots by dialing the highest-`peerRotationQuality` remembered peer that is not connected and passes subnet caps; bootstrap list still has dial priority
 - Dial / quality-memory hostname resolve: `resolveDialAddress` turns `hostname:port` into canonical `a.b.c.d:port` / `[v6]:port` via DNS when possible so TCP /16·/48 caps and quality-memory keys match numeric peers; Kademlia `PeerManager.addPeer` stores the resolved form when resolve succeeds
 - Outbound-only fallback (`p2p_inbound_ratio_limit`, percent 0–100, default 80; 0 disables): the inbound side is published inbound TCP+QUIC peers plus in-flight inbound handshake workers (outbound dials are not included). When that inbound side plus published outbound peers is ≥ 4 and `inbound * 100 > total * limit`, new inbound TCP accepts and QUIC inbound connections are rejected (`error.InboundPaused`). Outbound `dial` still uses the reserved-slot budget, and `maintainBootstrapConnections` keeps dialing bootstrap peers and quality-weighted remembered peers
-- Authenticated handshake listen trailer: optional `u16_be len` + UTF-8 `host:port` after the signed response (responder) and ack (initiator) cores (`network.p2p_advertise_address`, else dialable `p2p_address`); outbound dial string wins when both are present. An advertised dial string is quality-remembered only when the signer's Ed25519 public key is in `network.known_validators` (empty list stores none). A dial string this node opened is remembered on disconnect regardless. Ed25519 covers `listen_commitment = Blake3(advertise_utf8)` (or 32 zero bytes when empty); verifier rebuilds commitment from trailer bytes. Unsigned request does not carry authoritative advertise. Authenticated path context `zknot3_p2p_handshake_v3` (breaking vs v2 signed transcript; unauthenticated handshake unchanged).
+- Authenticated handshake listen trailer: optional `u16_be len` + UTF-8 `host:port` after the signed response (responder) and ack (initiator) cores (`network.p2p_advertise_address`, else dialable `p2p_address`); outbound dial string wins when both are present. An advertised dial string is quality-remembered only when the signer's Ed25519 public key is in `network.known_validators` (empty list stores none). When that validator's `dial_address` is non-empty, the advertised `host:port` must equal it literally; an empty `dial_address` still allows any signed advertise from that key. A dial string this node opened is remembered on disconnect regardless. Ed25519 covers `listen_commitment = Blake3(advertise_utf8)` (or 32 zero bytes when empty); verifier rebuilds commitment from trailer bytes. Unsigned request does not carry authoritative advertise. Authenticated path context `zknot3_p2p_handshake_v3` (breaking vs v2 signed transcript; unauthenticated handshake unchanged).
 
 **Current Limitations**:
 - Hostname dial/subnet now apply after DNS resolve; residual is weaker than before but still present without DNSSEC (spoofed answers can steer peers) and unresolved/unparseable names still share one Kademlia unknown-prefix budget (not geo-diverse)
 - Nodes binding `0.0.0.0` without `p2p_advertise_address` still advertise nothing (inbound quality memory stays empty for those peers)
-- Handshake-advertised dial strings enter quality memory only when the peer's Ed25519 public key is in `network.known_validators`. An empty set remembers none of them. A listed validator can still sign an arbitrary dial string. Addresses this node itself dialed are remembered on disconnect regardless.
+- Handshake-advertised dial strings enter quality memory only when the peer's Ed25519 public key is in `network.known_validators`. An empty set remembers none of them. Arbitrary advertise remains only when that validator has no configured `dial_address` (empty string); a non-empty `dial_address` is remembered only when the advertised `host:port` equals it literally. Addresses this node itself dialed are remembered on disconnect regardless.
 
 ---
 
@@ -119,7 +119,9 @@ existing votes. If a different block_digest is found for the same `(voter, round
 ```
 
 **Current Mitigations**:
-- Equivocation evidence is logged and broadcast on the certificate channel
+- Equivocation evidence is logged and broadcast on the certificate channel.
+  Verified payloads are kept in a 16-slot ring and rebroadcast one at a time,
+  every 30s by default (`equivocation_rebroadcast_interval_secs = 0` disables it)
 - Conflicting votes are both rejected (neither counts toward quorum)
 - The observing node slashes current M4 stake on a fixed curve: 10% on the
   first offense, 25% on the second, 50% on the third, 100% after that
@@ -135,8 +137,7 @@ existing votes. If a different block_digest is found for the same `(voter, round
   slash record is replayed
 
 **Current Limitations**:
-- A node that never sees the evidence does not slash. Agreement depends on
-  every honest validator observing the same evidence
+- Recent evidence is rebroadcast, and a restart reloads the same 16-slot ring from `{data_dir}/m4_state.equiv.ring`. A node that never connects still cannot slash
 - The slash is not a separately finalized cross-validator transaction
 
 ---
@@ -210,12 +211,12 @@ exhaust the node's connection slots and prevent honest peers from connecting.
 - Reserved outbound-only slots (`p2p_reserved_outbound_slots`, default 8) so inbound flood cannot exhaust the peer table
 - Periodic peer rotation (`p2p_peer_rotation_interval_secs`, default 600) force-replaces the lowest-quality eligible peer (`reputation - min(latency_ms/10, 50)`, age tiebreak) so surplus long-lived / low-quality inbound slots churn
 - Peer quality scoring feeds rotation preference and outbound quality-weighted redial of remembered peers
-- Handshake-advertised listen dial string (signature-bound trailer on authenticated response/ack via Blake3 listen_commitment) enters quality memory only when the peer public key is in the configured known-validator set (`advertise_address` / dialable `p2p_address` is what this node advertises)
+- Handshake-advertised listen dial string (signature-bound trailer on authenticated response/ack via Blake3 listen_commitment) enters quality memory only when the peer public key is in the configured known-validator set, and only at that validator's `dial_address` when the operator set one (`advertise_address` / dialable `p2p_address` is what this node advertises)
 - Outbound-only fallback when the inbound share (published inbound peers plus in-flight inbound handshakes) exceeds `p2p_inbound_ratio_limit` (default 80, minimum 4 peers; 0 disables): inbound TCP/QUIC accepts return `error.InboundPaused` while outbound dial, bootstrap maintenance, and quality redial continue
 
 **Current Limitations**:
 - After DNS resolve, hostname peers hit the same TCP /16·/48 and Kademlia IP-prefix caps as numeric peers; unresolved names still share one unknown-prefix budget. Residual: no DNSSEC, so poisoned DNS can still cluster peers
-- Quality redial remembers a signed listen advertise only for peers in the configured known-validator set (empty set: advertised addresses are not remembered). Outbound dials this node initiated stay rememberable. Set a real public `p2p_advertise_address` so known peers can redial this node. A known validator can still advertise any dial string it signs.
+- Quality redial remembers a signed listen advertise only for peers in the configured known-validator set (empty set: advertised addresses are not remembered). Arbitrary advertise remains only when that validator has no configured `dial_address`; a non-empty `dial_address` pins the remembered `host:port` to that literal string. Outbound dials this node initiated stay rememberable. Set a real public `p2p_advertise_address` so known peers can redial this node.
 
 ---
 
@@ -279,7 +280,7 @@ alternative chain, and presents it to new nodes.
 - Stake-weighted voting: attacker needs > 2/3 stake to finalize
 
 **Current Limitations**:
-- No checkpoint finality gadget (no "hardened" checkpoints)
+- Hardened sequence is recorded after quorum verify. Recent hardened digests are stored with that marker; this is still not a certificate chain, and light clients still pin a trusted hash.
 - Light clients must be configured with a trusted checkpoint hash
 
 ---
@@ -290,7 +291,7 @@ alternative chain, and presents it to new nodes.
 |--------|----------|----------|-----------|---------------|
 | Eclipse | HIGH | Partial | Partial | **MEDIUM** — TCP /16+/48 + reserved outbound slots + inbound-ratio outbound-only fallback (`p2p_inbound_ratio_limit` default 80, min 4 peers) + Kademlia prefix diversity + quality-aware rotation/redial incl. signature-bound listen trailer remembered only for configured known validators; hostname dial/subnet after DNS resolve (residual: no DNSSEC / unresolved unknown-prefix) |
 | Replay | MEDIUM | Yes | Yes | LOW |
-| Equivocation | HIGH | Yes | Yes, on every node that verifies the evidence | **MEDIUM** — jailed locally; unseen evidence is not slashed |
+| Equivocation | HIGH | Yes | Yes, on every node that verifies the evidence | **MEDIUM** — recent evidence is rebroadcast; a node that never connects still cannot slash |
 | Invalid DAG | MEDIUM | Yes | Yes | LOW |
 | Spam/Resource | MEDIUM | Yes | Yes | LOW-MEDIUM |
 | Peer Flooding | MEDIUM | Yes | Partial | **LOW-MEDIUM** — TCP /16+/48 + reserved outbound slots + inbound-ratio outbound-only fallback (`p2p_inbound_ratio_limit` default 80, min 4 peers) + Kademlia prefix/unresolved caps + quality-aware rotation/redial incl. signature-bound listen trailer remembered only for configured known validators; hostname dial/subnet after DNS resolve (residual: no DNSSEC / unresolved unknown-prefix) |

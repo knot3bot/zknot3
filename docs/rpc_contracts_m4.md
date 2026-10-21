@@ -62,6 +62,19 @@ Admin **write** method. Requires header `X-Zknot3-Admin-Token` when `network.adm
 
 **Semantics (honest scope):** updates the executor’s address→balance map used when `vm.enforce_gas_payment` is true. This is **not** full gas-coin objects. Ledger is in-memory today; durable via per-op `m4_gas_balance` WAL records, plus periodic absolute `m4_gas_snapshot` appends (`storage.gas_snapshot_interval_secs`, default 300s; `0` disables) and a clean-shutdown snapshot — the snapshots shrink crash-recovery replay of long balance tails without replacing per-op durability. Charging on execute is gated by `vm.enforce_gas_payment` (default off). Overflow on credit returns JSON-RPC **`-32603`**.
 
+### `knot3_getHardenedCheckpoint`
+
+Read method (no admin token). No parameters; a missing `params` field is accepted and ignored.
+
+Returns this node's **local hardened tip**: the highest stored hardened checkpoint sequence and the digest kept for that sequence (the ring entry for the sequence, otherwise `hardened_digest`). That is the last digest this node stored. It is **not** a BFT certificate. Light clients still check the digest against a trusted hash.
+
+- Result:
+```json
+{"sequence":9,"digest":"<64 lowercase hex digits>"}
+```
+
+- No hardened marker, or a marker with no stored digest — JSON-RPC **`-32011`** `knot3_hardened_checkpoint_unavailable`, message `hardened checkpoint unavailable`.
+
 ### `knot3_getGasBalance`
 
 Read method (no admin token).
@@ -79,6 +92,7 @@ Unknown addresses return `balance: 0`. Same in-memory / optional `m4_gas_balance
 
 - **`-32602` `invalid_params`**: missing `params`, not an object, missing required field, bad hex length, `amount == 0` (stake only), unknown `action` / `kind`, empty `title` / `description`, or invalid `sequence`.
 - **`-32603` `internal error`**: e.g. `knot3_creditGas` u64 overflow on credit.
+- **`-32011` `knot3_hardened_checkpoint_unavailable`**: `knot3_getHardenedCheckpoint` has no stored hardened digest. `-32004` stays `knot3_move_verification_error`.
 
 ## Compatibility Notes
 

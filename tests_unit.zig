@@ -22,6 +22,7 @@ comptime {
     _ = @import("src/form/network/Kademlia.zig");
     _ = @import("src/form/network/AsyncHTTPServer.zig");
     _ = @import("src/app/CheckpointProofFile.zig");
+    _ = @import("src/form/storage/Checkpoint.zig");
     // Peer-liveness error classification: the devnet silently held zero peers
     // until this file's tests were compiled in.
     _ = @import("src/form/consensus/ConsensusIntegration.zig");

@@ -141,10 +141,10 @@ pub fn tryCommitBatch(
 fn makeVote(voter_seed: u8, round: u64, digest: [32]u8) Mysticeti.Vote {
     return .{
         .voter = @as([32]u8, @splat(voter_seed)),
-        .stake = 1,
+        .stake = 4,
         .round = .{ .value = round },
         .block_digest = digest,
-        .signature = @as([64]u8, @splat(0)),
+        .signature = @as([96]u8, @splat(0)),
     };
 }
 
@@ -178,7 +178,8 @@ test "CommitCoordinator returns null when no block reaches quorum" {
         allocator,
         &pending,
         &committed,
-        1, // needs >=1 vote, but block has 0 vote
+        1, // total stake; the block has no votes, so the ballot floor is not met
+        1,
         16,
         onQuorum,
         &ctx,
@@ -223,7 +224,8 @@ test "CommitCoordinator commits quorum block and invokes callback once" {
         allocator,
         &pending,
         &committed,
-        1, // quorum met by one vote
+        3, // thresholdOf(3) is 3; one vote of stake 4 is strictly above it
+        1,
         16,
         onQuorum,
         &ctx,
@@ -318,6 +320,7 @@ test "tryCommitBatch drains up to max_batch, then stops on empty sweep" {
         allocator,
         &pending,
         &committed,
+        3,
         1,
         16,
         onQuorum,
@@ -335,6 +338,7 @@ test "tryCommitBatch drains up to max_batch, then stops on empty sweep" {
         allocator,
         &pending,
         &committed,
+        3,
         1,
         16,
         onQuorum,
@@ -352,6 +356,7 @@ test "tryCommitBatch drains up to max_batch, then stops on empty sweep" {
         allocator,
         &pending,
         &committed,
+        3,
         1,
         16,
         onQuorum,

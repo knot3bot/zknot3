@@ -176,6 +176,17 @@ pub const P2PServerConfig = struct {
     /// refuses every advertised address (fail closed). Dial strings this
     /// node opened are remembered regardless.
     known_validator_keys: []const [32]u8 = &.{},
+    /// Per-key operator dial, parallel to `known_validator_keys`. Borrowed
+    /// for the server lifetime. An empty `dial` leaves that key unrestricted
+    /// (any signed advertise may be remembered). A non-empty `dial` is the
+    /// only advertised `host:port` that may be quality-remembered for the key.
+    known_validator_dials: []const KnownValidatorDial = &.{},
+};
+
+/// Operator dial pin for one known validator. `dial` empty means unrestricted.
+pub const KnownValidatorDial = struct {
+    key: [32]u8,
+    dial: []const u8,
 };
 
 /// Snapshot used by the pure rotation victim picker (no sockets).
@@ -213,6 +224,17 @@ pub fn pubkeyAllowed(keys: []const [32]u8, key: [32]u8) bool {
         if (std.mem.eql(u8, &candidate, &key)) return true;
     }
     return false;
+}
+
+/// Non-empty operator dial for `key`, or null when that key is unrestricted
+/// (no entry, or an empty dial string).
+fn configuredValidatorDial(dials: []const KnownValidatorDial, key: [32]u8) ?[]const u8 {
+    for (dials) |entry| {
+        if (!std.mem.eql(u8, &entry.key, &key)) continue;
+        if (entry.dial.len == 0) return null;
+        return entry.dial;
+    }
+    return null;
 }
 
 /// Cap on remembered disconnects used for quality-weighted redial.
@@ -1074,10 +1096,13 @@ pub const P2PServer = struct {
     /// `address` is null/empty (inbound without a known listen string).
     /// Advertised listen strings are stored only when `pubkeyAllowed`
     /// accepts `peer_key`; an empty known-validator set refuses them.
-    /// Dial strings this node opened (`address_from_advertise == false`)
-    /// are stored regardless. Prefers the resolved IP dial string as the
-    /// memory key when DNS/IP resolve succeeds so hostname and numeric
-    /// forms collapse together.
+    /// When that key has a non-empty `known_validator_dials` entry, the
+    /// advertised `host:port` must equal the configured dial literally.
+    /// An empty configured dial leaves the key unrestricted. Dial strings
+    /// this node opened (`address_from_advertise == false`) are stored
+    /// regardless. Prefers the resolved IP dial string as the memory key
+    /// when DNS/IP resolve succeeds so hostname and numeric forms collapse
+    /// together.
     fn rememberPeerQuality(
         self: *Self,
         peer_key: [32]u8,
@@ -1088,7 +1113,12 @@ pub const P2PServer = struct {
     ) void {
         const addr = address orelse return;
         if (addr.len == 0) return;
-        if (address_from_advertise and !pubkeyAllowed(self.config.known_validator_keys, peer_key)) return;
+        if (address_from_advertise) {
+            if (!pubkeyAllowed(self.config.known_validator_keys, peer_key)) return;
+            if (configuredValidatorDial(self.config.known_validator_dials, peer_key)) |pinned| {
+                if (!std.mem.eql(u8, addr, pinned)) return;
+            }
+        }
 
         const owned = resolveDialAddress(self.allocator, addr) catch return;
         const mem_key = derivePeerKeyFromAddress(owned);
@@ -3197,4 +3227,62 @@ test "rememberPeerQuality allows known advertised and outbound dial" {
     // Address we dialed is remembered even when the peer is not a known validator.
     server.rememberPeerQuality(unknown, 40, 20, "10.0.0.8:8083", false);
     try std.testing.expectEqual(@as(usize, 2), server.quality_memory.count());
+}
+
+test "rememberPeerQuality remembers matching configured dial" {
+    const allocator = std.testing.allocator;
+    const known = @as([32]u8, @splat(9));
+    const keys = [_][32]u8{known};
+    const dials = [_]KnownValidatorDial{
+        .{ .key = known, .dial = "10.0.0.9:8083" },
+    };
+    const server = try P2PServer.init(allocator, .{
+        .known_validator_keys = &keys,
+        .known_validator_dials = &dials,
+    });
+    defer server.deinit();
+
+    server.rememberPeerQuality(known, 90, 10, "10.0.0.9:8083", true);
+    try std.testing.expectEqual(@as(usize, 1), server.quality_memory.count());
+    try std.testing.expectEqualStrings("10.0.0.9:8083", server.quality_memory.values()[0].address);
+}
+
+test "rememberPeerQuality skips mismatched configured dial" {
+    const allocator = std.testing.allocator;
+    const known = @as([32]u8, @splat(9));
+    const keys = [_][32]u8{known};
+    const dials = [_]KnownValidatorDial{
+        .{ .key = known, .dial = "10.0.0.9:8083" },
+    };
+    const server = try P2PServer.init(allocator, .{
+        .known_validator_keys = &keys,
+        .known_validator_dials = &dials,
+    });
+    defer server.deinit();
+
+    server.rememberPeerQuality(known, 90, 10, "10.0.0.99:8083", true);
+    try std.testing.expectEqual(@as(usize, 0), server.quality_memory.count());
+
+    // A dial this node opened is remembered even when it disagrees with the pin.
+    server.rememberPeerQuality(known, 40, 20, "192.0.2.9:8083", false);
+    try std.testing.expectEqual(@as(usize, 1), server.quality_memory.count());
+    try std.testing.expectEqualStrings("192.0.2.9:8083", server.quality_memory.values()[0].address);
+}
+
+test "rememberPeerQuality remembers known advertise when dial is empty" {
+    const allocator = std.testing.allocator;
+    const known = @as([32]u8, @splat(9));
+    const keys = [_][32]u8{known};
+    const dials = [_]KnownValidatorDial{
+        .{ .key = known, .dial = "" },
+    };
+    const server = try P2PServer.init(allocator, .{
+        .known_validator_keys = &keys,
+        .known_validator_dials = &dials,
+    });
+    defer server.deinit();
+
+    server.rememberPeerQuality(known, 90, 10, "10.0.0.9:8083", true);
+    try std.testing.expectEqual(@as(usize, 1), server.quality_memory.count());
+    try std.testing.expectEqualStrings("10.0.0.9:8083", server.quality_memory.values()[0].address);
 }

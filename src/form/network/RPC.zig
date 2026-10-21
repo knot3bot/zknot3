@@ -32,6 +32,7 @@ pub const ErrorCode = enum(i32) {
     knot3_function_not_found = -32007,
     knot3_invalid_transaction = -32008,
     knot3_invalid_signature = -32010,
+    knot3_hardened_checkpoint_unavailable = -32011,
 };
 
 /// JSON-RPC request
@@ -229,6 +230,8 @@ pub const RPCServer = struct {
             return try handleGetObject(self.context, params);
         } else if (std.mem.eql(u8, method, "knot3_getCheckpoint")) {
             return try handleGetCheckpoint(self.context, params);
+        } else if (std.mem.eql(u8, method, "knot3_getHardenedCheckpoint")) {
+            return try handleGetHardenedCheckpoint(self.context, params);
         } else if (std.mem.eql(u8, method, "knot3_getCoins")) {
             return try handleGetCoins(self.context, params);
         } else if (std.mem.eql(u8, method, "knot3_getLatestCheckpointSequenceNumber")) {
@@ -433,6 +436,20 @@ fn handleCreditGas(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
     return RPCResponse.success(null, body);
 }
 
+fn handleGetHardenedCheckpoint(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    const node_ptr = ctx.user_data orelse {
+        return RPCResponse.makeError(null, .internal_error, "Node not initialized");
+    };
+    const node: *Node = @ptrCast(@alignCast(node_ptr));
+    const tip = node.hardenedCheckpoint() orelse {
+        return RPCResponse.makeError(null, .knot3_hardened_checkpoint_unavailable, "hardened checkpoint unavailable");
+    };
+    const digest_hex = try MainnetExtensionHooks.allocHexLower(ctx.allocator, &tip.digest);
+    defer ctx.allocator.free(digest_hex);
+    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"sequence\":{d},\"digest\":\"{s}\"}}", .{ tip.sequence, digest_hex });
+    return RPCResponse.success(null, body);
+}
+
 fn handleGetGasBalance(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
     const node_ptr = ctx.user_data orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
@@ -575,4 +592,19 @@ test "RPC m4 methods call node mainnet hooks" {
     defer if (bal.result) |r| allocator.free(r.success);
     try std.testing.expect(bal.result != null);
     try std.testing.expect(std.mem.indexOf(u8, bal.result.?.success, "\"balance\":42") != null);
+
+    node.checkpoint_store = @TypeOf(node.checkpoint_store).init();
+    const missing = try handleGetHardenedCheckpoint(&ctx, null);
+    try std.testing.expect(missing.err != null);
+    try std.testing.expectEqual(ErrorCode.knot3_hardened_checkpoint_unavailable, missing.err.?.code);
+    try std.testing.expectEqualStrings("hardened checkpoint unavailable", missing.err.?.message);
+
+    const tip_digest: [32]u8 = @splat(0x44);
+    node.checkpoint_store.hardenThrough(9, tip_digest);
+    const hardened = try handleGetHardenedCheckpoint(&ctx, null);
+    defer if (hardened.result) |r| allocator.free(r.success);
+    const tip_hex = std.fmt.bytesToHex(tip_digest, .lower);
+    try std.testing.expect(hardened.err == null);
+    try std.testing.expect(std.mem.indexOf(u8, hardened.result.?.success, "\"sequence\":9") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hardened.result.?.success, tip_hex[0..]) != null);
 }

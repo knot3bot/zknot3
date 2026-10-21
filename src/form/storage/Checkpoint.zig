@@ -135,12 +135,14 @@ pub const Checkpoint = struct {
     /// 1. State root matches recomputed value from object_changes
     /// 2. Previous digest matches provided previous_checkpoint digest
     /// 3. Signatures meet quorum threshold with provided validator_set
+    /// 4. When `sequence_store` is set, the checkpoint does not rewrite a hardened sequence
     pub fn verify(
         self: *const Self,
         allocator: std.mem.Allocator,
         previous_checkpoint: ?*const Self,
         validator_set: ?*const ValidatorSet,
         bls_validator_set: ?*const BlsValidatorSet,
+        sequence_store: ?*const CheckpointSequence,
     ) !bool {
         // Perform BLS verification *before* state-root recomputation.
         // verifyStateRoot uses std.crypto.hash.Blake3 which on some
@@ -209,6 +211,12 @@ pub const Checkpoint = struct {
             }
             // Require quorum stake for commit
             if (stake_sum < quorum_threshold) return false;
+        }
+
+        // After BLS: Blake3 must not run before blst on some ARM64 targets.
+        if (sequence_store) |store| {
+            const dig = try self.digest(allocator);
+            store.verifyCheckpoint(self.sequence, dig, self.previous_digest) catch return false;
         }
 
         return true;
@@ -329,8 +337,36 @@ fn computeStateRoot(changes: []const Checkpoint.ObjectChange, allocator: std.mem
 pub const CheckpointSequence = struct {
     current: u64,
     initial_digest: [32]u8,
+    /// Highest checkpoint sequence that has passed quorum verification.
+    /// Null until the first successful quorum commit records one.
+    hardened_sequence: ?u64 = null,
+    /// Digest of the checkpoint at `hardened_sequence`, when that body was stored.
+    hardened_digest: ?[32]u8 = null,
+    /// Recent hardened `(sequence, digest)` pairs, oldest at index 0.
+    /// A replay at or below the marker must match an entry here or `hardened_digest`.
+    /// Sequences with no stored digest stay refused. This is not a certificate chain.
+    hardened_ring: [ring_cap]HardenedMark = @splat(.{ .seq = 0, .digest = @as([32]u8, @splat(0)) }),
+    hardened_count: usize = 0,
+    /// In-memory head whose digest can be compared with a hardened sequence.
+    head_sequence: ?u64 = null,
+    head_digest: ?[32]u8 = null,
 
     const Self = @This();
+
+    const ring_cap: usize = 8;
+    const HardenedMark = struct {
+        seq: u64,
+        digest: [32]u8,
+    };
+    const legacy_len: usize = 40;
+    /// Version 1 tail is 50 bytes (sequence only) or 82 bytes (sequence + one digest).
+    /// Version 2 appends `u8 count` and `count` entries of `u64be seq || 32-byte digest`.
+    const ring_entry_len: usize = 8 + 32;
+    const file_len_max: usize = 82 + 1 + ring_cap * ring_entry_len;
+    const tail_version_v1: u8 = 1;
+    const tail_version: u8 = 2;
+    const flag_hardened: u8 = 0b01;
+    const flag_digest: u8 = 0b10;
 
     pub fn init() Self {
         return .{
@@ -339,18 +375,129 @@ pub const CheckpointSequence = struct {
         };
     }
 
-    pub fn next(self: *Self, checkpoint: Checkpoint) error{ArithmeticOverflow}!void {
+    pub fn next(self: *Self, checkpoint: Checkpoint) error{ ArithmeticOverflow, HardenedCheckpoint }!void {
+        try self.verifyCheckpoint(checkpoint.sequence, null, checkpoint.previous_digest);
         self.current = std.math.add(u64, checkpoint.sequence, 1) catch return error.ArithmeticOverflow;
     }
 
-    pub fn advance(self: *Self) error{ArithmeticOverflow}!u64 {
+    pub fn advance(self: *Self) error{ ArithmeticOverflow, HardenedCheckpoint }!u64 {
         const seq = self.current;
-        self.current = std.math.add(u64, seq, 1) catch return error.ArithmeticOverflow;
+        const next_seq = std.math.add(u64, seq, 1) catch return error.ArithmeticOverflow;
+        // The value published as latest is `next_seq`. Stepping the counter
+        // forward past the marker is allowed; landing inside it is not.
+        if (self.hardened_sequence) |hardened| {
+            if (next_seq <= hardened) return error.HardenedCheckpoint;
+        }
+        self.current = next_seq;
         return seq;
+    }
+
+    /// Raise the hardened marker to `max(current marker, seq)`.
+    /// A lower or equal seq leaves the existing marker in place.
+    /// A non-null `digest` is kept for `seq`. A null digest is copied from
+    /// `head_digest` only when the marker moves and `head_sequence` already equals `seq`.
+    /// The first digest recorded for a sequence is the one later replays must match.
+    pub fn hardenThrough(self: *Self, seq: u64, digest: ?[32]u8) void {
+        const advancing = if (self.hardened_sequence) |cur| seq > cur else true;
+        if (!advancing and digest == null) return;
+
+        if (advancing) {
+            if (self.hardened_sequence) |prev| {
+                if (self.hardened_digest) |prev_digest| self.noteHardenedDigest(prev, prev_digest);
+            }
+            self.hardened_sequence = seq;
+        }
+
+        const chosen: ?[32]u8 = if (digest) |given| given else self.digestFromMatchingHead(seq);
+        if (chosen) |d| {
+            self.noteHardenedDigest(seq, d);
+            if (self.hardened_sequence) |marker| {
+                if (marker == seq) self.hardened_digest = self.ringDigest(seq) orelse d;
+            }
+        } else if (advancing) {
+            self.hardened_digest = null;
+        }
+    }
+
+    /// Move the latest sequence. A value at or below the hardened marker is refused.
+    pub fn setLatestSequence(self: *Self, seq: u64) error{HardenedCheckpoint}!void {
+        if (seq == self.current) return;
+        if (self.hardened_sequence) |hardened| {
+            if (seq <= hardened) return error.HardenedCheckpoint;
+        }
+        self.current = seq;
+        if (self.head_sequence) |hs| {
+            if (hs != seq) {
+                self.head_sequence = null;
+                self.head_digest = null;
+            }
+        }
+    }
+
+    /// Adopt a checkpoint as the stored head.
+    /// A sequence at or below the hardened marker is kept only when its digest
+    /// matches the digest already stored for that sequence.
+    pub fn loadCheckpoint(self: *Self, sequence: u64, digest: [32]u8, previous_digest: [32]u8) error{HardenedCheckpoint}!void {
+        try self.verifyCheckpoint(sequence, digest, previous_digest);
+        if (self.hardened_sequence) |hardened| {
+            if (sequence <= hardened) {
+                self.rememberHead(sequence, digest);
+                return;
+            }
+        }
+        self.current = sequence;
+        self.rememberHead(sequence, digest);
+    }
+
+    /// Record a checkpoint head. Same rejection rule as `loadCheckpoint`.
+    /// The latest sequence moves forward, and may move backward only while it
+    /// stays strictly above the hardened marker.
+    pub fn append(self: *Self, sequence: u64, digest: [32]u8, previous_digest: [32]u8) error{HardenedCheckpoint}!void {
+        try self.loadCheckpoint(sequence, digest, previous_digest);
+    }
+
+    /// Reject a checkpoint that would replace history at or below `hardened_sequence`
+    /// unless its digest matches a digest this store kept for that sequence.
+    /// The ring is checked first, then the single marker digest when the sequences match.
+    /// A sequence with no stored digest is refused; a match is never invented.
+    /// The next sequence after the marker must chain from the marker digest when it is known.
+    pub fn verifyCheckpoint(self: Self, sequence: u64, digest: ?[32]u8, previous_digest: [32]u8) error{HardenedCheckpoint}!void {
+        const hardened = self.hardened_sequence orelse return;
+        if (sequence <= hardened) {
+            if (self.storedDigest(sequence)) |stored| {
+                if (digest) |got| {
+                    if (std.mem.eql(u8, &stored, &got)) return;
+                }
+            }
+            return error.HardenedCheckpoint;
+        }
+        if (hardened != std.math.maxInt(u64) and sequence == hardened + 1) {
+            if (self.hardened_digest) |stored| {
+                if (!std.mem.eql(u8, &previous_digest, &stored)) return error.HardenedCheckpoint;
+            }
+        }
     }
 
     pub fn getLatestSequence(self: Self) u64 {
         return self.current;
+    }
+
+    /// Gauge value for `zknot3_checkpoint_hardened_sequence`. Null reads as 0.
+    pub fn hardenedSequenceGauge(self: Self) u64 {
+        return self.hardened_sequence orelse 0;
+    }
+
+    pub const HardenedTip = struct {
+        sequence: u64,
+        digest: [32]u8,
+    };
+
+    /// Local hardened tip: ring entry for the marker, otherwise `hardened_digest`.
+    /// Null when no marker is set or that sequence has no stored digest.
+    pub fn hardenedTip(self: Self) ?HardenedTip {
+        const sequence = self.hardened_sequence orelse return null;
+        const digest = self.storedDigest(sequence) orelse return null;
+        return .{ .sequence = sequence, .digest = digest };
     }
 
     pub fn deinit(self: *Self) void {
@@ -358,7 +505,62 @@ pub const CheckpointSequence = struct {
         _ = self;
     }
 
-    /// Persist sequence state to disk. Format: [current: u64 be][initial_digest: 32].
+    fn rememberHead(self: *Self, sequence: u64, digest: [32]u8) void {
+        self.head_sequence = sequence;
+        self.head_digest = digest;
+        if (self.hardened_sequence) |hardened| {
+            if (hardened == sequence) self.hardened_digest = digest;
+        }
+    }
+
+    fn digestFromMatchingHead(self: Self, seq: u64) ?[32]u8 {
+        const hs = self.head_sequence orelse return null;
+        if (hs != seq) return null;
+        return self.head_digest;
+    }
+
+    /// First write wins. A later call cannot replace a digest already stored for `seq`.
+    fn noteHardenedDigest(self: *Self, seq: u64, digest: [32]u8) void {
+        if (self.ringDigest(seq) != null) return;
+        if (self.hardened_count < ring_cap) {
+            self.hardened_ring[self.hardened_count] = .{ .seq = seq, .digest = digest };
+            self.hardened_count += 1;
+            return;
+        }
+        var j: usize = 1;
+        while (j < ring_cap) : (j += 1) {
+            self.hardened_ring[j - 1] = self.hardened_ring[j];
+        }
+        self.hardened_ring[ring_cap - 1] = .{ .seq = seq, .digest = digest };
+    }
+
+    fn ringDigest(self: Self, sequence: u64) ?[32]u8 {
+        var i: usize = 0;
+        while (i < self.hardened_count) : (i += 1) {
+            if (self.hardened_ring[i].seq == sequence) return self.hardened_ring[i].digest;
+        }
+        return null;
+    }
+
+    /// Digest kept for `sequence`: the ring entry, otherwise `hardened_digest`
+    /// when that field belongs to this sequence.
+    pub fn storedDigest(self: Self, sequence: u64) ?[32]u8 {
+        if (self.ringDigest(sequence)) |digest| return digest;
+        if (self.hardened_sequence) |hardened| {
+            if (hardened == sequence) return self.hardened_digest;
+        }
+        return null;
+    }
+
+    /// Persist sequence state to disk.
+    /// Legacy prefix, unchanged so old readers that take the first 40 bytes still see `current`:
+    /// `[current: u64 be][initial_digest: 32]`.
+    /// When a marker is set, a versioned tail follows:
+    /// `[version: u8][flags: u8][hardened_sequence: u64 be][hardened_digest: 32]?`.
+    /// Version 1 stops there (50 bytes without a digest, 82 with one).
+    /// Version 2, written when the ring is non-empty, appends
+    /// `[count: u8][seq: u64 be][digest: 32] * count` with `count <= 8`.
+    /// `flags` bit 0 means the sequence is present; bit 1 means the digest is present.
     pub fn save(self: Self, path: []const u8) !void {
         const io = @import("io_instance").io;
         const dir_path = std.fs.path.dirname(path) orelse ".";
@@ -367,14 +569,14 @@ pub const CheckpointSequence = struct {
         const file = try dir.createFile(io, std.fs.path.basename(path), .{ .truncate = true });
         defer file.close(io);
 
-        var buf: [40]u8 = undefined;
-        std.mem.writeInt(u64, buf[0..8], self.current, .big);
-        @memcpy(buf[8..40], &self.initial_digest);
-        try file.writeStreamingAll(io, &buf);
+        var buf: [file_len_max]u8 = undefined;
+        const n = self.encode(&buf);
+        try file.writeStreamingAll(io, buf[0..n]);
         try file.sync(io);
     }
 
-    /// Load sequence state from disk. Returns `init()` if file missing or truncated.
+    /// Load sequence state from disk. Returns `init()` if file missing or shorter than the legacy prefix.
+    /// A 40-byte file (no tail) loads with `hardened_sequence = null`.
     pub fn load(path: []const u8) !Self {
         const io = @import("io_instance").io;
         const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| switch (err) {
@@ -383,15 +585,83 @@ pub const CheckpointSequence = struct {
         };
         defer file.close(io);
 
-        var buf: [40]u8 = undefined;
+        var buf: [file_len_max]u8 = undefined;
         var reader = file.reader(io, &.{});
         const n = reader.interface.readSliceShort(&buf) catch return init();
-        if (n < 40) return init();
+        if (n < legacy_len) return init();
+        return decode(buf[0..n]);
+    }
 
-        return .{
-            .current = std.mem.readInt(u64, buf[0..8], .big),
-            .initial_digest = buf[8..40].*,
-        };
+    fn encode(self: Self, buf: *[file_len_max]u8) usize {
+        std.mem.writeInt(u64, buf[0..8], self.current, .big);
+        @memcpy(buf[8..legacy_len], &self.initial_digest);
+        const hardened = self.hardened_sequence orelse return legacy_len;
+        const version: u8 = if (self.hardened_count > 0) tail_version else tail_version_v1;
+        buf[40] = version;
+        var flags: u8 = flag_hardened;
+        var len: usize = 50;
+        std.mem.writeInt(u64, buf[42..50], hardened, .big);
+        if (self.hardened_digest) |digest| {
+            flags |= flag_digest;
+            @memcpy(buf[50..82], &digest);
+            len = 82;
+        }
+        buf[41] = flags;
+        if (version == tail_version_v1) return len;
+        buf[len] = @intCast(self.hardened_count);
+        len += 1;
+        var i: usize = 0;
+        while (i < self.hardened_count) : (i += 1) {
+            std.mem.writeInt(u64, buf[len..][0..8], self.hardened_ring[i].seq, .big);
+            len += 8;
+            @memcpy(buf[len..][0..32], &self.hardened_ring[i].digest);
+            len += 32;
+        }
+        return len;
+    }
+
+    fn decode(bytes: []const u8) !Self {
+        if (bytes.len < legacy_len) return error.InvalidSequenceFile;
+        var self = init();
+        self.current = std.mem.readInt(u64, bytes[0..8], .big);
+        self.initial_digest = bytes[8..legacy_len].*;
+        if (bytes.len == legacy_len) return self;
+        const version = bytes[40];
+        if (version != tail_version_v1 and version != tail_version) return error.InvalidSequenceFile;
+        if (bytes.len < 42) return error.InvalidSequenceFile;
+        const flags = bytes[41];
+        var off: usize = 42;
+        if (flags & flag_hardened != 0) {
+            if (bytes.len < off + 8) return error.InvalidSequenceFile;
+            self.hardened_sequence = std.mem.readInt(u64, bytes[off..][0..8], .big);
+            off += 8;
+        }
+        if (flags & flag_digest != 0) {
+            if (bytes.len < off + 32) return error.InvalidSequenceFile;
+            const digest = bytes[off..][0..32].*;
+            self.hardened_digest = digest;
+            off += 32;
+            if (self.hardened_sequence) |hardened| {
+                self.head_sequence = hardened;
+                self.head_digest = digest;
+            }
+        }
+        if (version == tail_version_v1) return self;
+        if (bytes.len < off + 1) return error.InvalidSequenceFile;
+        const count: usize = @intCast(bytes[off]);
+        off += 1;
+        if (count > ring_cap) return error.InvalidSequenceFile;
+        if (bytes.len < off + count * ring_entry_len) return error.InvalidSequenceFile;
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const seq = std.mem.readInt(u64, bytes[off..][0..8], .big);
+            off += 8;
+            const digest = bytes[off..][0..32].*;
+            off += 32;
+            self.hardened_ring[i] = .{ .seq = seq, .digest = digest };
+        }
+        self.hardened_count = count;
+        return self;
     }
 };
 
@@ -486,7 +756,7 @@ test "Checkpoint verify state root" {
     defer cp.deinit(allocator);
 
     // Verify should pass with no previous checkpoint and no validator set
-    const is_valid = try cp.verify(allocator, null, null, null);
+    const is_valid = try cp.verify(allocator, null, null, null, null);
     try std.testing.expect(is_valid);
 }
 
@@ -514,7 +784,7 @@ test "Checkpoint verify fails on previous digest mismatch" {
     var current = try Checkpoint.create(8, @as([32]u8, @splat(9)), &changes_cur, allocator);
     defer current.deinit(allocator);
 
-    const is_valid = try current.verify(allocator, &prev, null, null);
+    const is_valid = try current.verify(allocator, &prev, null, null, null);
     try std.testing.expect(!is_valid);
 }
 
@@ -541,7 +811,7 @@ test "Checkpoint verify fails on non-continuous sequence" {
     var current = try Checkpoint.create(13, try prev.digest(allocator), &changes_cur, allocator);
     defer current.deinit(allocator);
 
-    const is_valid = try current.verify(allocator, &prev, null, null);
+    const is_valid = try current.verify(allocator, &prev, null, null, null);
     try std.testing.expect(!is_valid);
 }
 
@@ -634,7 +904,7 @@ test "Checkpoint verify rejects BLS bitmap below quorum threshold" {
         },
     };
 
-    try std.testing.expect(!try cp.verify(allocator, null, null, &vset));
+    try std.testing.expect(!try cp.verify(allocator, null, null, &vset, null));
 }
 
 test "CheckpointSequence save and load roundtrip" {
@@ -670,6 +940,231 @@ test "CheckpointSequence advance refuses to wrap" {
     try std.testing.expectEqual(std.math.maxInt(u64), seq.getLatestSequence());
     try std.testing.expectError(error.ArithmeticOverflow, seq.advance());
     try std.testing.expectEqual(std.math.maxInt(u64), seq.getLatestSequence());
+}
+
+test "hardened sequence gauge is zero until a marker is recorded" {
+    var seq = CheckpointSequence.init();
+    try std.testing.expectEqual(@as(u64, 0), seq.hardenedSequenceGauge());
+    seq.hardened_sequence = 7;
+    try std.testing.expectEqual(@as(u64, 7), seq.hardenedSequenceGauge());
+}
+
+test "hardened sequence rejects rollback and still advances" {
+    var seq = CheckpointSequence.init();
+    seq.current = 5;
+    seq.hardenThrough(5, null);
+    try std.testing.expectError(error.HardenedCheckpoint, seq.setLatestSequence(3));
+    try std.testing.expectEqual(@as(u64, 5), seq.getLatestSequence());
+    const issued = try seq.advance();
+    try std.testing.expectEqual(@as(u64, 5), issued);
+    try std.testing.expectEqual(@as(u64, 6), seq.getLatestSequence());
+    try std.testing.expectEqual(@as(?u64, 5), seq.hardened_sequence);
+}
+
+test "legacy sequence.bin without hardened field still loads" {
+    const io = @import("io_instance").io;
+    const path = "/tmp/zknot3_test_checkpoint_sequence_legacy.bin";
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const dir = try std.Io.Dir.cwd().createDirPathOpen(io, "/tmp", .{});
+    defer dir.close(io);
+    const file = try dir.createFile(io, "zknot3_test_checkpoint_sequence_legacy.bin", .{ .truncate = true });
+    defer file.close(io);
+    var raw: [40]u8 = undefined;
+    std.mem.writeInt(u64, raw[0..8], 9, .big);
+    @memset(raw[8..40], 0x11);
+    try file.writeStreamingAll(io, &raw);
+    try file.sync(io);
+
+    const loaded = try CheckpointSequence.load(path);
+    try std.testing.expectEqual(@as(u64, 9), loaded.current);
+    try std.testing.expectEqual(@as(?u64, null), loaded.hardened_sequence);
+    try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0x11)), &loaded.initial_digest);
+}
+
+test "hardened sequence rejects a conflicting head and reloads the tail" {
+    const io = @import("io_instance").io;
+    const allocator = std.testing.allocator;
+    const path = "/tmp/zknot3_test_checkpoint_sequence_hardened.bin";
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const changes = [_]Checkpoint.ObjectChange{
+        .{
+            .id = core.ObjectID.hash("hardened"),
+            .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
+            .status = .created,
+        },
+    };
+    var cp = try Checkpoint.create(5, @as([32]u8, @splat(0)), &changes, allocator);
+    defer cp.deinit(allocator);
+    const digest = try cp.digest(allocator);
+    const other: [32]u8 = @splat(0xCD);
+
+    var seq = CheckpointSequence.init();
+    seq.current = 5;
+    try seq.append(5, digest, cp.previous_digest);
+    seq.hardenThrough(5, null);
+    try std.testing.expectError(error.HardenedCheckpoint, seq.setLatestSequence(3));
+    try std.testing.expectError(error.HardenedCheckpoint, seq.append(3, other, cp.previous_digest));
+    try std.testing.expectError(error.HardenedCheckpoint, seq.loadCheckpoint(5, other, cp.previous_digest));
+    try seq.loadCheckpoint(5, digest, cp.previous_digest);
+    try std.testing.expectError(error.HardenedCheckpoint, seq.verifyCheckpoint(5, other, cp.previous_digest));
+    try seq.verifyCheckpoint(5, digest, cp.previous_digest);
+    var flipped = try Checkpoint.create(5, @as([32]u8, @splat(1)), &changes, allocator);
+    defer flipped.deinit(allocator);
+    try std.testing.expect(!try flipped.verify(allocator, null, null, null, &seq));
+    try std.testing.expect(try cp.verify(allocator, null, null, null, &seq));
+
+    const next_digest: [32]u8 = @splat(0x44);
+    try std.testing.expectError(error.HardenedCheckpoint, seq.append(6, next_digest, @as([32]u8, @splat(1))));
+    try seq.append(6, next_digest, digest);
+    try std.testing.expectEqual(@as(u64, 6), seq.getLatestSequence());
+
+    try seq.save(path);
+    const loaded = try CheckpointSequence.load(path);
+    try std.testing.expectEqual(@as(u64, 6), loaded.current);
+    try std.testing.expectEqual(@as(?u64, 5), loaded.hardened_sequence);
+    const stored_digest = loaded.hardened_digest orelse return error.MissingHardenedDigest;
+    try std.testing.expectEqualSlices(u8, &digest, &stored_digest);
+    try std.testing.expectError(error.HardenedCheckpoint, loaded.verifyCheckpoint(5, other, cp.previous_digest));
+}
+
+test "hardened digest is stored, reloaded, and required" {
+    const io = @import("io_instance").io;
+    const path = "/tmp/zknot3_test_checkpoint_sequence_ring.bin";
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, path) catch {};
+
+    const older: [32]u8 = @splat(0x21);
+    const newer: [32]u8 = @splat(0x22);
+    const wrong: [32]u8 = @splat(0x23);
+    const prev: [32]u8 = @splat(0);
+
+    var seq = CheckpointSequence.init();
+    seq.current = 4;
+    seq.hardenThrough(1, older);
+    seq.hardenThrough(3, newer);
+    try std.testing.expectError(error.HardenedCheckpoint, seq.loadCheckpoint(1, wrong, prev));
+    try seq.loadCheckpoint(1, older, prev);
+    try std.testing.expectError(error.HardenedCheckpoint, seq.verifyCheckpoint(3, wrong, older));
+    try seq.verifyCheckpoint(3, newer, older);
+    const issued = try seq.advance();
+    try std.testing.expectEqual(@as(u64, 4), issued);
+    try std.testing.expectEqual(@as(u64, 5), seq.getLatestSequence());
+
+    try seq.save(path);
+    var loaded = try CheckpointSequence.load(path);
+    try std.testing.expectEqual(@as(?u64, 3), loaded.hardened_sequence);
+    const stored = loaded.hardened_digest orelse return error.MissingHardenedDigest;
+    try std.testing.expectEqualSlices(u8, &newer, &stored);
+    try std.testing.expectError(error.HardenedCheckpoint, loaded.loadCheckpoint(1, wrong, prev));
+    try loaded.loadCheckpoint(1, older, prev);
+    try loaded.verifyCheckpoint(3, newer, older);
+    const again = try loaded.advance();
+    try std.testing.expectEqual(@as(u64, 5), again);
+    try std.testing.expectEqual(@as(u64, 6), loaded.getLatestSequence());
+}
+
+test "version 1 hardened tail still loads" {
+    const io = @import("io_instance").io;
+    const path50 = "/tmp/zknot3_test_checkpoint_sequence_v1_50.bin";
+    const path82 = "/tmp/zknot3_test_checkpoint_sequence_v1_82.bin";
+    std.Io.Dir.cwd().deleteFile(io, path50) catch {};
+    std.Io.Dir.cwd().deleteFile(io, path82) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, path50) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, path82) catch {};
+
+    const dir = try std.Io.Dir.cwd().createDirPathOpen(io, "/tmp", .{});
+    defer dir.close(io);
+
+    var raw50: [50]u8 = undefined;
+    std.mem.writeInt(u64, raw50[0..8], 7, .big);
+    @memset(raw50[8..40], 0x11);
+    raw50[40] = 1;
+    raw50[41] = 0b01;
+    std.mem.writeInt(u64, raw50[42..50], 4, .big);
+    const file50 = try dir.createFile(io, "zknot3_test_checkpoint_sequence_v1_50.bin", .{ .truncate = true });
+    try file50.writeStreamingAll(io, &raw50);
+    try file50.sync(io);
+    file50.close(io);
+
+    var loaded50 = try CheckpointSequence.load(path50);
+    try std.testing.expectEqual(@as(u64, 7), loaded50.current);
+    try std.testing.expectEqual(@as(?u64, 4), loaded50.hardened_sequence);
+    try std.testing.expectEqual(@as(?[32]u8, null), loaded50.hardened_digest);
+    try std.testing.expectError(error.HardenedCheckpoint, loaded50.verifyCheckpoint(4, @as([32]u8, @splat(0xAB)), @as([32]u8, @splat(0))));
+    try std.testing.expectError(error.HardenedCheckpoint, loaded50.loadCheckpoint(4, @as([32]u8, @splat(0xAB)), @as([32]u8, @splat(0))));
+    const issued50 = try loaded50.advance();
+    try std.testing.expectEqual(@as(u64, 7), issued50);
+    try std.testing.expectEqual(@as(u64, 8), loaded50.getLatestSequence());
+
+    const digest: [32]u8 = @splat(0x44);
+    var raw82: [82]u8 = undefined;
+    std.mem.writeInt(u64, raw82[0..8], 9, .big);
+    @memset(raw82[8..40], 0x22);
+    raw82[40] = 1;
+    raw82[41] = 0b11;
+    std.mem.writeInt(u64, raw82[42..50], 6, .big);
+    @memcpy(raw82[50..82], &digest);
+    const file82 = try dir.createFile(io, "zknot3_test_checkpoint_sequence_v1_82.bin", .{ .truncate = true });
+    try file82.writeStreamingAll(io, &raw82);
+    try file82.sync(io);
+    file82.close(io);
+
+    var loaded82 = try CheckpointSequence.load(path82);
+    try std.testing.expectEqual(@as(u64, 9), loaded82.current);
+    try std.testing.expectEqual(@as(?u64, 6), loaded82.hardened_sequence);
+    try loaded82.verifyCheckpoint(6, digest, @as([32]u8, @splat(0)));
+    try std.testing.expectError(error.HardenedCheckpoint, loaded82.verifyCheckpoint(6, @as([32]u8, @splat(0x01)), @as([32]u8, @splat(0))));
+    try loaded82.loadCheckpoint(6, digest, @as([32]u8, @splat(0)));
+    const issued82 = try loaded82.advance();
+    try std.testing.expectEqual(@as(u64, 9), issued82);
+    try std.testing.expectEqual(@as(u64, 10), loaded82.getLatestSequence());
+}
+
+test "hardened digest ring keeps the last eight sequences" {
+    var seq = CheckpointSequence.init();
+    var n: u64 = 1;
+    while (n <= 9) : (n += 1) {
+        var digest: [32]u8 = @splat(0);
+        digest[0] = @intCast(n);
+        seq.hardenThrough(n, digest);
+    }
+    var first: [32]u8 = @splat(0);
+    first[0] = 1;
+    var second: [32]u8 = @splat(0);
+    second[0] = 2;
+    var ninth: [32]u8 = @splat(0);
+    ninth[0] = 9;
+    try std.testing.expectError(error.HardenedCheckpoint, seq.verifyCheckpoint(1, first, @as([32]u8, @splat(0))));
+    try seq.verifyCheckpoint(2, second, @as([32]u8, @splat(0)));
+    try seq.verifyCheckpoint(9, ninth, @as([32]u8, @splat(0)));
+    seq.current = 10;
+    const issued = try seq.advance();
+    try std.testing.expectEqual(@as(u64, 10), issued);
+    try std.testing.expectEqual(@as(u64, 11), seq.getLatestSequence());
+}
+
+test "hardened tip prefers the ring digest, else the marker digest" {
+    var seq = CheckpointSequence.init();
+    try std.testing.expect(seq.hardenedTip() == null);
+
+    seq.hardenThrough(4, null);
+    try std.testing.expect(seq.hardenedTip() == null);
+
+    const ring: [32]u8 = @splat(0xA1);
+    const marker: [32]u8 = @splat(0xB2);
+    seq.hardenThrough(6, ring);
+    seq.hardened_digest = marker;
+    const from_ring = seq.hardenedTip() orelse return error.MissingHardenedTip;
+    try std.testing.expectEqual(@as(u64, 6), from_ring.sequence);
+    try std.testing.expectEqualSlices(u8, &ring, &from_ring.digest);
+
+    seq.hardened_count = 0;
+    const from_marker = seq.hardenedTip() orelse return error.MissingHardenedTip;
+    try std.testing.expectEqualSlices(u8, &marker, &from_marker.digest);
 }
 
 test "Checkpoint state root determinism" {
