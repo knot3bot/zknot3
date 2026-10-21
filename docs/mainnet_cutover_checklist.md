@@ -5,7 +5,7 @@
 - [ ] Freeze protocol version and config profile
 - [ ] Run `tools/mainnet_release_gate.sh` on release candidate
 - [ ] Run `tools/p0_mainnet_gate.sh` and archive logs
-- [ ] 确认阻塞项/观察项边界：阻塞项失败立即停止；观察项失败需出具人工评估结论
+- [ ] Blocking failures stop the cutover. Observe failures need a written decision before continuing.
 - [ ] Verify validator key injection procedure in staging
 - [ ] Confirm incident commander/on-call roster
 
@@ -21,14 +21,14 @@
 - [ ] Start seed validators
 - [ ] Verify peer mesh convergence
 - [ ] Verify first checkpoint progression
-- [ ] Verify `/tx` replay returns `duplicate=true` (no second入池)
+- [ ] Verify `/tx` replay returns `duplicate=true` (the transaction is not admitted again)
 - [ ] Verify M4 endpoints:
   - [ ] `knot3_submitStakeOperation`
   - [ ] `knot3_submitGovernanceProposal`
   - [ ] `knot3_getCheckpointProof`
-  - [ ] `knot3_creditGas` / `knot3_getGasBalance`（admin token + ledger smoke；非 gas-coin）
+  - [ ] `knot3_creditGas` / `knot3_getGasBalance` (admin token and a ledger read; this is not a gas coin)
 - [ ] Verify light-client proof check passes on sampled checkpoint
-- [ ] 灰度策略执行：10% 节点 -> 30% 节点 -> 全量
+- [ ] Roll out 10% of nodes, then 30%, then the rest
 
 ## T+2h
 
@@ -44,19 +44,19 @@ Rollback immediately if any occurs:
 
 - Checkpoint progression stalls for > 2 epochs
 - Repeated consensus safety alarms
-- Critical proof verification failures（阈值：checkpoint 验签失败率 > 0.1% / 5 分钟）
+- Critical proof verification failures (checkpoint signature failures above 0.1% in a 5-minute window)
 - Uncontrolled peer churn or ban storms
 - Node recovery exceeds 120s for 3 consecutive restarts
 
 ## Blocking vs Observe
 
-- Blocking（必须通过）:
+- Blocking (must pass):
   - `tools/p0_mainnet_gate.sh`
-  - `tools/mainnet_release_gate.sh` 阻塞阶段（build/test/WAL recovery/tx语义）
-  - `knot3_getCheckpointProof` 的 `bls_signature` / `bls_signer_bitmap` 可被 LightClient 一致验过
-- Observe（可灰度继续，但需人工确认）:
-  - 全量 adversarial 套件中的已知非阻塞项告警
-  - 长稳趋势与压力冗余指标（p95、ban rate、fallback 计数）
+  - Blocking stages of `tools/mainnet_release_gate.sh` (build, test, WAL recovery, tx semantics)
+  - LightClient accepts `bls_signature` / `bls_signer_bitmap` from `knot3_getCheckpointProof`
+- Observe (rollout can continue after a person signs off):
+  - Known non-blocking alerts from the full adversarial suite
+  - Soak and load figures (p95, ban rate, fallback count)
 
 ## Rollback Steps
 

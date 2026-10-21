@@ -91,12 +91,12 @@ it does not bind the genesis digest, and it is not in the WAN gate.
 ## HTTP / JSON-RPC
 
 - `POST /tx` — Submit transaction (requires auth for non-loopback)
-- `POST /rpc` — JSON-RPC 2.0。同步 `HTTPServer` 与 Linux `AsyncHTTPServer` 都调用 `RPC.RPCServer.dispatch`，方法表在 `src/form/network/RPC.zig` 的 `builtin_methods`。
+- `POST /rpc` — JSON-RPC 2.0. Both the portable `HTTPServer` and the Linux `AsyncHTTPServer` call `RPC.RPCServer.dispatch`. The method table is `builtin_methods` in `src/form/network/RPC.zig`.
 - `GET /health` — Health check (always returns 200)
 - `GET /ready` — Readiness check (requires consensus_round > 0)
 - `GET /metrics` — Prometheus metrics endpoint
 
-JSON-RPC 的客户端错误（非法 JSON、未知方法、参数错误）以 JSON-RPC error 对象返回，HTTP 状态为 **200**。合约见 `docs/rpc_contracts_m4.md`。
+Client JSON-RPC errors (invalid JSON, unknown method, bad params) are a JSON-RPC error object with HTTP 200. See `docs/rpc_contracts_m4.md`.
 
 ### Auth Model
 - `network.admin_token` must be set for non-loopback bind

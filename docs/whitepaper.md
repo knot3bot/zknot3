@@ -8,7 +8,7 @@
 
 ## Abstract
 
-zknot3 is a Layer-1 built on the **Three-Source Integration (三源合恰)** framework, with a zknot3-native bytecode VM, PTB, gas sponsorship, and VRF. It is not Move-binary compatible. Measured single-node throughput is the README benchmark: about 90,000 TPS on the fast path and about 5,000 TPS on the consensus path.
+zknot3 is a Layer-1 built on the three-source split (form, property, metric), with a zknot3-native bytecode VM, PTB, gas sponsorship, and VRF. It is not Move-binary compatible. Measured single-node throughput is the README benchmark: about 90,000 TPS on the fast path and about 5,000 TPS on the consensus path.
 
 ---
 
@@ -26,7 +26,7 @@ Current blockchain platforms face three fundamental challenges for creative AI a
 
 zknot3 addresses these through:
 
-- **Three-Source Integration Framework**: A unified architecture where spatial topology (形), intrinsic attributes (性), and quantitative measures (数) converge
+- **Three-source split**: form (storage, network, consensus), property (VM, access, crypto), and metric (epoch, stake, counters)
 - **Creator³ Network**: Native support for human-AI co-creation with provenance, licensing, and royalty distribution
 - **30 TPS Optimizations**: From parallel execution to BLS aggregation, achieving 80x throughput improvement
 
@@ -34,12 +34,12 @@ zknot3 addresses these through:
 
 ## 2. Architecture
 
-### 2.1 Three-Source Integration (三源合恰)
+### 2.1 Three-source split
 
 ```
-形 (Spatial Topology)    → Storage, Network, Consensus  → Digital Life Carrier
-性 (Intrinsic Attribute) → Move VM, Access Control, Crypto → Digital Life Properties
-数 (Quantitative Measure) → Epoch, Stake, Metrics → Digital Life Evolution
+form      storage, network, consensus
+property  VM, access control, crypto
+metric    epoch, stake, counters
 ```
 
 ### 2.2 System Components
@@ -351,5 +351,4 @@ zknot3 is a reference implementation of its own protocol. The measured single-no
 
 ---
 
-*Built on the Three-Source Integration Framework (三源合恰)*
-*Digital Life · Human-AI Co-Creation · Trusted Infrastructure*
+*Form, property, and metric. Native bytecode, not Move binaries.*

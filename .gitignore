@@ -56,3 +56,7 @@ sdk/typescript/package-lock.json
 # Coq/prover caches
 .lia.cache
 .zcodeignore
+
+# zdoc build output and the theme dump next to the repo root
+/public/
+/.zdoc-theme/

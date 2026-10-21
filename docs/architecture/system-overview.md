@@ -72,7 +72,7 @@ src/
 │   ├── core.zig           ObjectID, Address, Types
 │   └── crypto/Bls.zig     BLS12-381 via blst
 │
-├── form/                   Form layer (形 — spatial topology)
+├── form/                   Form layer (spatial topology)
 │   ├── storage/
 │   │   ├── LSMTree.zig     Log-structured merge tree
 │   │   ├── WAL.zig         Write-ahead log with CRC32
@@ -96,7 +96,7 @@ src/
 │       ├── Quorum.zig      Stake-weighted quorum
 │       └── Validator.zig   Validator set management
 │
-├── property/               Property layer (性 — intrinsic attributes)
+├── property/               Property layer (intrinsic attributes)
 │   ├── move_vm/
 │   │   ├── Interpreter.zig Bytecode execution
 │   │   ├── Bytecode.zig    Verification + stack type check
@@ -107,7 +107,7 @@ src/
 │       ├── Signature.zig   Ed25519 signatures
 │       └── ZkLogin.zig     OAuth → on-chain identity
 │
-├── metric/                 Metric layer (数 — quantitative measures)
+├── metric/                 Metric layer (quantitative measures)
 │   ├── Epoch.zig           Epoch management
 │   ├── Stake.zig           Stake pool + delegation
 │   ├── RuntimeMetrics.zig  Prometheus metrics collector

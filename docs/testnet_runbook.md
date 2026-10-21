@@ -5,10 +5,10 @@
 1. Ensure validators/fullnode are up.
 2. Run:
    - `bash tools/testnet_release_gate.sh`
-3. Gate分层解释：
-   - 阻塞项（必须通过）：`zig build`、`zig build test`、`tools/p0_mainnet_gate.sh`、`adversarial --case` 三项、`tools/load_test.py`。
-   - 观察项（失败需人工评估）：全量 `tools/adversarial_test.py`（会输出 `business_failures` / `environment_failures` 分类）。
-4. 若阻塞项失败，禁止发布。
+3. Gate split:
+   - Blocking (must pass): `zig build`, `zig build test`, `tools/p0_mainnet_gate.sh`, the three `adversarial --case` runs, `tools/load_test.py`.
+   - Observe (a person decides): the full `tools/adversarial_test.py` run, which prints `business_failures` and `environment_failures`.
+4. Do not release if a blocking item fails.
 
 ## 2. Rolling Upgrade SOP
 
@@ -34,8 +34,8 @@ Trigger rollback when any of:
 - sustained commit stalls (> 2 round intervals)
 - repeated node crash loops
 - severe RPC error spike violating SLO
-- checkpoint 验签失败率 > 0.1%（5 分钟窗口）
-- 节点重启恢复时长 > 120s（连续 3 次）
+- checkpoint signature failures above 0.1% in a 5-minute window
+- node recovery above 120s, three times in a row
 
 Rollback steps:
 1. Stop rollout.
@@ -45,12 +45,12 @@ Rollback steps:
 
 ## 5. Canary / Gray Release
 
-1. 灰度比例：10% -> 30% -> 100%。
-2. 每阶段至少观察 15 分钟，检查：
-   - `/health` 全绿、`consensus_round` 持续推进
-   - `knot3_getCheckpointProof` + LightClient 验证成功
-   - 无 `environment_failures` 持续告警
-3. 任一阻塞阈值触发立即回滚，不进入下一阶段。
+1. Canary: 10%, then 30%, then 100%.
+2. Watch each stage for at least 15 minutes:
+   - `/health` stays up and `consensus_round` keeps moving
+   - `knot3_getCheckpointProof` passes LightClient
+   - `environment_failures` is not a standing alert
+3. A blocking threshold rolls the stage back. Do not advance.
 
 ## 6. Post-Incident Actions
 
