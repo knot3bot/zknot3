@@ -1,5 +1,5 @@
-//! Strict parsing for M4 JSON-RPC / HTTP JSON bodies (object params only).
-//! Shared by `RPC.zig`, `HTTPServer.zig`, and `AsyncHTTPServer.zig`.
+//! Strict parsing for M4 JSON-RPC bodies (object params only).
+//! Callers go through `RPC.zig`, the single JSON-RPC dispatch path.
 
 const std = @import("std");
 const MainnetExtensionHooks = @import("../../app/MainnetExtensionHooks.zig");

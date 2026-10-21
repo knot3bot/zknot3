@@ -2,20 +2,22 @@
 
 const std = @import("std");
 const core = @import("../core.zig");
-const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
+const object_store_mod = @import("../form/storage/ObjectStore.zig");
+const ObjectStore = object_store_mod.ObjectStore;
+const StoredObject = object_store_mod.Object;
 
 pub const CoordinatorError = error{
     ObjectStoreNotAvailable,
 };
 
-pub fn getObject(store: ?*ObjectStore, id: core.ObjectID) (CoordinatorError || anyerror)!?ObjectStore.Object {
+pub fn getObject(store: ?*ObjectStore, id: core.ObjectID) (CoordinatorError || anyerror)!?StoredObject {
     if (store) |s| {
         return try s.get(id);
     }
     return error.ObjectStoreNotAvailable;
 }
 
-pub fn putObject(store: ?*ObjectStore, object: ObjectStore.Object) (CoordinatorError || anyerror)!void {
+pub fn putObject(store: ?*ObjectStore, object: StoredObject) (CoordinatorError || anyerror)!void {
     if (store) |s| {
         try s.put(object);
         return;
@@ -49,7 +51,7 @@ test "ObjectStoreCoordinator put/get/delete roundtrip" {
         std.Io.Dir.cwd().deleteTree(std.testing.io, test_dir) catch {};
     }
 
-    var object = ObjectStore.Object{
+    var object = StoredObject{
         .id = core.ObjectID.hash("coordinator-object"),
         .version = core.Version{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
         .ownership = core.Ownership.immutable(),

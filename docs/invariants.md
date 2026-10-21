@@ -142,7 +142,10 @@ Nonce replay = failed handshake = peer not added to routing table.
 ```
 FORMAL:  ∀write_request : requireAdmin(request) ∧ ¬isAuthorized(request) ⇒ rejected(401)
 PLAIN:   Write endpoints require X-Zknot3-Admin-Token when admin_token is set.
-ENFORCE: HTTPServer.zig:687, AsyncHTTPServer.zig:393
+         RPC writes are the builtin_methods entries with write=true
+         (stake, governance, creditGas). Unparseable /rpc bodies fail closed.
+ENFORCE: HTTPServer.requireAdminForRequest → RPCServer.bodyRequiresAdmin;
+         AsyncHTTPServer calls the same requireAdminForRequest.
 ```
 Non-loopback bind without admin_token → node refuses to start.
 

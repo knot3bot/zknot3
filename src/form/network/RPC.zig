@@ -12,7 +12,8 @@ const pipeline = @import("../../pipeline.zig");
 const Node = @import("../../app/Node.zig").Node;
 const MainnetExtensionHooks = @import("../../app/MainnetExtensionHooks.zig");
 const M4RpcParams = @import("M4RpcParams.zig");
-const HTTPServer = @import("HTTPServer.zig");
+const JsonRpc = @import("JsonRpc.zig");
+const Indexer = @import("../../app/Indexer.zig");
 
 /// JSON-RPC error codes
 pub const ErrorCode = enum(i32) {
@@ -141,8 +142,44 @@ pub const RPCContext = struct {
     user_data: ?*anyopaque = null,
 };
 
-/// Handler function type (legacy register path; uses opaque param bytes)
-const HandlerFn = fn (ctx: *RPCContext, params: []const u8) anyerror!RPCResponse;
+/// One handler shape for the builtin table and `register`.
+const HandlerFn = fn (ctx: *RPCContext, params: ?std.json.Value) anyerror!RPCResponse;
+
+const BuiltinMethod = struct {
+    name: []const u8,
+    /// Write methods require `X-Zknot3-Admin-Token` at the HTTP layer.
+    write: bool,
+    handler: *const HandlerFn,
+};
+
+const builtin_methods = [_]BuiltinMethod{
+    .{ .name = "knot3_getObject", .write = false, .handler = handleGetObject },
+    .{ .name = "knot3_getCheckpoint", .write = false, .handler = handleGetCheckpoint },
+    .{ .name = "knot3_getHardenedCheckpoint", .write = false, .handler = handleGetHardenedCheckpoint },
+    .{ .name = "knot3_getCoins", .write = false, .handler = handleGetCoins },
+    .{ .name = "knot3_getLatestCheckpointSequenceNumber", .write = false, .handler = handleGetLatestCheckpointSequence },
+    .{ .name = "knot3_getTransactionBlock", .write = false, .handler = handleGetTransactionBlock },
+    .{ .name = "knot3_executeTransactionBlock", .write = false, .handler = handleExecuteTransaction },
+    .{ .name = "knot3_getEvents", .write = false, .handler = handleQueryEvents },
+    .{ .name = "knot3_queryEvents", .write = false, .handler = handleQueryEvents },
+    .{ .name = "knot3_getOwnedObjects", .write = false, .handler = handleGetOwnedObjects },
+    .{ .name = "knot3_dryRunTransactionBlock", .write = false, .handler = handleDryRunTransaction },
+    .{ .name = "knot3_syncEpochState", .write = false, .handler = handleSyncEpochState },
+    .{ .name = "knot3_getEpochs", .write = false, .handler = handleGetEpochs },
+    .{ .name = "knot3_getEpochInfo", .write = false, .handler = handleGetEpochInfo },
+    .{ .name = "knot3_submitStakeOperation", .write = true, .handler = handleSubmitStakeOperation },
+    .{ .name = "knot3_submitGovernanceProposal", .write = true, .handler = handleSubmitGovernanceProposal },
+    .{ .name = "knot3_getCheckpointProof", .write = false, .handler = handleGetCheckpointProof },
+    .{ .name = "knot3_creditGas", .write = true, .handler = handleCreditGas },
+    .{ .name = "knot3_getGasBalance", .write = false, .handler = handleGetGasBalance },
+};
+
+fn findBuiltin(name: []const u8) ?BuiltinMethod {
+    for (builtin_methods) |method| {
+        if (std.mem.eql(u8, method.name, name)) return method;
+    }
+    return null;
+}
 
 /// RPC server
 pub const RPCServer = struct {
@@ -187,49 +224,71 @@ pub const RPCServer = struct {
         try self.handlers.put(self.allocator, name, handler);
     }
 
-    /// Handle HTTP request (used by HTTPServer)
+    /// JSON-RPC body for one request. Client errors come back as a JSON-RPC
+    /// error object; the caller owns the returned bytes.
     pub fn handleHTTPRequest(self: *@This(), body: []const u8) ![]u8 {
-        // Parse JSON-RPC request using std.json
-        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, body, .{ .ignore_unknown_fields = true });
+        return respond(self.context, body);
+    }
+
+    /// Single external entry for both HTTP transports.
+    pub fn dispatch(allocator: std.mem.Allocator, node: ?*Node, body: []const u8) ![]u8 {
+        var ctx = RPCContext{
+            .allocator = allocator,
+            .checkpoint_sequence = if (node) |n| n.getNodeInfo().checkpoint_sequence else 0,
+            .user_data = if (node) |n| @ptrCast(n) else null,
+        };
+        return respond(&ctx, body);
+    }
+
+    fn respond(ctx: *RPCContext, body: []const u8) ![]u8 {
+        const parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, body, .{ .ignore_unknown_fields = true }) catch {
+            return ctx.allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}");
+        };
         defer parsed.deinit();
         const value = parsed.value;
-
-        // Extract method from parsed JSON
-        const method = value.object.get("method") orelse return error.MethodRequired;
-        const method_str = method.string;
-        const id = value.object.get("id");
-        const params = value.object.get("params");
-        const id_json = try HTTPServer.formatJsonRpcId(self.allocator, id);
-        defer self.allocator.free(id_json);
-
-        // Route to handler
-        const response = self.routeRequest(method_str, params, id) catch |err| {
-            return try self.formatRpcError(@backingInt(ErrorCode.internal_error), @errorName(err), id_json);
+        const object = switch (value) {
+            .object => |o| o,
+            else => return ctx.allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}"),
         };
-        defer response.deinit(self.allocator);
+
+        const id_json = try JsonRpc.formatJsonRpcId(ctx.allocator, object.get("id"));
+        defer ctx.allocator.free(id_json);
+        const method = object.get("method") orelse {
+            return formatRpcError(ctx.allocator, @backingInt(ErrorCode.invalid_request), "Missing method", id_json);
+        };
+        const method_str = switch (method) {
+            .string => |s| s,
+            else => return formatRpcError(ctx.allocator, @backingInt(ErrorCode.invalid_request), "Missing method", id_json),
+        };
+        const params = object.get("params");
+
+        const response = routeRequest(ctx, method_str, params) catch |err| {
+            return formatRpcError(ctx.allocator, @backingInt(ErrorCode.internal_error), @errorName(err), id_json);
+        };
+        defer response.deinit(ctx.allocator);
 
         if (response.err) |e| {
-            return try self.formatRpcError(@backingInt(e.code), e.message, id_json);
+            return formatRpcError(ctx.allocator, @backingInt(e.code), e.message, id_json);
         }
 
         if (response.result) |r| if (r == .success) {
-            return try self.allocator.print(
+            return ctx.allocator.print(
                 "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
                 .{ r.success, id_json },
             );
         };
 
-        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        var out: std.Io.Writer.Allocating = .init(ctx.allocator);
         defer out.deinit();
         try std.json.Stringify.value(response, .{}, &out.writer);
         const raw = try out.toOwnedSlice();
-        return patchJsonRpcId(self.allocator, raw, id_json);
+        return patchJsonRpcId(ctx.allocator, raw, id_json);
     }
 
-    fn formatRpcError(self: *@This(), code: i32, message: []const u8, id_json: []const u8) ![]u8 {
-        const message_json = try HTTPServer.formatJsonString(self.allocator, message);
-        defer self.allocator.free(message_json);
-        return self.allocator.print(
+    fn formatRpcError(allocator: std.mem.Allocator, code: i32, message: []const u8, id_json: []const u8) ![]u8 {
+        const message_json = try JsonRpc.formatJsonString(allocator, message);
+        defer allocator.free(message_json);
+        return allocator.print(
             "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{d},\"message\":{s}}},\"id\":{s}}}",
             .{ code, message_json, id_json },
         );
@@ -249,46 +308,27 @@ pub const RPCServer = struct {
         return patched;
     }
 
-    /// Route request to appropriate handler
-    fn routeRequest(self: *@This(), method: []const u8, params: ?std.json.Value, _: ?std.json.Value) !RPCResponse {
-        // Knot3-compatible RPC methods
-        if (std.mem.eql(u8, method, "knot3_getObject")) {
-            return try handleGetObject(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getCheckpoint")) {
-            return try handleGetCheckpoint(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getHardenedCheckpoint")) {
-            return try handleGetHardenedCheckpoint(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getCoins")) {
-            return try handleGetCoins(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getLatestCheckpointSequenceNumber")) {
-            return try handleGetLatestCheckpointSequence(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getTransactionBlock")) {
-            return try handleGetTransactionBlock(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_executeTransactionBlock")) {
-            return try handleExecuteTransaction(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getEvents")) {
-            return try handleGetEvents(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getOwnedObjects")) {
-            return try handleGetOwnedObjects(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_dryRunTransactionBlock")) {
-            return try handleDryRunTransaction(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_syncEpochState")) {
-            return try handleSyncEpochState(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getEpochs")) {
-            return try handleGetEpochs(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_submitStakeOperation")) {
-            return try handleSubmitStakeOperation(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_submitGovernanceProposal")) {
-            return try handleSubmitGovernanceProposal(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getCheckpointProof")) {
-            return try handleGetCheckpointProof(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_creditGas")) {
-            return try handleCreditGas(self.context, params);
-        } else if (std.mem.eql(u8, method, "knot3_getGasBalance")) {
-            return try handleGetGasBalance(self.context, params);
-        } else {
+    /// True when the JSON-RPC body must be treated as an admin write.
+    /// Parse failures and missing methods fail closed.
+    pub fn bodyRequiresAdmin(allocator: std.mem.Allocator, body: []const u8) bool {
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{ .ignore_unknown_fields = true }) catch return true;
+        defer parsed.deinit();
+        const object = switch (parsed.value) {
+            .object => |o| o,
+            else => return true,
+        };
+        const method_val = object.get("method") orelse return true;
+        if (method_val != .string) return true;
+        const method = findBuiltin(method_val.string) orelse return false;
+        return method.write;
+    }
+
+    /// Route request to the builtin method table.
+    fn routeRequest(ctx: *RPCContext, method: []const u8, params: ?std.json.Value) !RPCResponse {
+        const spec = findBuiltin(method) orelse {
             return RPCResponse.makeError(null, .method_not_found, "Method not found");
-        }
+        };
+        return spec.handler(ctx, params);
     }
 
     /// Handle raw JSON request string (legacy compatibility)
@@ -296,17 +336,25 @@ pub const RPCServer = struct {
         return self.handleHTTPRequest(json);
     }
 
-    /// Handle a registered method. The success body is owned by the caller and
-    /// must be released with `RPCResponse.deinit`.
+    /// Handle a builtin or registered method. The success body is owned by the
+    /// caller and must be released with `RPCResponse.deinit`.
     pub fn handle(self: *@This(), request: RPCRequest) !RPCResponse {
-        if (self.handlers.get(request.method)) |handler| {
-            const params_bytes = if (request.params) |p| p.data orelse &.{} else &.{};
-            var resp = try handler(self.context, params_bytes);
-            resp.id = request.id;
-            return resp;
-        } else {
-            return RPCResponse.makeError(request.id, .method_not_found, "Method not found");
-        }
+        const handler: *const HandlerFn = if (findBuiltin(request.method)) |method|
+            method.handler
+        else
+            self.handlers.get(request.method) orelse return RPCResponse.makeError(request.id, .method_not_found, "Method not found");
+
+        var parsed: ?std.json.Parsed(std.json.Value) = null;
+        defer if (parsed) |*item| item.deinit();
+        if (request.params) |p| if (p.data) |raw| if (raw.len != 0) {
+            parsed = std.json.parseFromSlice(std.json.Value, self.allocator, raw, .{ .ignore_unknown_fields = true }) catch {
+                return RPCResponse.makeError(request.id, .invalid_params, "invalid params");
+            };
+        };
+        const params_value: ?std.json.Value = if (parsed) |*item| item.value else null;
+        var resp = try handler(self.context, params_value);
+        resp.id = request.id;
+        return resp;
     }
 
     /// Handle batch requests. Caller frees the slice and deinits each response.
@@ -334,58 +382,238 @@ pub const RPCServer = struct {
 
 // Standard RPC method handlers - use context.user_data via interfaces
 
+fn nodeFrom(ctx: *RPCContext) ?*Node {
+    const ptr = ctx.user_data orelse return null;
+    return @ptrCast(@alignCast(ptr));
+}
+
+fn jsonObject(params: ?std.json.Value) ?std.json.ObjectMap {
+    const root = params orelse return null;
+    return switch (root) {
+        .object => |o| o,
+        else => null,
+    };
+}
+
+fn parseLimit(params: ?std.json.Value) usize {
+    const o = jsonObject(params) orelse return 50;
+    const field = o.get("limit") orelse o.get("first") orelse return 50;
+    return switch (field) {
+        .integer => |n| blk: {
+            if (n <= 0) break :blk 50;
+            const wide: u64 = @intCast(n);
+            if (wide > 100) break :blk 100;
+            break :blk @intCast(wide);
+        },
+        else => 50,
+    };
+}
+
+fn parseCursor(params: ?std.json.Value) ?u64 {
+    const o = jsonObject(params) orelse return null;
+    const field = o.get("cursor") orelse return null;
+    return switch (field) {
+        .integer => |n| if (n < 0) null else @intCast(n),
+        else => null,
+    };
+}
+
+fn parseEventQuery(params: ?std.json.Value) !Indexer.EventQuery {
+    var query = Indexer.EventQuery{};
+    const root = params orelse return query;
+    switch (root) {
+        .string => |s| {
+            if (s.len != 0) query.event_type = s;
+            return query;
+        },
+        .object => |o| {
+            if (o.get("query")) |field| switch (field) {
+                .string => |s| {
+                    if (s.len != 0) query.event_type = s;
+                },
+                else => return error.InvalidParams,
+            };
+            if (o.get("eventType")) |field| switch (field) {
+                .string => |s| {
+                    if (s.len != 0) query.event_type = s;
+                },
+                else => return error.InvalidParams,
+            };
+            if (o.get("digest")) |field| switch (field) {
+                .string => |s| query.transaction_digest = M4RpcParams.parseHex32Str(s) catch return error.InvalidParams,
+                else => return error.InvalidParams,
+            };
+            return query;
+        },
+        else => return error.InvalidParams,
+    }
+}
+
+fn parseOwnerParam(params: ?std.json.Value) !?[32]u8 {
+    const root = params orelse return null;
+    switch (root) {
+        .string => |s| return M4RpcParams.parseHex32Str(s) catch error.InvalidParams,
+        .object => |o| {
+            const field = o.get("owner") orelse return null;
+            switch (field) {
+                .string => |s| return M4RpcParams.parseHex32Str(s) catch error.InvalidParams,
+                else => return error.InvalidParams,
+            }
+        },
+        else => return error.InvalidParams,
+    }
+}
+
+fn objectField(params: ?std.json.Value, name: []const u8) ?[]const u8 {
+    const o = jsonObject(params) orelse return null;
+    const field = o.get(name) orelse return null;
+    return switch (field) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn parseDigestParam(params: ?std.json.Value) !?[32]u8 {
+    const root = params orelse return null;
+    const hex = switch (root) {
+        .string => |s| s,
+        .object => |o| blk: {
+            const field = o.get("digest") orelse return error.InvalidParams;
+            break :blk switch (field) {
+                .string => |s| s,
+                else => return error.InvalidParams,
+            };
+        },
+        else => return error.InvalidParams,
+    };
+    return M4RpcParams.parseHex32Str(hex) catch error.InvalidParams;
+}
+
 fn ownedJsonSuccess(ctx: *RPCContext, literal: []const u8) !RPCResponse {
     const body = try ctx.allocator.dupe(u8, literal);
     return RPCResponse.success(null, body);
 }
 
-fn handleGetObject(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    // Return a default object for testing (interface access would be via user_data)
-    const result = RPCResponse.RPCResult{
-        .object = RPCResponse.ObjectResponse{
-            .object_id = @as([]u8, @constCast("0x123")),
-            .version = 1,
-            .owner = @as([]u8, @constCast("0x0")),
-            .type = @as([]u8, @constCast("0x2::coin::Coin<0x1::knot3::KNOT3>")),
-            .data = @as([]u8, @constCast("{}")),
+fn parseIdParam(params: ?std.json.Value) !?[32]u8 {
+    const root = params orelse return null;
+    const hex = switch (root) {
+        .string => |s| s,
+        .object => |o| blk: {
+            const field = o.get("id") orelse return null;
+            break :blk switch (field) {
+                .string => |s| s,
+                else => return error.InvalidParams,
+            };
         },
+        else => return error.InvalidParams,
     };
-    return .{ .id = null, .result = result, .err = null };
+    return M4RpcParams.parseHex32Str(hex) catch error.InvalidParams;
 }
 
-fn handleGetCheckpoint(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    const result = RPCResponse.RPCResult{
-        .checkpoint = RPCResponse.CheckpointResponse{
-            .sequence = ctx.checkpoint_sequence,
-            .digest = @as([]u8, @constCast("0xabc123")),
-            .timestamp = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            },
-        },
+fn handleGetObject(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const node = nodeFrom(ctx) orelse {
+        return RPCResponse.makeError(null, .knot3_object_not_found, "Object not found");
     };
-    return .{ .id = null, .result = result, .err = null };
+    const id_bytes = parseIdParam(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getObject params");
+    } orelse {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getObject params");
+    };
+    const id = core.ObjectID.fromBytes(&id_bytes) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getObject params");
+    };
+    const object = node.getObject(id) catch {
+        return RPCResponse.makeError(null, .internal_error, "Object store unavailable");
+    } orelse {
+        return RPCResponse.makeError(null, .knot3_object_not_found, "Object not found");
+    };
+    const hash = std.fmt.bytesToHex(id.bytes, .lower);
+    const body = try ctx.allocator.print(
+        "{{\"object_id\":\"{s}\",\"version\":{d},\"type_tag\":{d}}}",
+        .{ hash[0..], object.version.seq, object.type_tag },
+    );
+    return RPCResponse.success(null, body);
 }
 
-fn handleGetCoins(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    const result = RPCResponse.RPCResult{
-        .coins = RPCResponse.CoinsResponse{
-            .data = &.{},
+fn parseCheckpointId(params: ?std.json.Value) !?u64 {
+    const root = params orelse return null;
+    const raw = switch (root) {
+        .object => |o| blk: {
+            const field = o.get("id") orelse return null;
+            break :blk switch (field) {
+                .integer => |n| n,
+                else => return error.InvalidParams,
+            };
         },
+        else => return error.InvalidParams,
     };
-    return .{ .id = null, .result = result, .err = null };
+    if (raw < 0) return error.InvalidParams;
+    return @intCast(raw);
+}
+
+fn unixSeconds() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return ts.sec;
+}
+
+fn checkpointJson(ctx: *RPCContext, sequence: u64, digest: ?[32]u8) !RPCResponse {
+    const ts = unixSeconds();
+    if (digest) |d| {
+        const hex = std.fmt.bytesToHex(d, .lower);
+        const body = try ctx.allocator.print(
+            "{{\"sequence\":{d},\"digest\":\"{s}\",\"timestamp\":{d}}}",
+            .{ sequence, hex[0..], ts },
+        );
+        return RPCResponse.success(null, body);
+    }
+    const body = try ctx.allocator.print(
+        "{{\"sequence\":{d},\"digest\":null,\"timestamp\":{d}}}",
+        .{ sequence, ts },
+    );
+    return RPCResponse.success(null, body);
+}
+
+fn handleGetCheckpoint(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const requested = parseCheckpointId(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getCheckpoint params");
+    };
+    const node = nodeFrom(ctx) orelse {
+        return checkpointJson(ctx, requested orelse ctx.checkpoint_sequence, null);
+    };
+    const sequence = requested orelse node.getNodeInfo().checkpoint_sequence;
+    return checkpointJson(ctx, sequence, node.checkpoint_store.storedDigest(sequence));
+}
+
+fn handleGetCoins(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    return ownedJsonSuccess(ctx, "{\"data\":[]}");
 }
 
 fn handleGetLatestCheckpointSequence(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    return ownedJsonSuccess(ctx, "0");
+    const sequence = if (nodeFrom(ctx)) |node| node.getNodeInfo().checkpoint_sequence else 0;
+    const body = try ctx.allocator.print("{d}", .{sequence});
+    return RPCResponse.success(null, body);
 }
 
-fn handleGetTransactionBlock(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    return RPCResponse.makeError(null, .knot3_object_not_found, "Transaction not found");
+fn handleGetTransactionBlock(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const node = nodeFrom(ctx) orelse {
+        return RPCResponse.makeError(null, .internal_error, "Node not initialized");
+    };
+    const digest = parseDigestParam(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getTransactionBlock params");
+    } orelse {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getTransactionBlock params");
+    };
+    const receipt = node.getTransactionReceipt(digest) orelse {
+        return RPCResponse.makeError(null, .knot3_object_not_found, "Transaction not found");
+    };
+    const hash = std.fmt.bytesToHex(digest, .lower);
+    const sender = std.fmt.bytesToHex(receipt.sender, .lower);
+    const body = try ctx.allocator.print(
+        "{{\"digest\":\"{s}\",\"status\":\"{s}\",\"gasUsed\":{d},\"sender\":\"{s}\"}}",
+        .{ hash[0..], @tagName(receipt.status), receipt.gas_used, sender[0..] },
+    );
+    return RPCResponse.success(null, body);
 }
 
 fn handleExecuteTransaction(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
@@ -393,43 +621,70 @@ fn handleExecuteTransaction(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse 
     return RPCResponse.makeError(null, .internal_error, "Node not initialized");
 }
 
-fn handleGetEvents(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    const result = RPCResponse.RPCResult{
-        .event = RPCResponse.EventEnvelope{
-            .timestamp = blk: {
-                var ts: std.c.timespec = undefined;
-                _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-                break :blk (ts.sec);
-            },
-            .events = &.{},
-        },
+fn handleQueryEvents(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const query = parseEventQuery(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_queryEvents params");
     };
-    return .{ .id = null, .result = result, .err = null };
+    const indexer = if (nodeFrom(ctx)) |node| node.indexer else null;
+    const idx = indexer orelse return ownedJsonSuccess(ctx, "{\"data\":[],\"hasNextPage\":false}");
+    var page = try idx.queryEvents(ctx.allocator, query, parseCursor(params), parseLimit(params));
+    defer page.deinit(ctx.allocator);
+    const body = try Indexer.formatEventsJson(ctx.allocator, page);
+    return RPCResponse.success(null, body);
 }
 
-fn handleGetOwnedObjects(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    return RPCResponse.makeError(null, .knot3_object_not_found, "Objects not found");
+fn handleGetOwnedObjects(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
+    const owner = parseOwnerParam(params) catch {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getOwnedObjects params");
+    };
+    const indexer = if (nodeFrom(ctx)) |node| node.indexer else null;
+    const idx = indexer orelse return ownedJsonSuccess(ctx, "{\"data\":[],\"hasNextPage\":false}");
+    const owner_filter = owner orelse {
+        return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getOwnedObjects params");
+    };
+    var query = Indexer.ObjectQuery{ .owner = owner_filter };
+    if (objectField(params, "query")) |type_name| {
+        if (type_name.len != 0) query.object_type = type_name;
+    }
+    var page = try idx.queryObjects(ctx.allocator, query, null, parseLimit(params));
+    defer page.deinit(ctx.allocator);
+    const body = try Indexer.formatObjectIdsJson(ctx.allocator, page);
+    return RPCResponse.success(null, body);
 }
 
-fn handleDryRunTransaction(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    return ownedJsonSuccess(ctx, "{\"effects\":{\"status\":{\"type\":\"success\"},\"gasUsed\":1000}}");
+fn handleDryRunTransaction(_: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    return RPCResponse.makeError(null, .internal_error, "dry run is not available");
 }
 
 fn handleSyncEpochState(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    return ownedJsonSuccess(ctx, "{\"epoch\":0,\"protocolVersion\":1}");
+    const epoch = if (nodeFrom(ctx)) |node| node.getEpochInfo().epoch_number else 0;
+    const body = try ctx.allocator.print("{{\"epoch\":{d},\"protocolVersion\":1}}", .{epoch});
+    return RPCResponse.success(null, body);
 }
 
 fn handleGetEpochs(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
     return ownedJsonSuccess(ctx, "{\"data\":[]}");
 }
 
+fn handleGetEpochInfo(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    const EpochInfo = @import("../../metric/EpochConsensusBridge.zig").ConsensusEpochInfo;
+    const info: EpochInfo = if (nodeFrom(ctx)) |node| node.getEpochInfo() else .{
+        .epoch_number = 0,
+        .total_stake = 0,
+        .validator_count = 0,
+        .quorum_threshold = 0,
+    };
+    const body = try ctx.allocator.print(
+        "{{\"epoch\":{d},\"total_stake\":{d},\"validator_count\":{d},\"quorum_threshold\":{d},\"validators\":{{\"active_validators\":{{\"data\":[]}}}},\"initial_epoch_version\":0}}",
+        .{ info.epoch_number, info.total_stake, info.validator_count, info.quorum_threshold },
+    );
+    return RPCResponse.success(null, body);
+}
+
 fn handleSubmitStakeOperation(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
-    const node_ptr = ctx.user_data orelse {
+    const node = nodeFrom(ctx) orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
-    const node: *Node = @ptrCast(@alignCast(node_ptr));
     const input = M4RpcParams.parseStakeOperationInput(params) catch {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_submitStakeOperation params");
     };
@@ -441,10 +696,9 @@ fn handleSubmitStakeOperation(ctx: *RPCContext, params: ?std.json.Value) !RPCRes
 }
 
 fn handleSubmitGovernanceProposal(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
-    const node_ptr = ctx.user_data orelse {
+    const node = nodeFrom(ctx) orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
-    const node: *Node = @ptrCast(@alignCast(node_ptr));
     const input = M4RpcParams.parseGovernanceProposalInput(params) catch {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_submitGovernanceProposal params");
     };
@@ -456,10 +710,9 @@ fn handleSubmitGovernanceProposal(ctx: *RPCContext, params: ?std.json.Value) !RP
 }
 
 fn handleCreditGas(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
-    const node_ptr = ctx.user_data orelse {
+    const node = nodeFrom(ctx) orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
-    const node: *Node = @ptrCast(@alignCast(node_ptr));
     const input = M4RpcParams.parseCreditGasParams(params) catch {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_creditGas params");
     };
@@ -471,10 +724,9 @@ fn handleCreditGas(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
 }
 
 fn handleGetHardenedCheckpoint(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
-    const node_ptr = ctx.user_data orelse {
+    const node = nodeFrom(ctx) orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
-    const node: *Node = @ptrCast(@alignCast(node_ptr));
     const sequence = M4RpcParams.parseOptionalHardenedSequence(params) catch {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getHardenedCheckpoint params");
     };
@@ -485,10 +737,9 @@ fn handleGetHardenedCheckpoint(ctx: *RPCContext, params: ?std.json.Value) !RPCRe
 }
 
 fn handleGetGasBalance(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
-    const node_ptr = ctx.user_data orelse {
+    const node = nodeFrom(ctx) orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
-    const node: *Node = @ptrCast(@alignCast(node_ptr));
     const input = M4RpcParams.parseGetGasBalanceParams(params) catch {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getGasBalance params");
     };
@@ -498,10 +749,9 @@ fn handleGetGasBalance(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
 }
 
 fn handleGetCheckpointProof(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
-    const node_ptr = ctx.user_data orelse {
+    const node = nodeFrom(ctx) orelse {
         return RPCResponse.makeError(null, .internal_error, "Node not initialized");
     };
-    const node: *Node = @ptrCast(@alignCast(node_ptr));
     const req = M4RpcParams.parseCheckpointProofRequest(params) catch {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getCheckpointProof params");
     };
@@ -524,7 +774,7 @@ fn handleGetCheckpointProof(ctx: *RPCContext, params: ?std.json.Value) !RPCRespo
     return RPCResponse.success(null, body);
 }
 
-fn demoOwnedHandler(ctx: *RPCContext, params: []const u8) anyerror!RPCResponse {
+fn demoOwnedHandler(ctx: *RPCContext, params: ?std.json.Value) anyerror!RPCResponse {
     _ = params;
     return ownedJsonSuccess(ctx, "{\"ok\":true}");
 }
@@ -538,7 +788,7 @@ test "RPC handle returns the registered body" {
     var demo_method: [4]u8 = "demo".*;
     const one = try server.handle(.{
         .method = &demo_method,
-        .params = .{ .data = "x" },
+        .params = null,
         .id = .{ .number = 3 },
     });
     defer one.deinit(allocator);
@@ -573,11 +823,132 @@ test "RPC handle returns the registered body" {
 
 test "RPC error message is json-escaped" {
     const allocator = std.testing.allocator;
-    var server = try RPCServer.init(allocator);
-    defer server.deinit();
-    const json = try server.formatRpcError(-32603, "bad \"req\"\n", "9");
+    const json = try RPCServer.formatRpcError(allocator, -32603, "bad \"req\"\n", "9");
     defer allocator.free(json);
     try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"bad \\\"req\\\"\\n\"},\"id\":9}", json);
+}
+
+test "dispatch is the shared JSON-RPC path" {
+    const allocator = std.testing.allocator;
+    const missing = try RPCServer.dispatch(allocator, null, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"no_such\"}");
+    defer allocator.free(missing);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "Method not found") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "\"id\":1") != null);
+
+    const info = try RPCServer.dispatch(allocator, null, "{\"jsonrpc\":\"2.0\",\"id\":\"q\\\"\",\"method\":\"knot3_getEpochInfo\"}");
+    defer allocator.free(info);
+    try std.testing.expect(std.mem.indexOf(u8, info, "initial_epoch_version") != null);
+    try std.testing.expect(std.mem.indexOf(u8, info, "\"id\":\"q\\\"\"") != null);
+
+    const bad = try RPCServer.dispatch(allocator, null, "not-json");
+    defer allocator.free(bad);
+    try std.testing.expect(std.mem.indexOf(u8, bad, "Invalid request") != null);
+
+    try std.testing.expect(RPCServer.bodyRequiresAdmin(allocator, "{\"method\":\"knot3_creditGas\"}"));
+    try std.testing.expect(RPCServer.bodyRequiresAdmin(allocator, "{\"method\":\"knot3_submitStakeOperation\"}"));
+    try std.testing.expect(!RPCServer.bodyRequiresAdmin(allocator, "{\"method\":\"knot3_getGasBalance\"}"));
+    try std.testing.expect(!RPCServer.bodyRequiresAdmin(allocator, "{\"method\":\"no_such\"}"));
+    try std.testing.expect(RPCServer.bodyRequiresAdmin(allocator, "not-json"));
+
+    const dry = try RPCServer.dispatch(allocator, null, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"knot3_dryRunTransactionBlock\"}");
+    defer allocator.free(dry);
+    try std.testing.expect(std.mem.indexOf(u8, dry, "dry run is not available") != null);
+
+    const missing_object = try RPCServer.dispatch(allocator, null, "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"knot3_getObject\"}");
+    defer allocator.free(missing_object);
+    try std.testing.expect(std.mem.indexOf(u8, missing_object, "Object not found") != null);
+
+    const checkpoint = try RPCServer.dispatch(allocator, null, "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"knot3_getCheckpoint\"}");
+    defer allocator.free(checkpoint);
+    try std.testing.expect(std.mem.indexOf(u8, checkpoint, "\"digest\":null") != null);
+}
+
+test "dispatch reads checkpoint sequence and a stored receipt" {
+    const Config = @import("../../app/Config.zig").Config;
+    const NodeDependencies = @import("../../app/Node.zig").NodeDependencies;
+    const allocator = std.testing.allocator;
+    const config = try allocator.create(Config);
+    defer allocator.destroy(config);
+    config.* = Config.default();
+    config.authority.signing_key = @as([32]u8, @splat(0x22));
+    config.authority.stake = 1;
+    const node = try Node.init(allocator, config, NodeDependencies{});
+    defer node.deinit();
+
+    const seq = try RPCServer.dispatch(allocator, node, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"knot3_getLatestCheckpointSequenceNumber\"}");
+    defer allocator.free(seq);
+    try std.testing.expect(std.mem.indexOf(u8, seq, "\"result\":0") != null);
+
+    const epoch = try RPCServer.dispatch(allocator, node, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"knot3_getEpochInfo\"}");
+    defer allocator.free(epoch);
+    try std.testing.expect(std.mem.indexOf(u8, epoch, "\"validator_count\":0") != null);
+
+    const digest: [32]u8 = @splat(0xAB);
+    const sender: [32]u8 = @splat(0xCD);
+    try node.txn_history.put(allocator, digest, .{
+        .digest = digest,
+        .status = .committed,
+        .gas_used = 3,
+        .sender = sender,
+    });
+    const hash = std.fmt.bytesToHex(digest, .lower);
+    const request = try allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"knot3_getTransactionBlock\",\"params\":{{\"digest\":\"{s}\"}}}}", .{hash[0..]});
+    defer allocator.free(request);
+    const tx = try RPCServer.dispatch(allocator, node, request);
+    defer allocator.free(tx);
+    const sender_hex = std.fmt.bytesToHex(sender, .lower);
+    try std.testing.expect(std.mem.indexOf(u8, tx, "\"status\":\"committed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tx, &sender_hex) != null);
+
+    const missing = try RPCServer.dispatch(allocator, null, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"knot3_getTransactionBlock\"}");
+    defer allocator.free(missing);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "Node not initialized") != null);
+
+    const empty_cp = try RPCServer.dispatch(allocator, node, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"knot3_getCheckpoint\"}");
+    defer allocator.free(empty_cp);
+    try std.testing.expect(std.mem.indexOf(u8, empty_cp, "\"digest\":null") != null);
+
+    node.hardened_digest_archive.clearRetainingCapacity();
+    node.checkpoint_store = @TypeOf(node.checkpoint_store).init();
+    node.checkpoint_store.bindDigestArchive(&node.hardened_digest_archive);
+    const tip: [32]u8 = @splat(0x11);
+    node.checkpoint_store.hardenThrough(4, tip);
+    const cp = try RPCServer.dispatch(allocator, node, "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"knot3_getCheckpoint\",\"params\":{\"id\":4}}");
+    defer allocator.free(cp);
+    const tip_hex = std.fmt.bytesToHex(tip, .lower);
+    try std.testing.expect(std.mem.indexOf(u8, cp, "\"sequence\":4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cp, tip_hex[0..]) != null);
+
+    const indexer = node.indexer orelse return error.TestUnexpectedResult;
+    try indexer.indexEvent(.{
+        .transaction_digest = digest,
+        .event_type = "Coin\"Transfer",
+        .contents = "a\nb",
+        .timestamp = 9,
+        .event_index = 2,
+    });
+    const events = try RPCServer.dispatch(allocator, node, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"knot3_queryEvents\",\"params\":{\"eventType\":\"Coin\\\"Transfer\"}}");
+    defer allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "Coin\\\"Transfer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "a\\nb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, events, "\"hasNextPage\":false") != null);
+
+    var coin_type: [4]u8 = "Coin".*;
+    var coin_data: [0]u8 = .{};
+    try indexer.indexObject(.{
+        .id = try core.ObjectID.fromBytes(&sender),
+        .version = .{ .seq = 1, .causal = @as([16]u8, @splat(0)) },
+        .type = &coin_type,
+        .owner = sender,
+        .data = &coin_data,
+        .timestamp = 1,
+    });
+    const owner_hex = std.fmt.bytesToHex(sender, .lower);
+    const owned_req = try allocator.print("{{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"knot3_getOwnedObjects\",\"params\":{{\"owner\":\"{s}\"}}}}", .{owner_hex[0..]});
+    defer allocator.free(owned_req);
+    const owned = try RPCServer.dispatch(allocator, node, owned_req);
+    defer allocator.free(owned);
+    try std.testing.expect(std.mem.indexOf(u8, owned, owner_hex[0..]) != null);
 }
 
 test "handleHTTPRequest echoes the request id" {

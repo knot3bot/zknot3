@@ -86,8 +86,10 @@ src/
 │   │   ├── Kademlia.zig    K-bucket peer routing
 │   │   ├── Noise.zig       Noise XX handshake + encryption
 │   │   ├── QUIC.zig        QUIC-style transport over TCP
-│   │   ├── HTTPServer.zig  Sync HTTP + JSON-RPC
-│   │   ├── AsyncHTTPServer.zig io_uring HTTP (Linux)
+│   │   ├── HTTPServer.zig  Sync HTTP; POST /rpc calls RPC.dispatch
+│   │   ├── AsyncHTTPServer.zig io_uring HTTP (Linux); same RPC.dispatch
+│   │   ├── RPC.zig         JSON-RPC method table and handlers
+│   │   ├── JsonRpc.zig     Shared id and string escaping
 │   │   └── Yamux.zig       Stream multiplexing
 │   └── consensus/
 │       ├── Mysticeti.zig   DAG-based BFT consensus

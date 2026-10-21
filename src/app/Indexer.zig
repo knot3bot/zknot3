@@ -32,14 +32,14 @@ pub const IndexedEvent = struct {
 /// Query filter for objects
 pub const ObjectQuery = struct {
     owner: ?[32]u8 = null,
-    object_type: ?[]u8 = null,
+    object_type: ?[]const u8 = null,
     version: ?u64 = null,
 };
 
 /// Query filter for events
 pub const EventQuery = struct {
     transaction_digest: ?[32]u8 = null,
-    event_type: ?[]u8 = null,
+    event_type: ?[]const u8 = null,
     start_time: ?i64 = null,
     end_time: ?i64 = null,
 };
@@ -412,6 +412,112 @@ pub const Indexer = struct {
         };
     }
 };
+
+fn readU32(bytes: []const u8) ?struct { value: u32, rest: []const u8 } {
+    if (bytes.len < 4) return null;
+    return .{
+        .value = std.mem.readInt(u32, bytes[0..4], .little),
+        .rest = bytes[4..],
+    };
+}
+
+/// JSON object for an event page produced by `queryEvents`. Caller frees the slice.
+pub fn formatEventsJson(allocator: std.mem.Allocator, page: PaginatedResult) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"data\":[");
+    var rest = page.data;
+    var wrote = false;
+    if (readU32(rest)) |header| {
+        rest = header.rest;
+        var n: u32 = 0;
+        while (n < header.value) : (n += 1) {
+            if (rest.len < 32) break;
+            var digest: [32]u8 = undefined;
+            @memcpy(&digest, rest[0..32]);
+            rest = rest[32..];
+            const type_header = readU32(rest) orelse break;
+            rest = type_header.rest;
+            if (rest.len < type_header.value) break;
+            const event_type = rest[0..type_header.value];
+            rest = rest[type_header.value..];
+            const contents_header = readU32(rest) orelse break;
+            rest = contents_header.rest;
+            if (rest.len < contents_header.value + 16) break;
+            const contents = rest[0..contents_header.value];
+            rest = rest[contents_header.value..];
+            const timestamp = std.mem.readInt(i64, rest[0..8], .little);
+            const event_index = std.mem.readInt(u64, rest[8..16], .little);
+            rest = rest[16..];
+            if (wrote) try buf.append(allocator, ',');
+            wrote = true;
+            const tx_hex = std.fmt.bytesToHex(digest, .lower);
+            const type_json = try formatJsonString(allocator, event_type);
+            defer allocator.free(type_json);
+            const contents_json = try formatJsonString(allocator, contents);
+            defer allocator.free(contents_json);
+            const item = try allocator.print(
+                "{{\"digest\":\"{s}\",\"type\":{s},\"contents\":{s},\"timestamp\":{d},\"eventIndex\":{d}}}",
+                .{ tx_hex[0..], type_json, contents_json, timestamp, event_index },
+            );
+            defer allocator.free(item);
+            try buf.appendSlice(allocator, item);
+        }
+    }
+    const tail = try allocator.print("],\"hasNextPage\":{s}}}", .{if (page.has_more) "true" else "false"});
+    defer allocator.free(tail);
+    try buf.appendSlice(allocator, tail);
+    return buf.toOwnedSlice(allocator);
+}
+
+/// JSON object for an object-id page produced by `queryObjects`. Caller frees the slice.
+pub fn formatObjectIdsJson(allocator: std.mem.Allocator, page: PaginatedResult) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"data\":[");
+    var offset: usize = 0;
+    var wrote = false;
+    while (offset + 32 <= page.data.len) : (offset += 32) {
+        var id: [32]u8 = undefined;
+        @memcpy(&id, page.data[offset..][0..32]);
+        if (wrote) try buf.append(allocator, ',');
+        wrote = true;
+        const hex = std.fmt.bytesToHex(id, .lower);
+        const item = try allocator.print("\"{s}\"", .{hex[0..]});
+        defer allocator.free(item);
+        try buf.appendSlice(allocator, item);
+    }
+    const tail = try allocator.print("],\"hasNextPage\":{s}}}", .{if (page.has_more) "true" else "false"});
+    defer allocator.free(tail);
+    try buf.appendSlice(allocator, tail);
+    return buf.toOwnedSlice(allocator);
+}
+
+fn formatJsonString(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.append(allocator, '"');
+    for (raw) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => {
+                if (c < 0x20) {
+                    var tmp: [6]u8 = undefined;
+                    const out = try std.mem.print(&tmp, "\\u{X:0>4}", .{@as(u16, c)});
+                    try buf.appendSlice(allocator, out);
+                } else {
+                    try buf.append(allocator, c);
+                }
+            },
+        }
+    }
+    try buf.append(allocator, '"');
+    return buf.toOwnedSlice(allocator);
+}
 
 /// Indexer statistics
 pub const IndexerStats = struct {

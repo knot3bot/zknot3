@@ -5,16 +5,13 @@
 //! Runs in a dedicated thread so it is not blocked by the main event loop.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const app = @import("../../app.zig");
 const Dashboard = @import("../../app/ui/Dashboard.zig");
 const Node = @import("../../app/Node.zig").Node;
 const pipeline = @import("../../pipeline.zig");
 const Log = @import("../../app/Log.zig");
 const HTTPServerBase = @import("HTTPServer.zig");
 const Response = HTTPServerBase.Response;
-const MainnetExtensionHooks = app.MainnetExtensionHooks;
-const M4RpcParams = @import("M4RpcParams.zig");
+const RPC = @import("RPC.zig");
 
 const MAX_CONNS = 64;
 const RING_ENTRIES = 256;
@@ -747,196 +744,8 @@ pub const AsyncHTTPServer = struct {
             }
         } else if (std.mem.eql(u8, path, "/rpc") and std.mem.startsWith(u8, request, "POST ")) {
             if (body) |b| {
-                // Parse JSON-RPC request using parseFromSlice with Value
-                const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, b, .{ .ignore_unknown_fields = true }) catch {
-                    var bad = Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid request\"},\"id\":null}");
-                    return try bad.toString(self.allocator);
-                };
-                defer parsed.deinit();
-
-                const method_val = parsed.value.object.get("method") orelse {
-                    var bad = Response.badRequest("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Missing method\"},\"id\":null}");
-                    return try bad.toString(self.allocator);
-                };
-
-                const id_str = try HTTPServerBase.formatJsonRpcId(self.allocator, parsed.value.object.get("id"));
-                defer self.allocator.free(id_str);
-
-                // Route to method handler
-                var result_owned = false;
-                const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_getObject"))
-                    "{\"objectId\":\"0x123\",\"version\":1,\"owner\":\"0x0\"}"
-                else if (std.mem.eql(u8, method_val.string, "knot3_getCheckpoint"))
-                    "{\"sequence\":0,\"digest\":\"0xabc123\"}"
-                else if (std.mem.eql(u8, method_val.string, "knot3_getCoins"))
-                    "{\"data\":[]}"
-                else if (std.mem.eql(u8, method_val.string, "knot3_getLatestCheckpointSequenceNumber"))
-                    "0"
-                else if (std.mem.eql(u8, method_val.string, "knot3_getEpochs"))
-                    "{\"data\":[]}"
-                else if (std.mem.eql(u8, method_val.string, "knot3_syncEpochState"))
-                    "{\"epoch\":0,\"protocolVersion\":1}"
-                else if (std.mem.eql(u8, method_val.string, "knot3_getEpochInfo"))
-                    "{\"epoch\":0,\"total_stake\":0,\"validators\":{\"active_validators\":{\"data\":[]}},\"initial_epoch_version\":0}"
-                else if (std.mem.eql(u8, method_val.string, "knot3_submitStakeOperation")) blk: {
-                    const node = self.node orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    const params_val = parsed.value.object.get("params") orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const input = M4RpcParams.parseStakeOperationInput(params_val) catch {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_submitStakeOperation params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const op_id = node.submitStakeOperation(input) catch |err| {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"";
-                        const err_suffix = "\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    result_owned = true;
-                    break :blk try self.allocator.print("{{\"status\":\"accepted\",\"operationId\":{d}}}", .{op_id});
-                } else if (std.mem.eql(u8, method_val.string, "knot3_submitGovernanceProposal")) blk: {
-                    const node = self.node orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    const params_val = parsed.value.object.get("params") orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const input = M4RpcParams.parseGovernanceProposalInput(params_val) catch {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_submitGovernanceProposal params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const proposal_id = node.submitGovernanceProposal(input) catch |err| {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"";
-                        const err_suffix = "\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    result_owned = true;
-                    break :blk try self.allocator.print("{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
-                } else if (std.mem.eql(u8, method_val.string, "knot3_getCheckpointProof")) blk: {
-                    const node = self.node orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    const params_val = parsed.value.object.get("params") orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const req = M4RpcParams.parseCheckpointProofRequest(params_val) catch {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getCheckpointProof params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const proof = node.buildCheckpointProof(req) catch |err| {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"";
-                        const err_suffix = "\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    defer node.freeCheckpointProof(proof);
-                    const proof_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.proof_bytes);
-                    defer self.allocator.free(proof_hex);
-                    const sig_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.signatures);
-                    defer self.allocator.free(sig_hex);
-                    // Contract parity sentinel for M4 proof wire key: "stateRoot"
-                    result_owned = true;
-                    break :blk try self.allocator.print(
-                        "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
-                        .{ proof.sequence, proof.state_root, proof_hex, sig_hex },
-                    );
-                } else if (std.mem.eql(u8, method_val.string, "knot3_creditGas")) blk: {
-                    const node = self.node orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    const params_val = parsed.value.object.get("params") orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const input = M4RpcParams.parseCreditGasParams(params_val) catch {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_creditGas params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const balance = node.creditGas(input.address, input.amount) catch |err| {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"";
-                        const err_suffix = "\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    result_owned = true;
-                    break :blk try self.allocator.print("{{\"balance\":{d}}}", .{balance});
-                } else if (std.mem.eql(u8, method_val.string, "knot3_getGasBalance")) blk: {
-                    const node = self.node orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    const params_val = parsed.value.object.get("params") orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"missing params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const input = M4RpcParams.parseGetGasBalanceParams(params_val) catch {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getGasBalance params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    const balance = node.getGasBalance(input.address);
-                    result_owned = true;
-                    break :blk try self.allocator.print("{{\"balance\":{d}}}", .{balance});
-                } else if (std.mem.eql(u8, method_val.string, "knot3_getHardenedCheckpoint")) blk: {
-                    const node = self.node orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Node not configured\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    };
-                    const asked = M4RpcParams.parseOptionalHardenedSequence(parsed.value.object.get("params")) catch {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32602,\"message\":\"invalid knot3_getHardenedCheckpoint params\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .bad_request, response_body);
-                    };
-                    result_owned = true;
-                    break :blk node.formatHardenedCheckpointFor(self.allocator, asked) catch |err| {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"";
-                        const err_suffix = "\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, @errorName(err), err_suffix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .internal_server_error, response_body);
-                    } orelse {
-                        const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32011,\"message\":\"hardened checkpoint unavailable\"},\"id\":";
-                        const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                        return try Response.ownedJson(self.allocator, .ok, response_body);
-                    };
-                } else null;
-
-                if (result_json) |r| {
-                    defer if (result_owned) self.allocator.free(r);
-                    const header = "{\"jsonrpc\":\"2.0\",\"result\":";
-                    const footer = ",\"id\":";
-                    const response_body = try std.mem.concat(self.allocator, u8, &.{ header, r, footer, id_str, "}" });
-                    return try Response.ownedJson(self.allocator, .ok, response_body);
-                } else {
-                    const err_prefix = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":";
-                    const response_body = try std.mem.concat(self.allocator, u8, &.{ err_prefix, id_str, "}" });
-                    return try Response.ownedJson(self.allocator, .ok, response_body);
-                }
+                const rpc_body = try RPC.RPCServer.dispatch(self.allocator, self.node, b);
+                return try Response.ownedJson(self.allocator, .ok, rpc_body);
             } else {
                 response.status = .bad_request;
                 response.body = "{\"error\":\"Missing body\"}";

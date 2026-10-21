@@ -127,7 +127,8 @@ zig build test
 - 如果你要监听非 loopback（例如 `0.0.0.0`），必须设置 `network.admin_token`，否则节点会拒绝启动
 - 写类接口需要 header：`X-Zknot3-Admin-Token: <token>`
   - `POST /tx`
-  - `POST /rpc` 且 method 为 `knot3_submitStakeOperation` / `knot3_submitGovernanceProposal`
+  - `POST /rpc` 且方法在 `RPC.zig` 的 `builtin_methods` 里标了 `write: true`：`knot3_submitStakeOperation` / `knot3_submitGovernanceProposal` / `knot3_creditGas`
+- JSON-RPC 只有一张方法表。同步 HTTP 与 AsyncHTTP 都调用 `RPCServer.dispatch`，不要在两个 HTTP 文件里再写一套 `/rpc` 分支
 
 ## Testing
 
@@ -282,12 +283,12 @@ For fast recovery (avoiding replaying thousands of individual WAL records):
 
 ### Adding a New RPC Method
 
-1. Add method name to `HTTPServer.handleConnection()`
-2. Implement handler function
-3. Return `JSONRPCResponse.success()` or `JSONRPCResponse.newError()`
-4. Add test
+1. Add one `builtin_methods` entry in `src/form/network/RPC.zig`. Set `write: true` when the method changes state.
+2. Implement the handler. Success bodies are allocator-owned JSON (`RPCResponse.success`). Errors use `RPCResponse.makeError`.
+3. Add a test that calls `RPCServer.dispatch`.
+4. If the method is part of the public contract, update `docs/rpc_contracts_m4.md` and `src/app/ClientSDK.zig`.
 
-注意：如果是“写类 RPC 方法”，需要同步更新鉴权判定（`HTTPServer.zig` 对写类 method 的识别），避免无意间开放公网写入口。
+写方法不要在 `HTTPServer.zig` 再列一份名单。鉴权读取 `RPCServer.bodyRequiresAdmin`。解析失败的 `/rpc` 正文按写请求拒绝。
 
 ### Adding a Consensus Message
 

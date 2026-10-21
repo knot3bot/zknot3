@@ -14,7 +14,9 @@ const Quorum = @import("../form/consensus/Quorum.zig").Quorum;
 const EpochConsensusBridge = @import("../metric/EpochConsensusBridge.zig").EpochConsensusBridge;
 const ConsensusEpochInfo = @import("../metric/EpochConsensusBridge.zig").ConsensusEpochInfo;
 const Mysticeti = @import("../form/consensus/Mysticeti.zig");
-const ObjectStore = @import("../form/storage/ObjectStore.zig").ObjectStore;
+const object_store_mod = @import("../form/storage/ObjectStore.zig");
+const ObjectStore = object_store_mod.ObjectStore;
+const StoredObject = object_store_mod.Object;
 const P2PServer_module = @import("../form/network/P2PServer.zig");
 const P2PServer = P2PServer_module.P2PServer;
 const TxnAdmission = @import("TxnAdmission.zig");
@@ -1992,7 +1994,7 @@ pub const Node = struct {
     }
 
     /// Get an object from the object store
-    pub fn getObject(self: *Self, id: core.ObjectID) !?ObjectStore.Object {
+    pub fn getObject(self: *Self, id: core.ObjectID) !?StoredObject {
         return ObjectStoreCoordinator.getObject(self.object_store, id) catch |err| switch (err) {
             error.ObjectStoreNotAvailable => error.ObjectStoreNotAvailable,
             else => err,
@@ -2000,7 +2002,7 @@ pub const Node = struct {
     }
 
     /// Put an object into the object store
-    pub fn putObject(self: *Self, object: ObjectStore.Object) !void {
+    pub fn putObject(self: *Self, object: StoredObject) !void {
         return ObjectStoreCoordinator.putObject(self.object_store, object) catch |err| switch (err) {
             error.ObjectStoreNotAvailable => error.ObjectStoreNotAvailable,
             else => err,
