@@ -49,7 +49,7 @@ check_prereqs() {
 build() {
     log_info "Building zknot3..."
     cd "$PROJECT_DIR"
-    zig build -Doptimize=ReleaseSafe -Dexport-formal=false
+    zig build -Doptimize=safe -Dexport-formal=false
     log_info "Build complete"
 }
 

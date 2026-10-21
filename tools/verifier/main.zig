@@ -128,14 +128,14 @@ pub const Verifier = struct {
         // BFT Condition: validators >= 3 * max_faulty + 1
         const required = 3 * max_faulty + 1;
         if (validators < required) {
-            try self.result.errors.append(try std.fmt.allocPrint(self.allocator, "BFT safety violation: validators ({}) must be >= 3 * max_faulty ({}) + 1 = {}", .{ validators, max_faulty, required }));
+            try self.result.errors.append(try self.allocator.print("BFT safety violation: validators ({}) must be >= 3 * max_faulty ({}) + 1 = {}", .{ validators, max_faulty, required }));
             self.result.passed = false;
         }
 
         // Quorum threshold: 2/3 of validators
         const quorum = (validators * 2) / 3;
         if (quorum <= max_faulty) {
-            try self.result.errors.append(try std.fmt.allocPrint(self.allocator, "Quorum safety violation: quorum ({}) must be > max_faulty ({})", .{ quorum, max_faulty }));
+            try self.result.errors.append(try self.allocator.print("Quorum safety violation: quorum ({}) must be > max_faulty ({})", .{ quorum, max_faulty }));
             self.result.passed = false;
         }
 

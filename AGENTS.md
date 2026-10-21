@@ -51,7 +51,7 @@ zknot3/
 
 ```bash
 # Full build (ReleaseSafe recommended for long-running nodes)
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=safe
 
 # Test suites
 zig build test-unit          # fast unit tests (no I/O)

@@ -126,8 +126,7 @@ pub const TestNode = struct {
                 // `P2PServer` binds `bind_address` verbatim and falls back to
                 // port 8083 when no port is present, so the port must be part
                 // of this string or every node in the cluster fights over 8083.
-                .p2p_address = try std.fmt.allocPrint(
-                    allocator,
+                .p2p_address = try allocator.print(
                     "127.0.0.1:{d}",
                     .{cfg.p2p_port},
                 ),
@@ -157,7 +156,7 @@ pub const TestNode = struct {
                 .data_dir = blk: {
                     if (cfg.data_dir) |d| break :blk d;
                     // Unique per node: same port prefix, distinct suffix.
-                    const n = std.fmt.bufPrint(&data_dir_buf, "/tmp/zknot3-cluster-{s}-{d}", .{
+                    const n = std.mem.print(&data_dir_buf, "/tmp/zknot3-cluster-{s}-{d}", .{
                         cfg.name, cfg.port,
                     }) catch return error.NoSpaceLeft;
                     break :blk try allocator.dupe(u8, n);
@@ -308,7 +307,7 @@ pub const TestCluster = struct {
             // identity across the genesis table, the stake pool and the votes.
             const keys = validatorKey(@intCast(g));
             var hex_buf: [64]u8 = undefined;
-            const written = std.fmt.bufPrint(&hex_buf, "{x}", .{keys.pubkey[0..]}) catch return error.NoSpaceLeft;
+            const written = std.mem.print(&hex_buf, "{x}", .{keys.pubkey[0..]}) catch return error.NoSpaceLeft;
             const hex = try allocator.dupe(u8, written);
             hex_bufs[g] = hex;
             genesis[g] = .{ .public_key_hex = hex, .name = "", .stake = genesis_stake };
@@ -320,7 +319,7 @@ pub const TestCluster = struct {
 
         var i: usize = 0;
         while (i < num_nodes) : (i += 1) {
-            const name = try std.fmt.allocPrint(allocator, "validator-{d}", .{i});
+            const name = try allocator.print("validator-{d}", .{i});
             defer allocator.free(name);
             // Distinct identity per node: seed the key from the index.
             var seed = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };

@@ -169,7 +169,7 @@ pub const WAL = struct {
 
     /// Initialize WAL with async options
     pub fn initWithOptions(allocator: std.mem.Allocator, io: std.Io, db_path: []const u8, use_async: ?bool) !Self {
-        const wal_path = try std.fmt.allocPrint(allocator, "{s}.wal", .{db_path});
+        const wal_path = try allocator.print("{s}.wal", .{db_path});
         errdefer allocator.free(wal_path);
 
         // Open or create WAL file

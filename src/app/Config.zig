@@ -15,7 +15,7 @@ pub const ProtocolVersion = struct {
     const Self = @This();
 
     pub fn toString(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        return std.fmt.allocPrint(allocator, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
+        return allocator.print("{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
     }
 };
 

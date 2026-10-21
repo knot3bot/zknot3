@@ -337,7 +337,7 @@ pub fn logError(err: anyerror, context: ErrorContext) void {
 
     if (context.peer_id) |pid| {
         var peer_str: [64]u8 = undefined;
-        _ = std.fmt.bufPrint(&peer_str, "0x{x}", .{pid}) catch @memcpy(&peer_str, "<error>");
+        _ = std.mem.print(&peer_str, "0x{x}", .{pid}) catch @memcpy(&peer_str, "<error>");
 
         if (context.request_id) |rid| {
             Log.err("[{}:{}:{}] [PEER={}] [REQ={}] {}: {}", .{ context.file, context.line, context.function, peer_str[0 .. std.mem.indexOf(u8, &peer_str, "\x00") orelse peer_str.len], rid, context.context, error_name });

@@ -423,7 +423,7 @@ starts at the next checkpoint, not at genesis.
 ### Build & Test
 
 ```bash
-zig build -Doptimize=ReleaseSafe    # Clean build
+zig build -Doptimize=safe    # Clean build
 zig build test                       # 385/385 (unit+integration+e2e+simulation+proofs)
 zig build test-formal                # 5 executable exhaustive proofs
 cd sdk/typescript && npm test        # 10/10 SDK tests
@@ -442,7 +442,7 @@ wan (netem latency/loss/partition gate).
 # pinned build)
 git clone https://github.com/knot3bot/zknot3.git
 cd zknot3
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=safe
 
 # Development node (single validator; flags only, no config file needed)
 ./zig-out/bin/zknot3-node-fast --dev --validator --data-dir ./data

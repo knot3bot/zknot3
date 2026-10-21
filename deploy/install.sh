@@ -77,7 +77,7 @@ if [ -f "$LOCAL_BIN" ]; then
 else
     log_info "Building zknot3 node from source..."
     if command -v zig &> /dev/null; then
-        zig build -Doptimize=ReleaseSmall
+        zig build -Doptimize=small
         cp ./zig-out/bin/zknot3-node "$BIN_DIR/zknot3-node"
     else
         log_error "Zig compiler not found. Please install Zig 0.17+ or compile zknot3-node first."

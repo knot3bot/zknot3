@@ -276,9 +276,15 @@ pub const DashboardHandler = struct {
             const block = entry.value_ptr.*;
             const tx_count = if (block.payload.len > 0) @as(usize, block.payload.len / 32) else 0;
             const author_hex = try bytesToHex(self.allocator, &block.author);
-            try hex_strings.append(self.allocator, author_hex);
+            hex_strings.append(self.allocator, author_hex) catch |err| {
+                self.allocator.free(author_hex);
+                return err;
+            };
             const hash_hex = try bytesToHex(self.allocator, &block.digest);
-            try hex_strings.append(self.allocator, hash_hex);
+            hex_strings.append(self.allocator, hash_hex) catch |err| {
+                self.allocator.free(hash_hex);
+                return err;
+            };
 
             try blocks.append(self.allocator, .{
                 .hash = hash_hex,
@@ -348,9 +354,15 @@ pub const DashboardHandler = struct {
         while (it.next()) |entry| {
             const receipt = entry.value_ptr.*;
             const hash_hex = try bytesToHex(self.allocator, &receipt.digest);
-            try hex_strings.append(self.allocator, hash_hex);
+            hex_strings.append(self.allocator, hash_hex) catch |err| {
+                self.allocator.free(hash_hex);
+                return err;
+            };
             const sender_hex = try bytesToHex(self.allocator, &receipt.sender);
-            try hex_strings.append(self.allocator, sender_hex);
+            hex_strings.append(self.allocator, sender_hex) catch |err| {
+                self.allocator.free(sender_hex);
+                return err;
+            };
 
             try txns.append(self.allocator, .{
                 .hash = hash_hex,
@@ -412,6 +424,15 @@ pub const DashboardHandler = struct {
 
         const receipt = node.getTransactionReceipt(digest);
         const exec = node.getExecutionResult(digest);
+        var sender_hex: [64]u8 = undefined;
+        const receipt_json = if (receipt) |r| blk: {
+            sender_hex = std.fmt.bytesToHex(r.sender, .lower);
+            break :blk .{
+                .status = @tagName(r.status),
+                .gas_used = r.gas_used,
+                .sender = sender_hex[0..],
+            };
+        } else null;
 
         const now = blk: {
             var ts: std.c.timespec = undefined;
@@ -420,11 +441,7 @@ pub const DashboardHandler = struct {
         };
         return try toJSON(self.allocator, .{
             .hash = clean,
-            .receipt = if (receipt) |r| .{
-                .status = @tagName(r.status),
-                .gas_used = r.gas_used,
-                .sender = try bytesToHex(self.allocator, &r.sender),
-            } else null,
+            .receipt = receipt_json,
             .execution_result = if (exec) |e| .{
                 .status = @tagName(e.status),
                 .gas_used = e.gas_used,
@@ -489,6 +506,11 @@ pub const DashboardHandler = struct {
 
         var list = std.ArrayList(ValidatorInfoV2).empty;
         defer list.deinit(self.allocator);
+        var owned_hex = std.ArrayList([]u8).empty;
+        defer {
+            for (owned_hex.items) |s| self.allocator.free(s);
+            owned_hex.deinit(self.allocator);
+        }
 
         var total_stake: u128 = 0;
         // Phase 0: prefer dynamic stake from epoch_bridge / mainnet_hooks when available.
@@ -502,6 +524,10 @@ pub const DashboardHandler = struct {
         for (node.config.network.known_validators) |kv| {
             const pk = decodeHex32(kv.public_key_hex) orelse continue;
             const id_hex = try bytesToHex(self.allocator, &pk);
+            owned_hex.append(self.allocator, id_hex) catch |err| {
+                self.allocator.free(id_hex);
+                return err;
+            };
             const dynamic_stake = if (use_dynamic_stake) node.getM4ValidatorStake(pk) else kv.stake;
             const stake_pct: f64 = if (total_stake == 0) 0 else @as(f64, @floatFromInt(dynamic_stake)) / @as(f64, @floatFromInt(total_stake));
             try list.append(self.allocator, .{
@@ -536,6 +562,16 @@ pub const DashboardHandler = struct {
             timestamp: i64,
         }).empty;
         defer events_out.deinit(self.allocator);
+        var owned_hex = std.ArrayList([]u8).empty;
+        defer {
+            for (owned_hex.items) |s| self.allocator.free(s);
+            owned_hex.deinit(self.allocator);
+        }
+        var owned_text = std.ArrayList([]u8).empty;
+        defer {
+            for (owned_text.items) |s| self.allocator.free(s);
+            owned_text.deinit(self.allocator);
+        }
 
         if (node.deps.indexer) |idx| {
             var query = @import("../../app/Indexer.zig").EventQuery{};
@@ -547,17 +583,45 @@ pub const DashboardHandler = struct {
                     query.transaction_digest = d;
                 }
             }
-            const result = try idx.queryEvents(self.allocator, query, null, limit);
-            // result.data is a pointer to an ArrayList of IndexedEvent
-            const evts = @as(*std.ArrayList(@import("../../app/Indexer.zig").IndexedEvent), @ptrCast(@alignCast(@constCast(result.data))));
-            defer evts.deinit(self.allocator);
-            for (evts.items) |evt| {
-                const tx_d = try bytesToHex(self.allocator, &evt.transaction_digest);
-                try events_out.append(self.allocator, .{
-                    .tx_digest = tx_d,
-                    .event_type = evt.event_type,
-                    .timestamp = evt.timestamp,
-                });
+            var result = try idx.queryEvents(self.allocator, query, null, limit);
+            defer result.deinit(self.allocator);
+            var rest = result.data;
+            if (rest.len >= 4) {
+                const count = std.mem.readInt(u32, rest[0..4], .little);
+                rest = rest[4..];
+                var n: u32 = 0;
+                while (n < count) : (n += 1) {
+                    if (rest.len < 36) break;
+                    const tx_digest = rest[0..32].*;
+                    rest = rest[32..];
+                    const type_len: usize = @intCast(std.mem.readInt(u32, rest[0..4], .little));
+                    rest = rest[4..];
+                    if (rest.len < type_len + 4) break;
+                    const event_type = rest[0..type_len];
+                    rest = rest[type_len..];
+                    const contents_len: usize = @intCast(std.mem.readInt(u32, rest[0..4], .little));
+                    rest = rest[4..];
+                    if (rest.len < contents_len + 16) break;
+                    rest = rest[contents_len..];
+                    const timestamp = std.mem.readInt(i64, rest[0..8], .little);
+                    rest = rest[16..];
+
+                    const tx_d = try bytesToHex(self.allocator, &tx_digest);
+                    owned_hex.append(self.allocator, tx_d) catch |err| {
+                        self.allocator.free(tx_d);
+                        return err;
+                    };
+                    const event_type_owned = try self.allocator.dupe(u8, event_type);
+                    owned_text.append(self.allocator, event_type_owned) catch |err| {
+                        self.allocator.free(event_type_owned);
+                        return err;
+                    };
+                    try events_out.append(self.allocator, .{
+                        .tx_digest = tx_d,
+                        .event_type = event_type_owned,
+                        .timestamp = timestamp,
+                    });
+                }
             }
         }
 
@@ -577,6 +641,11 @@ pub const DashboardHandler = struct {
             object_type: []const u8,
         }).empty;
         defer objects_out.deinit(self.allocator);
+        var owned_hex = std.ArrayList([]u8).empty;
+        defer {
+            for (owned_hex.items) |s| self.allocator.free(s);
+            owned_hex.deinit(self.allocator);
+        }
 
         if (node.deps.indexer) |idx| {
             var query = @import("../../app/Indexer.zig").ObjectQuery{};
@@ -588,12 +657,17 @@ pub const DashboardHandler = struct {
                     query.owner = d;
                 }
             }
-            const result = try idx.queryObjects(self.allocator, query, null, limit);
-            const ids = @as(*std.ArrayList(@import("../../core.zig").ObjectID), @ptrCast(@alignCast(@constCast(result.data))));
-            defer ids.deinit(self.allocator);
-            for (ids.items) |id| {
+            var result = try idx.queryObjects(self.allocator, query, null, limit);
+            defer result.deinit(self.allocator);
+            var offset: usize = 0;
+            while (offset + 32 <= result.data.len) : (offset += 32) {
+                const id = try core.ObjectID.fromBytes(result.data[offset..][0..32]);
                 if (idx.getObject(id)) |obj| {
                     const id_h = try bytesToHex(self.allocator, id.asBytes());
+                    owned_hex.append(self.allocator, id_h) catch |err| {
+                        self.allocator.free(id_h);
+                        return err;
+                    };
                     try objects_out.append(self.allocator, .{
                         .id = id_h,
                         .version = obj.version.seq,
@@ -635,15 +709,20 @@ pub const DashboardHandler = struct {
             };
             const receipt = node.getTransactionReceipt(digest);
             const exec = node.getExecutionResult(digest);
+            var sender_hex: [64]u8 = undefined;
             if (receipt != null or exec != null) {
+                const receipt_json = if (receipt) |r| blk: {
+                    sender_hex = std.fmt.bytesToHex(r.sender, .lower);
+                    break :blk .{
+                        .status = @tagName(r.status),
+                        .gas_used = r.gas_used,
+                        .sender = sender_hex[0..],
+                    };
+                } else null;
                 return try toJSON(self.allocator, .{
                     .type = "transaction",
                     .hash = clean,
-                    .receipt = if (receipt) |r| .{
-                        .status = @tagName(r.status),
-                        .gas_used = r.gas_used,
-                        .sender = try bytesToHex(self.allocator, &r.sender),
-                    } else null,
+                    .receipt = receipt_json,
                     .execution_result = if (exec) |e| .{
                         .status = @tagName(e.status),
                         .gas_used = e.gas_used,
@@ -678,17 +757,35 @@ pub const DashboardHandler = struct {
         if (node.getP2PServer()) |p2p| {
             var it = p2p.peers.iterator();
             while (it.next()) |entry| {
-                try list.append(self.allocator, .{
-                    .peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*),
-                    .type = try self.allocator.dupe(u8, "TCP"),
-                });
+                const peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*);
+                const peer_type = self.allocator.dupe(u8, "TCP") catch |err| {
+                    self.allocator.free(peer_id);
+                    return err;
+                };
+                list.append(self.allocator, .{
+                    .peer_id = peer_id,
+                    .type = peer_type,
+                }) catch |err| {
+                    self.allocator.free(peer_id);
+                    self.allocator.free(peer_type);
+                    return err;
+                };
             }
             var qit = p2p.quic_peers.iterator();
             while (qit.next()) |entry| {
-                try list.append(self.allocator, .{
-                    .peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*),
-                    .type = try self.allocator.dupe(u8, "QUIC"),
-                });
+                const peer_id = try bytesToHex(self.allocator, &entry.key_ptr.*);
+                const peer_type = self.allocator.dupe(u8, "QUIC") catch |err| {
+                    self.allocator.free(peer_id);
+                    return err;
+                };
+                list.append(self.allocator, .{
+                    .peer_id = peer_id,
+                    .type = peer_type,
+                }) catch |err| {
+                    self.allocator.free(peer_id);
+                    self.allocator.free(peer_type);
+                    return err;
+                };
             }
         }
         return try toJSON(self.allocator, .{ .peers = list.items, .total = list.items.len });
@@ -728,6 +825,74 @@ pub const ValidatorInfoV2 = struct {
     is_active: bool,
     is_connected: bool,
 };
+
+test "dashboard transaction views free sender hex" {
+    const Config = @import("../Config.zig").Config;
+    const NodeDependencies = @import("../Node.zig").NodeDependencies;
+    const allocator = std.testing.allocator;
+
+    const config = try allocator.create(Config);
+    defer allocator.destroy(config);
+    config.* = Config.default();
+    config.authority.signing_key = @as([32]u8, @splat(0x22));
+    config.authority.stake = 1;
+
+    const node = try Node.init(allocator, config, NodeDependencies{});
+    defer node.deinit();
+
+    const digest: [32]u8 = @splat(0xAB);
+    const sender: [32]u8 = @splat(0xCD);
+    try node.txn_history.put(allocator, digest, .{
+        .digest = digest,
+        .status = .committed,
+        .gas_used = 3,
+        .sender = sender,
+    });
+    const indexer = node.deps.indexer.?;
+    try indexer.indexEvent(.{
+        .transaction_digest = digest,
+        .event_type = "CoinTransfer",
+        .contents = "hi",
+        .timestamp = 9,
+        .event_index = 0,
+    });
+    var coin_type: [4]u8 = "Coin".*;
+    var coin_data: [0]u8 = .{};
+    try indexer.indexObject(.{
+        .id = .{ .bytes = @splat(0x11) },
+        .version = .{ .seq = 4, .causal = @splat(0) },
+        .type = &coin_type,
+        .owner = null,
+        .data = &coin_data,
+        .timestamp = 1,
+    });
+
+    var handler = DashboardHandler.init(allocator);
+    handler.setNode(node);
+    const hash = std.fmt.bytesToHex(digest, .lower);
+    const sender_text = std.fmt.bytesToHex(sender, .lower);
+
+    const detail = try handler.handleTransactionDetail(&hash);
+    defer allocator.free(detail);
+    try std.testing.expect(std.mem.indexOf(u8, detail, &sender_text) != null);
+
+    const search = try handler.handleSearch(&hash);
+    defer allocator.free(search);
+    try std.testing.expect(std.mem.indexOf(u8, search, &sender_text) != null);
+
+    const listed = try handler.handleTransactions(10, null);
+    defer allocator.free(listed);
+    try std.testing.expect(std.mem.indexOf(u8, listed, &sender_text) != null);
+
+    const validators = try handler.handleValidators();
+    defer allocator.free(validators);
+    const events = try handler.handleEvents(10, null);
+    defer allocator.free(events);
+    try std.testing.expect(std.mem.indexOf(u8, events, "CoinTransfer") != null);
+    const objects = try handler.handleObjects(10, null);
+    defer allocator.free(objects);
+    try std.testing.expect(std.mem.indexOf(u8, objects, "Coin") != null);
+}
 
 pub fn extendHTTPServerWithDashboard(
     server: *anyopaque,

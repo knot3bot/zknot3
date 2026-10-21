@@ -251,7 +251,7 @@ pub const Node = struct {
         self_ptr.state = .initializing;
         self_ptr.deps = deps;
         self_ptr.object_store = null;
-        const cp_path = try std.fmt.allocPrint(allocator, "{s}/{s}/sequence.bin", .{ owned_config.storage.data_dir, owned_config.storage.checkpoint_store_path });
+        const cp_path = try allocator.print("{s}/{s}/sequence.bin", .{ owned_config.storage.data_dir, owned_config.storage.checkpoint_store_path });
         defer allocator.free(cp_path);
         self_ptr.checkpoint_store = CheckpointSequence.load(cp_path) catch |err| blk: {
             Log.warn("[WARN] Failed to load checkpoint sequence from {s}: {s}, starting from 0", .{ cp_path, @errorName(err) });
@@ -372,7 +372,7 @@ pub const Node = struct {
         self_ptr.indexer = indexer;
         self_ptr.deps.indexer = indexer;
 
-        const m4_base = try std.fmt.allocPrint(allocator, "{s}/m4_state", .{owned_config.storage.data_dir});
+        const m4_base = try allocator.print("{s}/m4_state", .{owned_config.storage.data_dir});
         defer allocator.free(m4_base);
         if (WAL.init(allocator, m4_base)) |wal_val| {
             const m4_wal_ptr = try allocator.create(WAL);
@@ -479,7 +479,7 @@ pub const Node = struct {
         if (self.p2p_server) |server| {
             server.deinit();
         }
-        const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
+        const cp_path = self.allocator.print("{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
         if (cp_path) |p| {
             defer self.allocator.free(p);
             self.checkpoint_store.save(p) catch |err| {
@@ -650,7 +650,7 @@ pub const Node = struct {
     const hardened_digest_archive_cap: usize = 4096;
 
     fn hardenedDigestPath(self: *Self) ![]u8 {
-        return std.fmt.allocPrint(self.allocator, "{s}/{s}/hardened.digests", .{
+        return self.allocator.print("{s}/{s}/hardened.digests", .{
             self.config.storage.data_dir,
             self.config.storage.checkpoint_store_path,
         });
@@ -748,7 +748,7 @@ pub const Node = struct {
             @memcpy(payload[off..][0..32], entry.value_ptr);
             off += 32;
         }
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{dest});
+        const tmp_path = try self.allocator.print("{s}.tmp", .{dest});
         defer self.allocator.free(tmp_path);
         const io = @import("io_instance").io;
         const cwd = std.Io.Dir.cwd();
@@ -781,7 +781,7 @@ pub const Node = struct {
         self.checkpoint_store.hardenThrough(issued, block.digest);
         self.retainEvictedHardenedDigests();
         self.noteCheckpointAdvanced();
-        const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
+        const cp_path = self.allocator.print("{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
         if (cp_path) |p| {
             defer self.allocator.free(p);
             self.checkpoint_store.save(p) catch |err| {
@@ -817,7 +817,7 @@ pub const Node = struct {
         try self.replayMainnetM4Wal();
 
         // Phase 3: recover checkpoint sequence state from disk if exists
-        const cp_path = std.fmt.allocPrint(self.allocator, "{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
+        const cp_path = self.allocator.print("{s}/{s}/sequence.bin", .{ self.config.storage.data_dir, self.config.storage.checkpoint_store_path }) catch null;
         if (cp_path) |p| {
             defer self.allocator.free(p);
             if (CheckpointSequence.load(p)) |recovered_cs| {
@@ -951,7 +951,7 @@ pub const Node = struct {
         const wal_suffix = ".wal";
         if (!std.mem.endsWith(u8, w.file_path, wal_suffix)) return error.InvalidPath;
         const base = w.file_path[0 .. w.file_path.len - wal_suffix.len];
-        return std.fmt.allocPrint(self.allocator, "{s}.gas.snap", .{base});
+        return self.allocator.print("{s}.gas.snap", .{base});
     }
 
     /// `{m4_base}.equiv.ring` beside the M4 WAL. `m4_base` is the path passed
@@ -961,7 +961,7 @@ pub const Node = struct {
         const wal_suffix = ".wal";
         if (!std.mem.endsWith(u8, w.file_path, wal_suffix)) return error.InvalidPath;
         const base = w.file_path[0 .. w.file_path.len - wal_suffix.len];
-        return std.fmt.allocPrint(self.allocator, "{s}.equiv.ring", .{base});
+        return self.allocator.print("{s}.equiv.ring", .{base});
     }
 
     /// After consensus integration exists and M4 WAL replay has finished, point
@@ -1028,7 +1028,7 @@ pub const Node = struct {
         if (self.m4_wal == null) return;
         const dest = try self.gasSnapSiblingPath();
         defer self.allocator.free(dest);
-        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{dest});
+        const tmp_path = try self.allocator.print("{s}.tmp", .{dest});
         defer self.allocator.free(tmp_path);
 
         const payload = try self.buildGasSnapshotPayload();
@@ -1195,7 +1195,7 @@ pub const Node = struct {
     ) !void {
         const hex = std.fmt.bytesToHex(mark.digest, .lower);
         var seq_buf: [32]u8 = undefined;
-        const seq_text = std.fmt.bufPrint(&seq_buf, "{d}", .{mark.sequence}) catch return error.InvalidSequence;
+        const seq_text = std.mem.print(&seq_buf, "{d}", .{mark.sequence}) catch return error.InvalidSequence;
         if (object) try body.append(allocator, '{');
         try body.appendSlice(allocator, "\"sequence\":");
         try body.appendSlice(allocator, seq_text);
@@ -2305,7 +2305,7 @@ test "Node gas sibling snapshot restores balances when WAL has no gas snapshot" 
 
     const wal_path = node.m4_wal.?.file_path;
     try std.testing.expect(std.mem.endsWith(u8, wal_path, "/m4_state.wal"));
-    const sibling = try std.fmt.allocPrint(allocator, "{s}/m4_state.gas.snap", .{test_dir});
+    const sibling = try allocator.print("{s}/m4_state.gas.snap", .{test_dir});
     defer allocator.free(sibling);
     const derived = try node.gasSnapSiblingPath();
     defer allocator.free(derived);
@@ -2439,7 +2439,7 @@ test "Node.init releases the owned config copy when init fails" {
     const missing_parent = "/tmp/node_test_init_failure_parent";
     std.Io.Dir.cwd().deleteTree(std.testing.io, missing_parent) catch {};
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, missing_parent) catch {};
-    const bad_data_dir = try std.fmt.allocPrint(allocator, "{s}/data", .{missing_parent});
+    const bad_data_dir = try allocator.print("{s}/data", .{missing_parent});
     defer allocator.free(bad_data_dir);
 
     const config = try allocator.create(Config);

@@ -116,7 +116,7 @@ pub fn build(b: *std.Build) void {
     const test_module = b.createModule(.{
         .root_source_file = b.path("tests.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = .debug,
         .link_libc = true,
     });
     wire.attach(test_module, b, blst_mod);
@@ -125,7 +125,7 @@ pub fn build(b: *std.Build) void {
     const unit_module = b.createModule(.{
         .root_source_file = b.path("tests_unit.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = .debug,
         .link_libc = true,
     });
     wire.attach(unit_module, b, blst_mod);
@@ -155,7 +155,7 @@ pub fn build(b: *std.Build) void {
     const formal_proofs_module = b.createModule(.{
         .root_source_file = b.path("tools/formal/proofs.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = .debug,
         .link_libc = true,
     });
     wire.attach(formal_proofs_module, b, blst_mod);
@@ -172,7 +172,7 @@ pub fn build(b: *std.Build) void {
     const formal_module = b.createModule(.{
         .root_source_file = b.path("tools/formal/export.zig"),
         .target = target,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .link_libc = true,
     });
     wire.attach(formal_module, b, blst_mod);
@@ -212,20 +212,20 @@ pub fn build(b: *std.Build) void {
     const bench_module = b.createModule(.{
         .root_source_file = b.path("tests_unit.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .link_libc = true,
     });
     wire.attach(bench_module, b, blst_mod);
     const bench_exe = b.addTest(.{ .root_module = bench_module });
     const run_bench = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("benchmark", "Run benchmarks (ReleaseFast)");
+    const bench_step = b.step("benchmark", "Run benchmarks (optimize = fast)");
     bench_step.dependOn(&run_bench.step);
 
     // Profiler tool
     const profiler_module = b.createModule(.{
         .root_source_file = b.path("tools/profiler/main.zig"),
         .target = target,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .link_libc = true,
     });
     wire.attach(profiler_module, b, blst_mod);
@@ -252,7 +252,7 @@ pub fn build(b: *std.Build) void {
     const fast_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .link_libc = true,
     });
     wire.attach(fast_module, b, blst_mod);
@@ -266,7 +266,7 @@ pub fn build(b: *std.Build) void {
     const safe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .link_libc = true,
     });
     wire.attach(safe_module, b, blst_mod);
@@ -280,7 +280,7 @@ pub fn build(b: *std.Build) void {
     const debug_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = .Debug,
+        .optimize = .debug,
         .link_libc = true,
     });
     wire.attach(debug_module, b, blst_mod);

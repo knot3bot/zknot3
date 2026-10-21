@@ -23,8 +23,7 @@ pub const RpcClient = struct {
     }
 
     pub fn call(self: *const RpcClient, comptime T: type, method: []const u8, params_json: []const u8) !T {
-        const body = try std.fmt.allocPrint(
-            self.allocator,
+        const body = try self.allocator.print(
             "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"{s}\",\"params\":{s}}}",
             .{ method, params_json },
         );

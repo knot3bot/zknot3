@@ -47,7 +47,7 @@ pub const CoqSpec = struct {
     }
 
     fn header(_: *Self, lang: []const u8) ![]const u8 {
-        return try std.fmt.allocPrint(std.heap.page_allocator,
+        return try std.heap.page_allocator.print(
             \\(* zknot3 Formal Verification Specifications *)
             \\(* Version: {s} *)
             \\(* Generated from zknot3 implementation *)

@@ -8,7 +8,7 @@ test "e2e: getCheckpointProof verifies under docker devnet" {
     const rpc = sdk.rpc.RpcClient.init(allocator, "http://127.0.0.1:9003/rpc");
 
     const object_id_hex = "0000000000000000000000000000000000000000000000000000000000000000";
-    const params_json = try std.fmt.allocPrint(allocator, "{{\"sequence\":1,\"objectId\":\"{s}\"}}", .{object_id_hex});
+    const params_json = try allocator.print("{{\"sequence\":1,\"objectId\":\"{s}\"}}", .{object_id_hex});
     defer allocator.free(params_json);
 
     const proof = try rpc.call(sdk.types.CheckpointProof, "knot3_getCheckpointProof", params_json);

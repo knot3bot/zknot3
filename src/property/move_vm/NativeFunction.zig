@@ -55,7 +55,7 @@ pub const Registry = struct {
         name: []const u8,
         func: NativeFunction,
     ) !void {
-        const key = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ module, name });
+        const key = try self.allocator.print("{s}::{s}", .{ module, name });
         errdefer self.allocator.free(key);
         const gop = try self.functions.getOrPut(self.allocator, key);
         if (gop.found_existing) {
@@ -69,7 +69,7 @@ pub const Registry = struct {
     /// Look up a native function by module::name
     pub fn resolve(self: Self, module: []const u8, name: []const u8) ?NativeFunction {
         var buf: [256]u8 = undefined;
-        const key = std.fmt.bufPrint(&buf, "{s}::{s}", .{ module, name }) catch return null;
+        const key = std.mem.print(&buf, "{s}::{s}", .{ module, name }) catch return null;
         return self.functions.get(key);
     }
 

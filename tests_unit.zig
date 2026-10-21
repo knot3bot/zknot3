@@ -8,6 +8,7 @@ comptime {
     _ = @import("test/unit/sdk_protocol_test.zig");
     _ = @import("test/unit/move_vm_native_test.zig");
     _ = @import("src/property/move_vm/stdlib.zig");
+    _ = @import("src/property/move_vm/AINatives.zig");
     _ = @import("src/property/move_vm/marketplace.zig");
     _ = @import("src/property/crypto/Merkle.zig");
     _ = @import("src/property/move_vm/agent_registry.zig");
@@ -39,4 +40,9 @@ comptime {
     // Gas ledger credit/overflow + RPC write-method auth flag for knot3_creditGas.
     _ = @import("src/pipeline/Executor.zig");
     _ = @import("src/form/network/HTTPServer.zig");
+    _ = @import("src/form/network/RPC.zig");
+    // Event/object index ownership: failure after the first insert must not
+    // free strings the transaction list still holds.
+    _ = @import("src/app/Indexer.zig");
+    _ = @import("src/app/ui/Dashboard.zig");
 }

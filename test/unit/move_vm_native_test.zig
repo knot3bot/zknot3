@@ -244,6 +244,58 @@ test "event::emit collects events into ExecutionResult" {
     try std.testing.expectEqual(@as(usize, 1), result.events.len);
     try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0xCD)), &result.events[0].sender);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02, 0x03 }, result.events[0].payload);
+    try std.testing.expectEqualStrings("sui::event::GenericEvent", result.events[0].event_type);
+}
+
+fn byteVector(allocator: std.mem.Allocator, bytes: []const u8) !Value {
+    const elems = try allocator.alloc(Value, bytes.len);
+    for (bytes, 0..) |b, i| elems[i] = .{ .tag = .integer, .data = .{ .int = b } };
+    return .{ .tag = .vector, .data = .{ .vector = elems } };
+}
+
+test "event::emit records a caller-supplied type" {
+    const allocator = std.testing.allocator;
+    var reg = Registry.init(allocator);
+    defer reg.deinit();
+    try reg.registerSuiFramework();
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interpreter = try Interpreter.init(allocator, &gas, &tracker);
+    defer interpreter.deinit();
+    interpreter.registry = &reg;
+    var tx_ctx = TxContext{
+        .sender = @as([32]u8, @splat(0xCD)),
+        .tx_hash = @as([32]u8, @splat(0)),
+        .epoch = 1,
+        .gas_price = 1,
+        .gas_budget = 1000,
+    };
+    interpreter.tx_context = &tx_ctx;
+
+    try interpreter.stack.append(allocator, try byteVector(allocator, "CoinTransfer"));
+    try interpreter.stack.append(allocator, try byteVector(allocator, &[_]u8{ 0x01, 0x02 }));
+    const payload = try buildCallPayload(allocator, "sui", "event::emit", 2);
+    defer allocator.free(payload);
+    const module = Bytecode.VerifiedModule{
+        .name = "typed-event",
+        .instructions = &[_]Bytecode.Instruction{
+            .{ .opcode = .call, .payload = payload },
+        },
+        .local_count = 0,
+    };
+    const result = try interpreter.execute(module);
+    try std.testing.expect(result.success);
+    try std.testing.expectEqualStrings("CoinTransfer", result.events[0].event_type);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02 }, result.events[0].payload);
+
+    try interpreter.stack.append(allocator, try byteVector(allocator, ""));
+    try interpreter.stack.append(allocator, try byteVector(allocator, &[_]u8{0x01}));
+    interpreter.pc = 0;
+    try std.testing.expectError(error.TypeMismatch, interpreter.execute(module));
 }
 
 test "event::emit frees the payload when a vector element is not an integer" {

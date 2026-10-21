@@ -145,14 +145,14 @@ pub const Transfer = struct {
     }
 };
 
-/// Event emission. Maps to Move's `event::emit`.
-/// VM path uses EventEmitter.nativeEmit via NativeFunction.Registry;
-/// this helper has no event-log sink, so it fails closed.
+/// Direct `event::emit` for a caller-owned log.
+/// `log.appendEvent(event_type, payload)` borrows both slices; it does not
+/// take ownership. An empty type is refused. Bytecode execution still records
+/// events through `EventEmitter.nativeEmit` on the interpreter.
 pub const Event = struct {
-    pub fn emit(event_type: []const u8, payload: []const u8) !void {
-        _ = event_type;
-        _ = payload;
-        return error.NotImplemented;
+    pub fn emit(log: anytype, event_type: []const u8, payload: []const u8) !void {
+        if (event_type.len == 0) return error.EmptyEventType;
+        try log.appendEvent(event_type, payload);
     }
 };
 
@@ -182,7 +182,7 @@ const MockFieldStore = struct {
 
     fn fieldKey(self: *MockFieldStore, owner_id: core.ObjectID, name: []const u8) ![]u8 {
         const hex = std.fmt.bytesToHex(owner_id.bytes, .lower);
-        return std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ &hex, name });
+        return self.allocator.print("{s}:{s}", .{ &hex, name });
     }
 
     fn getField(self: *MockFieldStore, owner_id: core.ObjectID, name: []const u8) !?[]u8 {
@@ -313,7 +313,7 @@ test "stdlib Coin split rejects insufficient balance" {
     );
 }
 
-test "stdlib Transfer updates ownership; Event is NotImplemented" {
+test "stdlib Transfer updates ownership and Event.emit records on the caller log" {
     const allocator = std.testing.allocator;
     var store = MockObjStore{ .allocator = allocator };
     defer store.deinit();
@@ -342,5 +342,17 @@ test "stdlib Transfer updates ownership; Event is NotImplemented" {
     defer frozen.deinit(allocator);
     try std.testing.expect(frozen.ownership.tag == .Immutable);
 
-    try std.testing.expectError(error.NotImplemented, Event.emit("TestEvent", "hello"));
+    const Log = struct {
+        event_type: []const u8 = "",
+        payload: []const u8 = "",
+        fn appendEvent(self: *@This(), event_type: []const u8, payload: []const u8) !void {
+            self.event_type = event_type;
+            self.payload = payload;
+        }
+    };
+    var log = Log{};
+    try std.testing.expectError(error.EmptyEventType, Event.emit(&log, "", "hello"));
+    try Event.emit(&log, "TestEvent", "hello");
+    try std.testing.expectEqualStrings("TestEvent", log.event_type);
+    try std.testing.expectEqualStrings("hello", log.payload);
 }

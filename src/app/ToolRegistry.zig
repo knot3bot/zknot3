@@ -323,7 +323,7 @@ pub const ToolRegistry = struct {
 
     /// Register a new tool
     pub fn registerTool(self: *Self, tool: Tool) !void {
-        const key = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{
+        const key = try self.allocator.print("{s}.{s}", .{
             tool.namespace, tool.name,
         });
         try self.tools.put(key, tool);

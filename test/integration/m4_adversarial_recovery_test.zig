@@ -18,7 +18,7 @@ fn allocDataDir(allocator: std.mem.Allocator) ![]const u8 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
     const salt: u64 = @as(u64, @intCast(ts.sec)) ^ (@as(u64, @intCast(ts.nsec)) << 1);
-    return try std.fmt.allocPrint(allocator, "test_tmp/m4_adv_{x}", .{salt});
+    return try allocator.print("test_tmp/m4_adv_{x}", .{salt});
 }
 
 fn cleanupDataDir(data_dir: []const u8) void {

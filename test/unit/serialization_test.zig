@@ -175,7 +175,7 @@ test "JSON: serialize struct" {
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
 
-    const json_str = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"version\":{}}}", .{ obj.name, obj.version });
+    const json_str = try allocator.print("{{\"name\":\"{s}\",\"version\":{}}}", .{ obj.name, obj.version });
     defer allocator.free(json_str);
     try buf.appendSlice(allocator, json_str);
     try std.testing.expect(buf.items.len > 0);

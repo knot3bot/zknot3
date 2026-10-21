@@ -675,7 +675,7 @@ test "KBucket ipv4 /16 prefix diversity limit" {
     var i: u8 = 0;
     while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
         var addr_buf: [32]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "172.20.0.{d}:8083", .{i + 1});
+        const addr = try std.mem.print(&addr_buf, "172.20.0.{d}:8083", .{i + 1});
         try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
     }
     try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
@@ -702,7 +702,7 @@ test "KBucket ipv6 /48 prefix diversity limit" {
     var i: u8 = 0;
     while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
         var addr_buf: [64]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "[2001:db8:abcd::{d}]:9000", .{i + 1});
+        const addr = try std.mem.print(&addr_buf, "[2001:db8:abcd::{d}]:9000", .{i + 1});
         try rt.addPeer(peerIdInFarBucket(i), addr, 9000);
     }
     try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
@@ -726,7 +726,7 @@ test "KBucket prefix diversity allows refresh of existing peer" {
     var i: u8 = 0;
     while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
         var addr_buf: [32]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "172.20.0.{d}", .{i + 1});
+        const addr = try std.mem.print(&addr_buf, "172.20.0.{d}", .{i + 1});
         try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
     }
 
@@ -745,7 +745,7 @@ test "KBucket unresolved hostname prefix diversity limit" {
     var i: u8 = 0;
     while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
         var addr_buf: [64]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "peer{d}.example.com:8083", .{i});
+        const addr = try std.mem.print(&addr_buf, "peer{d}.example.com:8083", .{i});
         try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
     }
     try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX), rt.totalPeers());
@@ -771,7 +771,7 @@ test "KBucket hostname and ipv4 prefix caps are independent" {
     var i: u8 = 0;
     while (i < MAX_PEERS_PER_PREFIX) : (i += 1) {
         var addr_buf: [32]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "172.20.0.{d}:8083", .{i + 1});
+        const addr = try std.mem.print(&addr_buf, "172.20.0.{d}:8083", .{i + 1});
         try rt.addPeer(peerIdInFarBucket(i), addr, 8083);
     }
 
@@ -779,7 +779,7 @@ test "KBucket hostname and ipv4 prefix caps are independent" {
     var h: u8 = 0;
     while (h < MAX_PEERS_PER_PREFIX) : (h += 1) {
         var addr_buf: [64]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "host{d}.example.net:8083", .{h});
+        const addr = try std.mem.print(&addr_buf, "host{d}.example.net:8083", .{h});
         try rt.addPeer(peerIdInFarBucket(@as(u8, @intCast(MAX_PEERS_PER_PREFIX)) + h), addr, 8083);
     }
     try std.testing.expectEqual(@as(usize, MAX_PEERS_PER_PREFIX * 2), rt.totalPeers());

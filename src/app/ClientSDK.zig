@@ -483,9 +483,9 @@ fn generateGo(sdk: *ClientSDK) ![]const u8 {
             if (i > 0) try buf.appendSlice(", ");
             const kind = if (method.param_json) |p| p[i] else RpcParamJsonKind.string;
             const temp = switch (kind) {
-                .string => try std.fmt.allocPrint(sdk.allocator, "{s} string", .{param}),
-                .integer => try std.fmt.allocPrint(sdk.allocator, "{s} int64", .{param}),
-                .optional_integer => try std.fmt.allocPrint(sdk.allocator, "{s} *int64", .{param}),
+                .string => try sdk.allocator.print("{s} string", .{param}),
+                .integer => try sdk.allocator.print("{s} int64", .{param}),
+                .optional_integer => try sdk.allocator.print("{s} *int64", .{param}),
             };
             defer sdk.allocator.free(temp);
             try buf.appendSlice(temp);
@@ -700,7 +700,7 @@ fn generateZig(sdk: *ClientSDK) ![]const u8 {
     try buf.appendSlice("        return .{ .allocator = allocator, .rpc_url = rpc_url };\n");
     try buf.appendSlice("    }\n\n");
     try buf.appendSlice("    fn rpcCall(self: *const Knot3Client, method: []const u8, params_json: []const u8) ![]u8 {\n");
-    try buf.appendSlice("        const body = try std.fmt.allocPrint(self.allocator,\n");
+    try buf.appendSlice("        const body = try self.allocator.print(\n");
     try buf.appendSlice("            \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"{s}\\\",\\\"params\\\":{s}}\",\n");
     try buf.appendSlice("            .{ method, params_json },\n");
     try buf.appendSlice("        );\n");
@@ -758,7 +758,7 @@ fn generateZig(sdk: *ClientSDK) ![]const u8 {
                 if (pjson[i] == .optional_integer) continue;
                 try buf.appendSlice("        if (!__first) try params_buf.appendSlice(self.allocator, \",\");\n");
                 try buf.appendSlice("        __first = false;\n");
-                const key_ln = try std.fmt.allocPrint(sdk.allocator, "        try params_buf.appendSlice(self.allocator, \"\\\"{s}\\\":\\\");\n", .{param});
+                const key_ln = try sdk.allocator.print("        try params_buf.appendSlice(self.allocator, \"\\\"{s}\\\":\\\");\n", .{param});
                 defer sdk.allocator.free(key_ln);
                 try buf.appendSlice(key_ln);
                 try buf.appendSlice("        try std.json.stringify(");
@@ -772,7 +772,7 @@ fn generateZig(sdk: *ClientSDK) ![]const u8 {
                 try buf.appendSlice(") |__v| {\n");
                 try buf.appendSlice("            if (!__first) try params_buf.appendSlice(self.allocator, \",\");\n");
                 try buf.appendSlice("            __first = false;\n");
-                const ok_ln = try std.fmt.allocPrint(sdk.allocator, "            try params_buf.appendSlice(self.allocator, \"\\\"{s}\\\":\\\");\n", .{param});
+                const ok_ln = try sdk.allocator.print("            try params_buf.appendSlice(self.allocator, \"\\\"{s}\\\":\\\");\n", .{param});
                 defer sdk.allocator.free(ok_ln);
                 try buf.appendSlice(ok_ln);
                 try buf.appendSlice("            try std.json.stringify(__v, .{}, w);\n");

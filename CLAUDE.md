@@ -65,10 +65,10 @@ src/
 
 ```bash
 # Development build
-zig build -Doptimize=Debug
+zig build -Doptimize=debug
 
 # Production build
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=safe
 
 # Run tests
 zig build test
@@ -331,3 +331,13 @@ const c = @as([BUCKET_COUNT]?*KBucket, @splat(null));
 - When the result type is already known (e.g., `const a: [32]u8 = ...`), bare `@splat(val)` works
 - String repeat `"00" ** N` must be expanded to literal strings or use comptime helpers
 - Non-u8 element types (e.g., `?*T`) also use the same `@as([N]?*T, @splat(null))` pattern
+
+### 0.17.0 stable names (2026-10)
+
+Deprecated spellings still compile until 0.18. This tree uses the stable ones:
+
+- `std.fmt.allocPrint(allocator, fmt, args)` → `allocator.print(fmt, args)`
+- `std.fmt.bufPrint(buf, fmt, args)` → `std.mem.print(buf, fmt, args)`
+- Optimize tags: `.debug`, `.safe`, `.fast`, `.small`
+- CLI: `-Doptimize=debug|safe|fast|small` (`Debug` / `ReleaseSafe` / `ReleaseFast` / `ReleaseSmall` still parse)
+

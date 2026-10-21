@@ -35,7 +35,7 @@ fn createValidatorConfig(
     index: usize,
     port_base: u16,
 ) !Config {
-    const name = try std.fmt.allocPrint(allocator, "devnet-validator-{d}", .{index});
+    const name = try allocator.print("devnet-validator-{d}", .{index});
     defer allocator.free(name);
 
     return Config{

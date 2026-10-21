@@ -12,6 +12,7 @@ const pipeline = @import("../../pipeline.zig");
 const Node = @import("../../app/Node.zig").Node;
 const MainnetExtensionHooks = @import("../../app/MainnetExtensionHooks.zig");
 const M4RpcParams = @import("M4RpcParams.zig");
+const HTTPServer = @import("HTTPServer.zig");
 
 /// JSON-RPC error codes
 pub const ErrorCode = enum(i32) {
@@ -198,29 +199,54 @@ pub const RPCServer = struct {
         const method_str = method.string;
         const id = value.object.get("id");
         const params = value.object.get("params");
+        const id_json = try HTTPServer.formatJsonRpcId(self.allocator, id);
+        defer self.allocator.free(id_json);
 
         // Route to handler
         const response = self.routeRequest(method_str, params, id) catch |err| {
-            return try std.fmt.allocPrint(
-                self.allocator,
-                "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{},\"message\":\"{s}\"}},\"id\":null}}",
-                .{ @backingInt(ErrorCode.internal_error), @errorName(err) },
-            );
+            return try self.formatRpcError(@backingInt(ErrorCode.internal_error), @errorName(err), id_json);
         };
         defer response.deinit(self.allocator);
 
         if (response.err) |e| {
-            return try std.fmt.allocPrint(
-                self.allocator,
-                "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{d},\"message\":\"{s}\"}},\"id\":null}}",
-                .{ @backingInt(e.code), e.message },
-            );
+            return try self.formatRpcError(@backingInt(e.code), e.message, id_json);
         }
+
+        if (response.result) |r| if (r == .success) {
+            return try self.allocator.print(
+                "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+                .{ r.success, id_json },
+            );
+        };
 
         var out: std.Io.Writer.Allocating = .init(self.allocator);
         defer out.deinit();
         try std.json.Stringify.value(response, .{}, &out.writer);
-        return try out.toOwnedSlice();
+        const raw = try out.toOwnedSlice();
+        return patchJsonRpcId(self.allocator, raw, id_json);
+    }
+
+    fn formatRpcError(self: *@This(), code: i32, message: []const u8, id_json: []const u8) ![]u8 {
+        const message_json = try HTTPServer.formatJsonString(self.allocator, message);
+        defer self.allocator.free(message_json);
+        return self.allocator.print(
+            "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{d},\"message\":{s}}},\"id\":{s}}}",
+            .{ code, message_json, id_json },
+        );
+    }
+
+    fn patchJsonRpcId(allocator: std.mem.Allocator, raw: []u8, id_json: []const u8) ![]u8 {
+        const needle = "\"id\":null";
+        const at = std.mem.indexOf(u8, raw, needle) orelse return raw;
+        errdefer allocator.free(raw);
+        const patched = try std.mem.concat(allocator, u8, &.{
+            raw[0..at],
+            "\"id\":",
+            id_json,
+            raw[at + needle.len ..],
+        });
+        allocator.free(raw);
+        return patched;
     }
 
     /// Route request to appropriate handler
@@ -270,28 +296,36 @@ pub const RPCServer = struct {
         return self.handleHTTPRequest(json);
     }
 
-    /// Handle incoming request
+    /// Handle a registered method. The success body is owned by the caller and
+    /// must be released with `RPCResponse.deinit`.
     pub fn handle(self: *@This(), request: RPCRequest) !RPCResponse {
         if (self.handlers.get(request.method)) |handler| {
-            const params = request.params orelse .{ .data = null };
-            _ = try handler(self.context, params.data orelse &.{});
-            return RPCResponse.success(request.id, "result");
+            const params_bytes = if (request.params) |p| p.data orelse &.{} else &.{};
+            var resp = try handler(self.context, params_bytes);
+            resp.id = request.id;
+            return resp;
         } else {
             return RPCResponse.makeError(request.id, .method_not_found, "Method not found");
         }
     }
 
-    /// Handle batch requests
+    /// Handle batch requests. Caller frees the slice and deinits each response.
     pub fn handleBatch(self: *@This(), requests: []const RPCRequest) ![]RPCResponse {
         var responses = try std.ArrayList(RPCResponse).initCapacity(self.allocator, requests.len);
-        errdefer responses.deinit(self.allocator);
+        errdefer {
+            for (responses.items) |resp| resp.deinit(self.allocator);
+            responses.deinit(self.allocator);
+        }
 
         for (requests) |req| {
             const resp = self.handle(req) catch |err| {
-                try responses.append(self.allocator, RPCResponse.makeError(req.id, .internal_error, @errorName(err)));
+                responses.append(self.allocator, RPCResponse.makeError(req.id, .internal_error, @errorName(err))) catch |append_err| return append_err;
                 continue;
             };
-            try responses.append(self.allocator, resp);
+            responses.append(self.allocator, resp) catch |err| {
+                resp.deinit(self.allocator);
+                return err;
+            };
         }
 
         return responses.toOwnedSlice(self.allocator);
@@ -299,6 +333,11 @@ pub const RPCServer = struct {
 };
 
 // Standard RPC method handlers - use context.user_data via interfaces
+
+fn ownedJsonSuccess(ctx: *RPCContext, literal: []const u8) !RPCResponse {
+    const body = try ctx.allocator.dupe(u8, literal);
+    return RPCResponse.success(null, body);
+}
 
 fn handleGetObject(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
     _ = _ctx;
@@ -341,8 +380,7 @@ fn handleGetCoins(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
 }
 
 fn handleGetLatestCheckpointSequence(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = ctx;
-    return RPCResponse.success(null, "0");
+    return ownedJsonSuccess(ctx, "0");
 }
 
 fn handleGetTransactionBlock(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
@@ -375,20 +413,16 @@ fn handleGetOwnedObjects(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
     return RPCResponse.makeError(null, .knot3_object_not_found, "Objects not found");
 }
 
-fn handleDryRunTransaction(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    // Dry run would execute transaction without side effects
-    return RPCResponse.success(null, "{\"effects\":{\"status\":{\"type\":\"success\"},\"gasUsed\":1000}}");
+fn handleDryRunTransaction(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    return ownedJsonSuccess(ctx, "{\"effects\":{\"status\":{\"type\":\"success\"},\"gasUsed\":1000}}");
 }
 
-fn handleSyncEpochState(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    return RPCResponse.success(null, "{\"epoch\":0,\"protocolVersion\":1}");
+fn handleSyncEpochState(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    return ownedJsonSuccess(ctx, "{\"epoch\":0,\"protocolVersion\":1}");
 }
 
-fn handleGetEpochs(_ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
-    _ = _ctx;
-    return RPCResponse.success(null, "{\"data\":[]}");
+fn handleGetEpochs(ctx: *RPCContext, _: ?std.json.Value) !RPCResponse {
+    return ownedJsonSuccess(ctx, "{\"data\":[]}");
 }
 
 fn handleSubmitStakeOperation(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
@@ -402,7 +436,7 @@ fn handleSubmitStakeOperation(ctx: *RPCContext, params: ?std.json.Value) !RPCRes
     const operation_id = node.submitStakeOperation(input) catch |err| {
         return RPCResponse.makeError(null, .internal_error, @errorName(err));
     };
-    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"status\":\"accepted\",\"operationId\":{d}}}", .{operation_id});
+    const body = try ctx.allocator.print("{{\"status\":\"accepted\",\"operationId\":{d}}}", .{operation_id});
     return RPCResponse.success(null, body);
 }
 
@@ -417,7 +451,7 @@ fn handleSubmitGovernanceProposal(ctx: *RPCContext, params: ?std.json.Value) !RP
     const proposal_id = node.submitGovernanceProposal(input) catch |err| {
         return RPCResponse.makeError(null, .internal_error, @errorName(err));
     };
-    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
+    const body = try ctx.allocator.print("{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
     return RPCResponse.success(null, body);
 }
 
@@ -432,7 +466,7 @@ fn handleCreditGas(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
     const balance = node.creditGas(input.address, input.amount) catch |err| {
         return RPCResponse.makeError(null, .internal_error, @errorName(err));
     };
-    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"balance\":{d}}}", .{balance});
+    const body = try ctx.allocator.print("{{\"balance\":{d}}}", .{balance});
     return RPCResponse.success(null, body);
 }
 
@@ -459,7 +493,7 @@ fn handleGetGasBalance(ctx: *RPCContext, params: ?std.json.Value) !RPCResponse {
         return RPCResponse.makeError(null, .invalid_params, "invalid knot3_getGasBalance params");
     };
     const balance = node.getGasBalance(input.address);
-    const body = try std.fmt.allocPrint(ctx.allocator, "{{\"balance\":{d}}}", .{balance});
+    const body = try ctx.allocator.print("{{\"balance\":{d}}}", .{balance});
     return RPCResponse.success(null, body);
 }
 
@@ -483,12 +517,83 @@ fn handleGetCheckpointProof(ctx: *RPCContext, params: ?std.json.Value) !RPCRespo
     defer ctx.allocator.free(bls_sig_hex);
     const bls_bitmap_hex = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.bls_signer_bitmap);
     defer ctx.allocator.free(bls_bitmap_hex);
-    const body = try std.fmt.allocPrint(
-        ctx.allocator,
+    const body = try ctx.allocator.print(
         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\",\"bls_signature\":\"{s}\",\"bls_signer_bitmap\":\"{s}\"}}",
         .{ proof.sequence, proof.state_root, proof_hex, sig_hex, bls_sig_hex, bls_bitmap_hex },
     );
     return RPCResponse.success(null, body);
+}
+
+fn demoOwnedHandler(ctx: *RPCContext, params: []const u8) anyerror!RPCResponse {
+    _ = params;
+    return ownedJsonSuccess(ctx, "{\"ok\":true}");
+}
+
+test "RPC handle returns the registered body" {
+    const allocator = std.testing.allocator;
+    var server = try RPCServer.init(allocator);
+    defer server.deinit();
+    try server.register("demo", demoOwnedHandler);
+
+    var demo_method: [4]u8 = "demo".*;
+    const one = try server.handle(.{
+        .method = &demo_method,
+        .params = .{ .data = "x" },
+        .id = .{ .number = 3 },
+    });
+    defer one.deinit(allocator);
+    switch (one.id.?) {
+        .number => |n| try std.testing.expectEqual(@as(i64, 3), n),
+        .string => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(one.result != null and one.result.? == .success);
+    try std.testing.expectEqualStrings("{\"ok\":true}", one.result.?.success);
+
+    var missing_method: [4]u8 = "nope".*;
+    const missing = try server.handle(.{
+        .method = &missing_method,
+        .params = null,
+        .id = null,
+    });
+    defer missing.deinit(allocator);
+    try std.testing.expect(missing.err != null);
+
+    const batch = try server.handleBatch(&.{
+        .{ .method = &demo_method, .params = null, .id = .{ .number = 1 } },
+        .{ .method = &missing_method, .params = null, .id = .{ .number = 2 } },
+    });
+    defer {
+        for (batch) |item| item.deinit(allocator);
+        allocator.free(batch);
+    }
+    try std.testing.expectEqual(@as(usize, 2), batch.len);
+    try std.testing.expectEqualStrings("{\"ok\":true}", batch[0].result.?.success);
+    try std.testing.expect(batch[1].err != null);
+}
+
+test "RPC error message is json-escaped" {
+    const allocator = std.testing.allocator;
+    var server = try RPCServer.init(allocator);
+    defer server.deinit();
+    const json = try server.formatRpcError(-32603, "bad \"req\"\n", "9");
+    defer allocator.free(json);
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"bad \\\"req\\\"\\n\"},\"id\":9}", json);
+}
+
+test "handleHTTPRequest echoes the request id" {
+    const allocator = std.testing.allocator;
+    var server = try RPCServer.init(allocator);
+    defer server.deinit();
+
+    const missing = try server.handleHTTPRequest("{\"jsonrpc\":\"2.0\",\"id\":\"a\\\"b\",\"method\":\"no_such\"}");
+    defer allocator.free(missing);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "\"id\":\"a\\\"b\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing, "Method not found") != null);
+
+    const epochs = try server.handleHTTPRequest("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"knot3_getEpochs\"}");
+    defer allocator.free(epochs);
+    try std.testing.expect(std.mem.indexOf(u8, epochs, "\"id\":7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, epochs, "\"data\":[]") != null);
 }
 
 test "RPC server init and deinit" {
@@ -541,7 +646,7 @@ test "RPC m4 methods call node mainnet hooks" {
     };
 
     const z64 = "0000000000000000000000000000000000000000000000000000000000000000";
-    const stake_body = try std.fmt.allocPrint(allocator, "{{\"validator\":\"0x{s}\",\"delegator\":\"0x{s}\",\"amount\":1,\"action\":\"stake\",\"metadata\":\"t\"}}", .{ z64, z64 });
+    const stake_body = try allocator.print("{{\"validator\":\"0x{s}\",\"delegator\":\"0x{s}\",\"amount\":1,\"action\":\"stake\",\"metadata\":\"t\"}}", .{ z64, z64 });
     defer allocator.free(stake_body);
     var stake_params1 = try std.json.parseFromSlice(std.json.Value, allocator, stake_body, .{ .ignore_unknown_fields = true });
     defer stake_params1.deinit();
@@ -556,7 +661,7 @@ test "RPC m4 methods call node mainnet hooks" {
     try std.testing.expect(std.mem.indexOf(u8, stake_1.result.?.success, "\"operationId\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, stake_2.result.?.success, "\"operationId\":2") != null);
 
-    const gov_body = try std.fmt.allocPrint(allocator, "{{\"proposer\":\"0x{s}\",\"title\":\"Proposal A\",\"description\":\"Body text\",\"kind\":\"parameter_change\"}}", .{z64});
+    const gov_body = try allocator.print("{{\"proposer\":\"0x{s}\",\"title\":\"Proposal A\",\"description\":\"Body text\",\"kind\":\"parameter_change\"}}", .{z64});
     defer allocator.free(gov_body);
     var gov_params = try std.json.parseFromSlice(std.json.Value, allocator, gov_body, .{ .ignore_unknown_fields = true });
     defer gov_params.deinit();
@@ -565,7 +670,7 @@ test "RPC m4 methods call node mainnet hooks" {
     try std.testing.expect(proposal.result != null);
     try std.testing.expect(std.mem.indexOf(u8, proposal.result.?.success, "\"proposalId\":1") != null);
 
-    const proof_body = try std.fmt.allocPrint(allocator, "{{\"sequence\":7,\"objectId\":\"0x{s}\"}}", .{z64});
+    const proof_body = try allocator.print("{{\"sequence\":7,\"objectId\":\"0x{s}\"}}", .{z64});
     defer allocator.free(proof_body);
     const proof_params = try std.json.parseFromSlice(std.json.Value, allocator, proof_body, .{ .ignore_unknown_fields = true });
     defer proof_params.deinit();
@@ -575,7 +680,7 @@ test "RPC m4 methods call node mainnet hooks" {
     try std.testing.expect(std.mem.indexOf(u8, proof.result.?.success, "\"sequence\":7") != null);
 
     const gas_addr = "1111111111111111111111111111111111111111111111111111111111111111";
-    const credit_body = try std.fmt.allocPrint(allocator, "{{\"address\":\"0x{s}\",\"amount\":42}}", .{gas_addr});
+    const credit_body = try allocator.print("{{\"address\":\"0x{s}\",\"amount\":42}}", .{gas_addr});
     defer allocator.free(credit_body);
     var credit_params = try std.json.parseFromSlice(std.json.Value, allocator, credit_body, .{ .ignore_unknown_fields = true });
     defer credit_params.deinit();
@@ -584,7 +689,7 @@ test "RPC m4 methods call node mainnet hooks" {
     try std.testing.expect(credited.result != null);
     try std.testing.expect(std.mem.indexOf(u8, credited.result.?.success, "\"balance\":42") != null);
 
-    const bal_body = try std.fmt.allocPrint(allocator, "{{\"address\":\"0x{s}\"}}", .{gas_addr});
+    const bal_body = try allocator.print("{{\"address\":\"0x{s}\"}}", .{gas_addr});
     defer allocator.free(bal_body);
     var bal_params = try std.json.parseFromSlice(std.json.Value, allocator, bal_body, .{ .ignore_unknown_fields = true });
     defer bal_params.deinit();

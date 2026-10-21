@@ -34,10 +34,10 @@ jobs:
           zig build
 
       - name: Run unit tests
-        run: zig build test-unit -Doptimize=Debug
+        run: zig build test-unit -Doptimize=debug
 
       - name: Run integration tests
-        run: zig build test-integration -Doptimize=Debug
+        run: zig build test-integration -Doptimize=debug
 
       - name: Quorum single-source gate
         run: bash tools/quorum_single_source_gate.sh
@@ -94,7 +94,7 @@ jobs:
           echo "$HOME/zig" >> "$GITHUB_PATH"
 
       - name: Build release
-        run: zig build -Doptimize=ReleaseSafe
+        run: zig build -Doptimize=safe
 
   docker:
     runs-on: ubuntu-latest

@@ -131,25 +131,43 @@ pub const Indexer = struct {
     pub fn indexObject(self: *Self, obj: IndexedObject) !void {
         if (!self.config.enable_object_index) return;
 
-        // Make a copy of the object with owned memory
+        const owned_type = try self.allocator.dupe(u8, obj.type);
+        const owned_data = self.allocator.dupe(u8, obj.data) catch |err| {
+            self.allocator.free(owned_type);
+            return err;
+        };
         const owned_obj = IndexedObject{
             .id = obj.id,
             .version = obj.version,
-            .type = try self.allocator.dupe(u8, obj.type),
+            .type = owned_type,
             .owner = obj.owner,
-            .data = try self.allocator.dupe(u8, obj.data),
+            .data = owned_data,
             .timestamp = obj.timestamp,
         };
 
-        try self.object_index.put(self.allocator, obj.id, owned_obj);
-        self.object_count += 1;
+        const previous = self.object_index.fetchPut(self.allocator, obj.id, owned_obj) catch |err| {
+            self.allocator.free(owned_type);
+            self.allocator.free(owned_data);
+            return err;
+        };
+        if (previous) |old| {
+            self.allocator.free(old.value.type);
+            self.allocator.free(old.value.data);
+        } else {
+            self.object_count += 1;
+        }
     }
 
-    /// Index an event
+    fn releaseIndexedEvent(self: *Self, event: IndexedEvent) void {
+        self.allocator.free(event.event_type);
+        self.allocator.free(event.contents);
+    }
+
+    /// Index an event. The transaction index owns the event strings; the type
+    /// index stores the same slices and only owns its map key.
     pub fn indexEvent(self: *Self, event: IndexedEvent) !void {
         if (!self.config.enable_event_index) return;
 
-        // Make a copy with owned memory
         const owned_event = IndexedEvent{
             .transaction_digest = event.transaction_digest,
             .event_type = try self.allocator.dupe(u8, event.event_type),
@@ -157,23 +175,40 @@ pub const Indexer = struct {
             .timestamp = event.timestamp,
             .event_index = event.event_index,
         };
-        errdefer {
-            self.allocator.free(owned_event.event_type);
-            self.allocator.free(owned_event.contents);
-        }
 
-        // Index by transaction
-        const tx_list = try self.event_index.getOrPutValue(self.allocator, event.transaction_digest, std.ArrayList(IndexedEvent).empty);
-        try tx_list.value_ptr.append(self.allocator, owned_event);
+        const tx_list = self.event_index.getOrPutValue(self.allocator, event.transaction_digest, std.ArrayList(IndexedEvent).empty) catch |err| {
+            self.releaseIndexedEvent(owned_event);
+            return err;
+        };
+        tx_list.value_ptr.append(self.allocator, owned_event) catch |err| {
+            self.releaseIndexedEvent(owned_event);
+            return err;
+        };
 
-        // Index by type — duplicate key so it outlives the caller's buffer
-        const owned_type_key = try self.allocator.dupe(u8, owned_event.event_type);
-        errdefer self.allocator.free(owned_type_key);
-        const type_entry = try self.events_by_type.getOrPutValue(self.allocator, owned_type_key, std.ArrayList(IndexedEvent).empty);
-        if (type_entry.found_existing) {
+        const owned_type_key = self.allocator.dupe(u8, owned_event.event_type) catch |err| {
+            self.releaseIndexedEvent(tx_list.value_ptr.pop().?);
+            return err;
+        };
+        const type_entry = self.events_by_type.getOrPutValue(self.allocator, owned_type_key, std.ArrayList(IndexedEvent).empty) catch |err| {
             self.allocator.free(owned_type_key);
-        }
-        try type_entry.value_ptr.append(self.allocator, owned_event);
+            self.releaseIndexedEvent(tx_list.value_ptr.pop().?);
+            return err;
+        };
+        const installed_new_type = !type_entry.found_existing;
+        if (!installed_new_type) self.allocator.free(owned_type_key);
+
+        type_entry.value_ptr.append(self.allocator, owned_event) catch |err| {
+            if (installed_new_type) {
+                if (self.events_by_type.fetchSwapRemove(owned_type_key)) |removed| {
+                    const key = removed.key;
+                    var list = removed.value;
+                    self.allocator.free(key);
+                    list.deinit(self.allocator);
+                }
+            }
+            self.releaseIndexedEvent(tx_list.value_ptr.pop().?);
+            return err;
+        };
 
         self.event_count += 1;
     }
@@ -267,33 +302,24 @@ pub const Indexer = struct {
         var it = self.event_index.iterator();
         var event_idx: u64 = 0;
         var passed_cursor = cursor == null;
+        var has_more = false;
+        var last_index: ?u64 = null;
 
-        while (it.next()) |entry| {
+        outer: while (it.next()) |entry| {
             for (entry.value_ptr.items) |evt| {
-                // Apply cursor filter
+                const idx = event_idx;
+                event_idx += 1;
                 if (!passed_cursor) {
-                    if (event_idx == cursor.?) {
-                        passed_cursor = true;
-                    }
-                    event_idx += 1;
+                    if (idx == cursor.?) passed_cursor = true;
                     continue;
                 }
 
-                // Apply transaction filter
                 if (query.transaction_digest) |tx_digest| {
-                    if (!std.mem.eql(u8, &evt.transaction_digest, &tx_digest)) {
-                        continue;
-                    }
+                    if (!std.mem.eql(u8, &evt.transaction_digest, &tx_digest)) continue;
                 }
-
-                // Apply type filter
                 if (query.event_type) |evt_type| {
-                    if (!std.mem.eql(u8, evt.event_type, evt_type)) {
-                        continue;
-                    }
+                    if (!std.mem.eql(u8, evt.event_type, evt_type)) continue;
                 }
-
-                // Apply time filter
                 if (query.start_time) |start| {
                     if (evt.timestamp < start) continue;
                 }
@@ -301,15 +327,14 @@ pub const Indexer = struct {
                     if (evt.timestamp > end) continue;
                 }
 
+                if (results.items.len >= limit) {
+                    has_more = true;
+                    break :outer;
+                }
                 try results.append(allocator, evt);
-                event_idx += 1;
-
-                if (results.items.len >= limit) break;
+                last_index = idx;
             }
-            if (results.items.len >= limit) break;
         }
-
-        const has_more = it.next() != null;
 
         // Serialize results into an owned byte buffer
         // Format: [4-byte event_count][events...] where each event is:
@@ -349,10 +374,16 @@ pub const Indexer = struct {
 
         const owned_data = try buf.toOwnedSlice(allocator);
         errdefer allocator.free(owned_data);
+        const next_cursor = if (has_more) blk: {
+            const idx = last_index orelse break :blk null;
+            const bytes = try allocator.alloc(u8, 8);
+            std.mem.writeInt(u64, bytes[0..8], idx, .little);
+            break :blk bytes;
+        } else null;
 
         return .{
             .data = owned_data,
-            .next_cursor = null,
+            .next_cursor = next_cursor,
             .has_more = has_more,
         };
     }
@@ -410,10 +441,12 @@ test "Indexer basic operations" {
     };
 
     try indexer.indexObject(obj);
+    try indexer.indexObject(obj);
 
     const retrieved = indexer.getObject(obj.id);
     try std.testing.expect(retrieved != null);
     try std.testing.expect(std.mem.eql(u8, retrieved.?.type, "Coin"));
+    try std.testing.expectEqual(@as(u64, 1), indexer.object_count);
 }
 
 test "Indexer event indexing" {
@@ -441,6 +474,58 @@ test "Indexer event indexing" {
     const events = indexer.getEventsForTransaction(tx_digest);
     try std.testing.expect(events != null);
     try std.testing.expect(events.?.len == 1);
+
+    var shared_type: [12]u8 = "CoinTransfer".*;
+    const second = @as([32]u8, @splat(2));
+    try indexer.indexEvent(.{
+        .transaction_digest = second,
+        .event_type = &shared_type,
+        .contents = "two",
+        .timestamp = 1001,
+        .event_index = 0,
+    });
+    const by_type = indexer.getEventsByType(&shared_type);
+    try std.testing.expect(by_type != null);
+    try std.testing.expectEqual(@as(usize, 2), by_type.?.len);
+    try std.testing.expectEqual(@as(usize, 1), indexer.getEventsForTransaction(second).?.len);
+}
+
+test "queryEvents pages events inside one transaction" {
+    const allocator = std.testing.allocator;
+    var indexer = try Indexer.init(allocator, .{});
+    defer indexer.deinit();
+
+    const digest: [32]u8 = @splat(0x11);
+    try indexer.indexEvent(.{
+        .transaction_digest = digest,
+        .event_type = "A",
+        .contents = "1",
+        .timestamp = 1,
+        .event_index = 0,
+    });
+    try indexer.indexEvent(.{
+        .transaction_digest = digest,
+        .event_type = "B",
+        .contents = "2",
+        .timestamp = 2,
+        .event_index = 1,
+    });
+
+    var page1 = try indexer.queryEvents(allocator, .{}, null, 1);
+    defer page1.deinit(allocator);
+    try std.testing.expect(page1.has_more);
+    try std.testing.expect(std.mem.indexOf(u8, page1.data, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page1.data, "B") == null);
+    const cursor_bytes = page1.next_cursor orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 8), cursor_bytes.len);
+    const cursor = std.mem.readInt(u64, cursor_bytes[0..8], .little);
+
+    var page2 = try indexer.queryEvents(allocator, .{}, cursor, 1);
+    defer page2.deinit(allocator);
+    try std.testing.expect(!page2.has_more);
+    try std.testing.expect(page2.next_cursor == null);
+    try std.testing.expect(std.mem.indexOf(u8, page2.data, "B") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page2.data, "A") == null);
 }
 
 test "Indexer stats" {

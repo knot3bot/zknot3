@@ -12,7 +12,7 @@ fn allocDataDir(allocator: std.mem.Allocator) ![]const u8 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
     const salt: u64 = @as(u64, @intCast(ts.sec)) ^ (@as(u64, @intCast(ts.nsec)) << 1);
-    return try std.fmt.allocPrint(allocator, "test_tmp/m4_wal_it_{x}", .{salt});
+    return try allocator.print("test_tmp/m4_wal_it_{x}", .{salt});
 }
 
 fn cleanupDataDir(data_dir: []const u8) void {
@@ -202,7 +202,7 @@ test "M4 WAL recovery: truncated M4 WAL tail makes restart replay fail closed" {
         });
     }
 
-    const wal_rel = try std.fmt.allocPrint(allocator, "{s}/m4_state.wal", .{data_dir});
+    const wal_rel = try allocator.print("{s}/m4_state.wal", .{data_dir});
     defer allocator.free(wal_rel);
 
     const bytes = try std.Io.Dir.cwd().readFileAlloc(

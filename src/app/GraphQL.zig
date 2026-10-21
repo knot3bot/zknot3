@@ -626,7 +626,7 @@ fn resolveGetCheckpointProof(ctx: *const ResolverContext, args: []const ArgValue
     const signatures_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.signatures);
     const bls_signature_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.bls_signature);
     const bls_bitmap_text = try MainnetExtensionHooks.allocHexLower(ctx.allocator, proof.bls_signer_bitmap);
-    const state_root_text = try std.fmt.allocPrint(ctx.allocator, "{x}", .{proof.state_root});
+    const state_root_text = try ctx.allocator.print("{x}", .{proof.state_root});
     var obj = std.StringArrayHashMapUnmanaged(Value).empty;
     try obj.put(ctx.allocator, "sequence", intValue(@intCast(proof.sequence)));
     try obj.put(ctx.allocator, "stateRoot", stringValue(state_root_text));
@@ -836,7 +836,7 @@ fn appendJSONStringEscaped(allocator: std.mem.Allocator, buf: *std.ArrayList(u8)
             else => {
                 if (c < 0x20) {
                     var tmp: [6]u8 = undefined;
-                    const out = try std.fmt.bufPrint(&tmp, "\\u{X:0>4}", .{@as(u16, c)});
+                    const out = try std.mem.print(&tmp, "\\u{X:0>4}", .{@as(u16, c)});
                     try buf.appendSlice(allocator, out);
                 } else {
                     try buf.append(allocator, c);
@@ -855,12 +855,12 @@ fn serializeValue(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), value: 
             try appendJSONStringEscaped(allocator, buf, value.string.?);
         },
         .Int => {
-            const int_json = try std.fmt.allocPrint(allocator, "{d}", .{value.int.?});
+            const int_json = try allocator.print("{d}", .{value.int.?});
             defer allocator.free(int_json);
             try buf.appendSlice(allocator, int_json);
         },
         .Float => {
-            const float_json = try std.fmt.allocPrint(allocator, "{d}", .{value.float.?});
+            const float_json = try allocator.print("{d}", .{value.float.?});
             defer allocator.free(float_json);
             try buf.appendSlice(allocator, float_json);
         },

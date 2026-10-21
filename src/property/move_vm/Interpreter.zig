@@ -223,7 +223,10 @@ pub const Interpreter = struct {
         self.output_objects.deinit(self.allocator);
         self.object_effects.deinit(self.allocator);
         self.call_stack.deinit();
-        for (self.events.items) |evt| self.allocator.free(evt.payload);
+        for (self.events.items) |evt| {
+            self.allocator.free(evt.event_type);
+            self.allocator.free(evt.payload);
+        }
         self.events.deinit(self.allocator);
         self.verified_cache.deinit(self.allocator);
         self.loaded_ids.deinit(self.allocator);
@@ -257,7 +260,10 @@ pub const Interpreter = struct {
     fn resetEffects(self: *Self) void {
         self.output_objects.clearRetainingCapacity();
         self.object_effects.clearRetainingCapacity();
-        for (self.events.items) |evt| self.allocator.free(evt.payload);
+        for (self.events.items) |evt| {
+            self.allocator.free(evt.event_type);
+            self.allocator.free(evt.payload);
+        }
         self.events.clearRetainingCapacity();
         for (self.locals.items) |local| local.deinit(self.allocator);
         self.locals.clearRetainingCapacity();

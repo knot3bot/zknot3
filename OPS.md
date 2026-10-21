@@ -19,7 +19,7 @@
 
 ```bash
 # Build
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=safe
 
 # Run local devnet (4 validators + 1 fullnode)
 cd deploy/docker

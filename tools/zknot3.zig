@@ -1,5 +1,5 @@
 //! zknot3 CLI — node management, key generation, transaction submission
-//! Build: zig build-exe tools/zknot3.zig -Doptimize=ReleaseSafe
+//! Build: zig build-exe tools/zknot3.zig -Doptimize=safe
 
 const std = @import("std");
 

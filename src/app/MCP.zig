@@ -57,7 +57,7 @@ pub const Resource = struct {
 
     /// Caller owns the returned URI (`zknot3://` + path).
     pub fn fullURI(self: Self, allocator: std.mem.Allocator) ![]u8 {
-        return try std.fmt.allocPrint(allocator, "zknot3://{s}", .{self.uri});
+        return try allocator.print("zknot3://{s}", .{self.uri});
     }
 };
 

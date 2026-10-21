@@ -844,7 +844,7 @@ pub const CompactionManager = struct {
         if (new_level < self.levels.items.len) {
             const sst_id = next_sst_id.*;
             next_sst_id.* = std.math.add(u64, sst_id, 1) catch return error.ArithmeticOverflow;
-            const path = try std.fmt.allocPrint(allocator, "{s}/L{d}_{d}.sst", .{
+            const path = try allocator.print("{s}/L{d}_{d}.sst", .{
                 sst_dir, new_level, sst_id,
             });
             defer allocator.free(path);
@@ -993,7 +993,7 @@ pub const LSMTree = struct {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
         // Initialize WAL for durability
-        const wal_path = try std.fmt.allocPrint(allocator, "{s}/wal.log", .{config.sst_dir});
+        const wal_path = try allocator.print("{s}/wal.log", .{config.sst_dir});
         errdefer allocator.free(wal_path);
         const wal: ?WAL = initWALOrNull(allocator, wal_path);
         self.* = .{
@@ -1141,7 +1141,7 @@ pub const LSMTree = struct {
 
         // Create new SSTable
         const level = self.compaction.getTargetLevel(self.memtable.size);
-        const path = try std.fmt.allocPrint(self.allocator, "{s}/L{d}_{d}.sst", .{
+        const path = try self.allocator.print("{s}/L{d}_{d}.sst", .{
             self.config.sst_dir, level, self.sequence,
         });
         defer self.allocator.free(path);
@@ -1416,7 +1416,7 @@ test "compaction frees each merged entry once" {
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
     var mgr = try CompactionManager.init(allocator, .{});
-    const path = try std.fmt.allocPrint(allocator, "{s}/L0_seed.sst", .{dir});
+    const path = try allocator.print("{s}/L0_seed.sst", .{dir});
     defer allocator.free(path);
     const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
     created.close(std.testing.io);
@@ -1451,7 +1451,7 @@ test "compaction keeps the last level" {
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
     var mgr = try CompactionManager.init(allocator, .{ .max_levels = 1 });
-    const path = try std.fmt.allocPrint(allocator, "{s}/L0_seed.sst", .{dir});
+    const path = try allocator.print("{s}/L0_seed.sst", .{dir});
     defer allocator.free(path);
     const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
     created.close(std.testing.io);
@@ -1494,9 +1494,9 @@ test "compaction leaves every source table when one record cannot be read" {
     defer allocator.free(value);
     const entries = [_]KeyValue{.{ .key = key, .value = value, .seq = 1 }};
 
-    const good_path = try std.fmt.allocPrint(allocator, "{s}/good.sst", .{dir});
+    const good_path = try allocator.print("{s}/good.sst", .{dir});
     defer allocator.free(good_path);
-    const bad_path = try std.fmt.allocPrint(allocator, "{s}/bad.sst", .{dir});
+    const bad_path = try allocator.print("{s}/bad.sst", .{dir});
     defer allocator.free(bad_path);
     const good_file = try std.Io.Dir.cwd().createFile(std.testing.io, good_path, .{ .truncate = true });
     good_file.close(std.testing.io);
@@ -1553,9 +1553,9 @@ test "compaction keeps the newest value for each key" {
     const tomb = try allocator.dupe(u8, "");
     defer allocator.free(tomb);
 
-    const older_path = try std.fmt.allocPrint(allocator, "{s}/older.sst", .{dir});
+    const older_path = try allocator.print("{s}/older.sst", .{dir});
     defer allocator.free(older_path);
-    const newer_path = try std.fmt.allocPrint(allocator, "{s}/newer.sst", .{dir});
+    const newer_path = try allocator.print("{s}/newer.sst", .{dir});
     defer allocator.free(newer_path);
     const older_file = try std.Io.Dir.cwd().createFile(std.testing.io, older_path, .{ .truncate = true });
     older_file.close(std.testing.io);
@@ -1603,7 +1603,7 @@ test "compaction refuses to wrap the sstable id" {
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
     var mgr = try CompactionManager.init(allocator, .{});
-    const path = try std.fmt.allocPrint(allocator, "{s}/L0_seed.sst", .{dir});
+    const path = try allocator.print("{s}/L0_seed.sst", .{dir});
     defer allocator.free(path);
     const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
     created.close(std.testing.io);
@@ -1634,7 +1634,7 @@ test "SSTable read returns the stored value" {
     try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
-    const path = try std.fmt.allocPrint(allocator, "{s}/point.sst", .{dir});
+    const path = try allocator.print("{s}/point.sst", .{dir});
     defer allocator.free(path);
     const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
     created.close(std.testing.io);
@@ -1676,7 +1676,7 @@ test "SSTable write rejects a record that does not fit in its length field" {
     try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
-    const path = try std.fmt.allocPrint(allocator, "{s}/huge.sst", .{dir});
+    const path = try allocator.print("{s}/huge.sst", .{dir});
     defer allocator.free(path);
     const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
     created.close(std.testing.io);
@@ -1705,7 +1705,7 @@ test "SSTable index write rejects more entries than its count field can hold" {
     try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
-    const path = try std.fmt.allocPrint(allocator, "{s}/index.sst", .{dir});
+    const path = try allocator.print("{s}/index.sst", .{dir});
     defer allocator.free(path);
     const created = try std.Io.Dir.cwd().createFile(std.testing.io, path, .{ .truncate = true });
     created.close(std.testing.io);
@@ -1731,7 +1731,7 @@ test "SSTable opened for creation stays readable" {
     try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
-    const path = try std.fmt.allocPrint(allocator, "{s}/created.sst", .{dir});
+    const path = try allocator.print("{s}/created.sst", .{dir});
     defer allocator.free(path);
     const sst = try allocator.create(SSTable);
     sst.* = try SSTable.open(allocator, path, 0);
@@ -1761,7 +1761,7 @@ test "SSTable reopen finds every stored key" {
     try std.Io.Dir.cwd().createDir(std.testing.io, dir, .default_dir);
     defer std.Io.Dir.cwd().deleteTree(std.testing.io, dir) catch {};
 
-    const path = try std.fmt.allocPrint(allocator, "{s}/reopen.sst", .{dir});
+    const path = try allocator.print("{s}/reopen.sst", .{dir});
     defer allocator.free(path);
 
     const first_key = try allocator.dupe(u8, "alpha");

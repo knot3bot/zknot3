@@ -26,6 +26,41 @@ fn extractBytes(allocator: std.mem.Allocator, val: Value) NativeError![]u8 {
     return bytes;
 }
 
+fn appendJsonString(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, raw: []const u8) !void {
+    for (raw) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            0x08 => try buf.appendSlice(allocator, "\\b"),
+            0x0C => try buf.appendSlice(allocator, "\\f"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            0x00...0x07, 0x0B, 0x0E...0x1F => {
+                var hex: [6]u8 = .{ '\\', 'u', '0', '0', '0', '0' };
+                const digits = "0123456789abcdef";
+                hex[4] = digits[c >> 4];
+                hex[5] = digits[c & 0xf];
+                try buf.appendSlice(allocator, &hex);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+}
+
+fn formatInferencePayload(allocator: std.mem.Allocator, model_id: []const u8, status: i64) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"model_id\":\"");
+    try appendJsonString(&buf, allocator, model_id);
+    try buf.appendSlice(allocator, "\",\"status\":");
+    var num: [24]u8 = undefined;
+    const rendered = std.mem.print(&num, "{d}", .{status}) catch return error.OutOfMemory;
+    try buf.appendSlice(allocator, rendered);
+    try buf.append(allocator, '}');
+    return buf.toOwnedSlice(allocator);
+}
+
 fn dimension(value: Value) NativeError!usize {
     if (value.tag != .integer or value.data.int < 0) return NativeError.TypeMismatch;
     return @intCast(value.data.int);
@@ -191,11 +226,13 @@ pub fn nativeEmitInferenceEvent(interpreter: *Interpreter, args: []const Value) 
     const Event = @import("EventEmitter.zig").Event;
     const ctx = interpreter.tx_context orelse return NativeError.ResourceNotFound;
 
-    const payload = try std.fmt.allocPrint(interpreter.allocator, "{{\"model_id\":\"{s}\",\"status\":{d}}}", .{ model_id, args[1].data.int });
+    const payload = formatInferencePayload(interpreter.allocator, model_id, args[1].data.int) catch return NativeError.OutOfMemory;
     errdefer interpreter.allocator.free(payload);
+    const event_type = interpreter.allocator.dupe(u8, "knot3::ai_framework::InferenceEvent") catch return NativeError.OutOfMemory;
+    errdefer interpreter.allocator.free(event_type);
 
     const event = Event{
-        .event_type = "knot3::ai_framework::InferenceEvent",
+        .event_type = event_type,
         .sender = ctx.sender,
         .payload = payload,
         .event_index = @intCast(interpreter.events.items.len),
@@ -326,4 +363,39 @@ test "emit_inference_event requires an integer status" {
     try std.testing.expectEqual(@as(i64, 0), result.data.int);
     try std.testing.expectEqual(@as(usize, 1), interp.events.items.len);
     try std.testing.expect(std.mem.indexOf(u8, interp.events.items[0].payload, "\"status\":7") != null);
+}
+
+test "emit_inference_event keeps model_id inside a json string" {
+    const allocator = std.testing.allocator;
+    const Gas = @import("Gas.zig");
+    const ResourceTracker = @import("Resource.zig").ResourceTracker;
+    const TxContext = @import("TxContext.zig").TxContext;
+
+    const gas_config: Gas.GasConfig = .{ .initial_budget = 1000, .max_gas = 10000 };
+    var gas = Gas.GasMeter.init(gas_config);
+    var tracker = ResourceTracker.init(allocator);
+    defer tracker.deinit();
+
+    var interp = try Interpreter.init(allocator, &gas, &tracker);
+    defer interp.deinit();
+
+    var ctx = TxContext{
+        .sender = @splat(1),
+        .tx_hash = @splat(2),
+        .epoch = 1,
+        .gas_price = 1,
+        .gas_budget = 1000,
+    };
+    interp.tx_context = &ctx;
+
+    const raw = [_]u8{ 'a', '"', 'b', '\\', 0x01 };
+    const model = try packBytes(allocator, &raw);
+    defer allocator.free(model.data.vector);
+    const status = Value{ .tag = .integer, .data = .{ .int = 1 } };
+    _ = try nativeEmitInferenceEvent(interp, &.{ model, status });
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, interp.events.items[0].payload, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(&raw, parsed.value.object.get("model_id").?.string);
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("status").?.integer);
 }

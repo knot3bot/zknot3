@@ -488,7 +488,7 @@ pub fn resolveDialIp(address: []const u8) ?std.Io.net.IpAddress {
 /// share Kademlia's single unknown-prefix diversity budget.
 pub fn resolveDialAddress(allocator: std.mem.Allocator, address: []const u8) ![]u8 {
     if (resolveDialIp(address)) |ip| {
-        return try std.fmt.allocPrint(allocator, "{f}", .{ip});
+        return try allocator.print("{f}", .{ip});
     }
     return try allocator.dupe(u8, address);
 }
@@ -3107,7 +3107,7 @@ test "rememberPeerQuality stores and LRU-evicts" {
     var i: usize = 0;
     while (i < QUALITY_MEMORY_CAP) : (i += 1) {
         var addr_buf: [32]u8 = undefined;
-        const addr = try std.fmt.bufPrint(&addr_buf, "10.1.{d}.1:9", .{i});
+        const addr = try std.mem.print(&addr_buf, "10.1.{d}.1:9", .{i});
         server.rememberPeerQuality(@as([32]u8, @splat(@as(u8, @truncate(i)))), 10, 0, addr, false);
     }
     try std.testing.expectEqual(QUALITY_MEMORY_CAP, server.quality_memory.count());

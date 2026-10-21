@@ -5,7 +5,7 @@
 //!           Consensus operations, Serialization, Move VM execution.
 //!
 //! Usage:
-//!     zig build -Doptimize=ReleaseFast && ./zig-out/bin/zknot3-profiler
+//!     zig build -Doptimize=fast && ./zig-out/bin/zknot3-profiler
 //!     ./zig-out/bin/zknot3-profiler --help
 //!
 //! Metrics collected:

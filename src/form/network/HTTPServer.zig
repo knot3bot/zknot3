@@ -79,17 +79,29 @@ pub const JSONRPCResponse = struct {
     }
 
     pub fn toJSON(self: @This(), allocator: std.mem.Allocator) ![]u8 {
-        var buf: [256]u8 = undefined;
+        const id_json = try formatJsonRpcId(allocator, self.id);
+        defer allocator.free(id_json);
         if (self.err) |err| {
-            const json = std.fmt.bufPrint(
-                &buf,
-                "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{},\"message\":\"{s}\"}},\"id\":{}}}",
-                .{ err.code, err.message, self.id.?.integer },
-            ) catch return error.BufferOverflow;
-            return try allocator.dupe(u8, json);
+            const message = try formatJsonString(allocator, err.message);
+            defer allocator.free(message);
+            return allocator.print(
+                "{{\"jsonrpc\":\"2.0\",\"error\":{{\"code\":{d},\"message\":{s}}},\"id\":{s}}}",
+                .{ err.code, message, id_json },
+            );
         }
-        const json = std.fmt.bufPrint(&buf, "{{\"jsonrpc\":\"2.0\",\"result\":null,\"id\":null}}", .{}) catch return error.BufferOverflow;
-        return try allocator.dupe(u8, json);
+        var result_buf: std.Io.Writer.Allocating = .init(allocator);
+        defer result_buf.deinit();
+        if (self.result) |value| {
+            try std.json.Stringify.value(value, .{}, &result_buf.writer);
+        } else {
+            try result_buf.writer.writeAll("null");
+        }
+        const result_json = try result_buf.toOwnedSlice();
+        defer allocator.free(result_json);
+        return allocator.print(
+            "{{\"jsonrpc\":\"2.0\",\"result\":{s},\"id\":{s}}}",
+            .{ result_json, id_json },
+        );
     }
 };
 
@@ -98,6 +110,62 @@ pub const JSONRPCError = struct {
     message: []const u8,
     data: ?[]const u8 = null,
 };
+
+fn isJsonNumberLiteral(s: []const u8) bool {
+    if (s.len == 0 or s.len > 64) return false;
+    for (s) |c| switch (c) {
+        '0'...'9', '-', '+', '.', 'e', 'E' => {},
+        else => return false,
+    };
+    return true;
+}
+
+/// Owned JSON literal for a JSON-RPC `id` (number, string, or null).
+/// A string is escaped so it cannot close the surrounding response.
+pub fn formatJsonRpcId(allocator: std.mem.Allocator, id: ?std.json.Value) ![]u8 {
+    const value = id orelse return allocator.dupe(u8, "null");
+    switch (value) {
+        .null => return allocator.dupe(u8, "null"),
+        .integer => |n| return allocator.print("{d}", .{n}),
+        .float => |n| {
+            if (!std.math.isFinite(n)) return allocator.dupe(u8, "null");
+            return allocator.print("{d}", .{n});
+        },
+        .number_string => |s| {
+            if (!isJsonNumberLiteral(s)) return allocator.dupe(u8, "null");
+            return allocator.dupe(u8, s);
+        },
+        .string => |s| return formatJsonString(allocator, s),
+        else => return allocator.dupe(u8, "null"),
+    }
+}
+
+pub fn formatJsonString(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+    try buf.append(allocator, '"');
+    for (raw) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            0x08 => try buf.appendSlice(allocator, "\\b"),
+            0x0C => try buf.appendSlice(allocator, "\\f"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            0x00...0x07, 0x0B, 0x0E...0x1F => {
+                var hex: [6]u8 = .{ '\\', 'u', '0', '0', '0', '0' };
+                const digits = "0123456789abcdef";
+                hex[4] = digits[c >> 4];
+                hex[5] = digits[c & 0xf];
+                try buf.appendSlice(allocator, &hex);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    try buf.append(allocator, '"');
+    return buf.toOwnedSlice(allocator);
+}
 
 /// HTTP status codes
 pub const StatusCode = enum(u16) {
@@ -209,6 +277,8 @@ pub const Response = struct {
     headers: std.StringArrayHashMapUnmanaged([]const u8),
     body: ?[]const u8,
     trace_id: ?[]const u8 = null,
+    /// Set when `headers` owns map storage. `send` and `toString` release it.
+    header_allocator: ?std.mem.Allocator = null,
 
     pub fn ok(body: []const u8) @This() {
         return .{
@@ -266,12 +336,21 @@ pub const Response = struct {
     }
 
     pub fn withHeader(self: *@This(), allocator: std.mem.Allocator, name: []const u8, value: []const u8) !@This() {
+        self.header_allocator = allocator;
         try self.headers.put(allocator, name, value);
         return self.*;
     }
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.headers.deinit(allocator);
+        self.header_allocator = null;
+    }
+
+    fn releaseHeaders(self: *@This()) void {
+        if (self.header_allocator) |allocator| {
+            self.headers.deinit(allocator);
+            self.header_allocator = null;
+        }
     }
 
     pub fn withJSONContentType(self: *@This(), allocator: std.mem.Allocator) !@This() {
@@ -283,7 +362,8 @@ pub const Response = struct {
         self.trace_id = trace_id;
     }
 
-    pub fn send(self: *const @This(), conn: std.Io.net.Stream) !void {
+    pub fn send(self: *@This(), conn: std.Io.net.Stream) !void {
+        defer self.releaseHeaders();
         const status_text = switch (self.status) {
             .ok => "200 OK",
             .created => "201 Created",
@@ -322,7 +402,7 @@ pub const Response = struct {
         if (self.trace_id) |tid| {
             try streamWriteAll(conn, "X-Trace-Id: ");
             var buf: [64]u8 = undefined;
-            const hex = std.fmt.bufPrint(&buf, "{x}", .{tid}) catch tid;
+            const hex = std.mem.print(&buf, "{x}", .{tid}) catch tid;
             try streamWriteAll(conn, hex);
             try streamWriteAll(conn, "\r\n");
         }
@@ -330,7 +410,7 @@ pub const Response = struct {
         if (self.body) |body| {
             try streamWriteAll(conn, "Content-Length: ");
             var buf: [20]u8 = undefined;
-            const len_str = try std.fmt.bufPrint(&buf, "{}", .{body.len});
+            const len_str = try std.mem.print(&buf, "{}", .{body.len});
             try streamWriteAll(conn, len_str);
             try streamWriteAll(conn, "\r\n");
         } else {
@@ -343,7 +423,8 @@ pub const Response = struct {
         }
     }
 
-    pub fn toString(self: *const @This(), allocator: std.mem.Allocator) ![]u8 {
+    pub fn toString(self: *@This(), allocator: std.mem.Allocator) ![]u8 {
+        defer self.releaseHeaders();
         const status_text = switch (self.status) {
             .ok => "200 OK",
             .created => "201 Created",
@@ -379,29 +460,44 @@ pub const Response = struct {
         errdefer allocator.free(buf);
 
         var pos: usize = 0;
-        const line1 = try std.fmt.bufPrint(buf[pos..], "HTTP/1.1 {s}\r\n", .{status_text});
+        const line1 = try std.mem.print(buf[pos..], "HTTP/1.1 {s}\r\n", .{status_text});
         pos += line1.len;
 
         headers_it = self.headers.iterator();
         while (headers_it.next()) |entry| {
-            const h = try std.fmt.bufPrint(buf[pos..], "{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            const h = try std.mem.print(buf[pos..], "{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
             pos += h.len;
         }
 
         if (self.trace_id) |tid| {
-            const tid_str = try std.fmt.bufPrint(buf[pos..], "X-Trace-Id: {x}\r\n", .{tid});
+            const tid_str = try std.mem.print(buf[pos..], "X-Trace-Id: {x}\r\n", .{tid});
             pos += tid_str.len;
         }
 
         if (self.body) |body| {
-            const cl = try std.fmt.bufPrint(buf[pos..], "Content-Length: {}\r\n\r\n{s}", .{ body.len, body });
+            const cl = try std.mem.print(buf[pos..], "Content-Length: {}\r\n\r\n{s}", .{ body.len, body });
             pos += cl.len;
         } else {
-            const cl = try std.fmt.bufPrint(buf[pos..], "Content-Length: 0\r\n\r\n", .{});
+            const cl = try std.mem.print(buf[pos..], "Content-Length: 0\r\n\r\n", .{});
             pos += cl.len;
         }
 
-        return buf[0..pos];
+        if (allocator.resize(buf, pos)) return buf[0..pos];
+        const exact = try allocator.dupe(u8, buf[0..pos]);
+        allocator.free(buf);
+        return exact;
+    }
+
+    /// HTTP response for a JSON body this function frees.
+    pub fn ownedJson(allocator: std.mem.Allocator, status: StatusCode, body: []u8) ![]u8 {
+        defer allocator.free(body);
+        var resp = @This(){
+            .status = status,
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+            .body = body,
+        };
+        _ = try resp.withJSONContentType(allocator);
+        return try resp.toString(allocator);
     }
 };
 
@@ -580,6 +676,17 @@ pub const HTTPServer = struct {
         return out;
     }
 
+    fn sendOwnedJson(self: *@This(), conn: std.Io.net.Stream, status: StatusCode, body: []u8) !void {
+        defer self.allocator.free(body);
+        var resp = Response{
+            .status = status,
+            .headers = std.StringArrayHashMapUnmanaged([]const u8).empty,
+            .body = body,
+        };
+        _ = try resp.withJSONContentType(self.allocator);
+        try resp.send(conn);
+    }
+
     pub fn handleConnection(self: *@This(), conn: std.Io.net.Stream) !void {
         defer conn.close(@import("io_instance").io);
 
@@ -748,7 +855,7 @@ pub const HTTPServer = struct {
                 const info = node.getNodeInfo();
                 const peers = if (node.getP2PServer()) |p2p| p2p.peerCount() else 0;
                 var health_buf: [512]u8 = undefined;
-                const json = std.fmt.bufPrint(
+                const json = std.mem.print(
                     &health_buf,
                     "{{\"healthy\":true,\"epoch\":{},\"consensus_round\":{},\"peers\":{},\"uptime_seconds\":{},\"pending_transactions\":{},\"pending_blocks\":{},\"committed_blocks\":{},\"blocks_committed_total\":{}}}",
                     .{ info.epoch, info.consensus_round, peers, info.uptime_seconds, info.pending_transactions, info.pending_blocks, info.committed_blocks, info.blocks_committed_total },
@@ -780,7 +887,7 @@ pub const HTTPServer = struct {
                 const rl: P2PServerMod.RateLimitStats = if (node.getP2PServer()) |p2p| p2p.getRateLimitStats() else .{ .rate_limited_drops_total = 0, .banned_peers_total = 0 };
                 const am: P2PServerMod.AsyncMetrics = if (node.getP2PServer()) |p2p| p2p.asyncMetricsSnapshot() else .{ .sq_depth = 0, .cq_lat_ms = 0, .fallback_count = 0 };
                 const dirs: P2PServerMod.DirectionStats = if (node.getP2PServer()) |p2p| p2p.directionStats() else .{ .inbound = 0, .outbound = 0, .inbound_paused = false };
-                const text = std.fmt.bufPrint(
+                const text = std.mem.print(
                     &metrics_buf,
                     "# HELP zknot3_consensus_round Current consensus round\n" ++
                         "# TYPE zknot3_consensus_round gauge\n" ++
@@ -958,18 +1065,18 @@ pub const HTTPServer = struct {
                     defer p2p.allocator.free(peer_ids);
                     var peers_buf: [4096]u8 = undefined;
                     var pos: usize = 0;
-                    const prefix = std.fmt.bufPrint(peers_buf[pos..], "{{\"count\":{},\"peers\":[", .{peer_ids.len}) catch break :blk "{\"error\":\"Formatting failed\"}";
+                    const prefix = std.mem.print(peers_buf[pos..], "{{\"count\":{},\"peers\":[", .{peer_ids.len}) catch break :blk "{\"error\":\"Formatting failed\"}";
                     pos += prefix.len;
                     for (peer_ids, 0..) |id, idx| {
                         if (pos + 68 > peers_buf.len) break;
-                        const hex = std.fmt.bufPrint(peers_buf[pos..], "\"{x}\"", .{id}) catch continue;
+                        const hex = std.mem.print(peers_buf[pos..], "\"{x}\"", .{id}) catch continue;
                         pos += hex.len;
                         if (idx < peer_ids.len - 1) {
-                            const comma = std.fmt.bufPrint(peers_buf[pos..], ",", .{}) catch break;
+                            const comma = std.mem.print(peers_buf[pos..], ",", .{}) catch break;
                             pos += comma.len;
                         }
                     }
-                    const suffix = std.fmt.bufPrint(peers_buf[pos..], "]}}", .{}) catch break :blk "{\"error\":\"Formatting failed\"}";
+                    const suffix = std.mem.print(peers_buf[pos..], "]}}", .{}) catch break :blk "{\"error\":\"Formatting failed\"}";
                     pos += suffix.len;
                     break :blk peers_buf[0..pos];
                 }
@@ -1073,23 +1180,8 @@ pub const HTTPServer = struct {
                     return;
                 };
 
-                var id_str_owned = false;
-                const id_str = blk: {
-                    if (parsed.value.object.get("id")) |id_val| {
-                        if (id_val == .integer) {
-                            const s = std.fmt.allocPrint(self.allocator, "{d}", .{id_val.integer}) catch break :blk "1";
-                            id_str_owned = true;
-                            break :blk s;
-                        }
-                        if (id_val == .string) {
-                            const s = std.fmt.allocPrint(self.allocator, "\"{s}\"", .{id_val.string}) catch break :blk "\"1\"";
-                            id_str_owned = true;
-                            break :blk s;
-                        }
-                    }
-                    break :blk "1";
-                };
-                defer if (id_str_owned) self.allocator.free(id_str);
+                const id_str = try formatJsonRpcId(self.allocator, parsed.value.object.get("id"));
+                defer self.allocator.free(id_str);
 
                 const result_json: ?[]const u8 = if (std.mem.eql(u8, method_val.string, "knot3_submitStakeOperation")) blk: {
                     const node = self.node orelse {
@@ -1098,9 +1190,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     const params_val = parsed.value.object.get("params") orelse {
@@ -1109,9 +1199,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const input = M4RpcParams.parseStakeOperationInput(params_val) catch {
@@ -1120,9 +1208,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const operation_id = node.submitStakeOperation(input) catch {
@@ -1133,12 +1219,10 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
-                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"status\":\"accepted\",\"operationId\":{d}}}", .{operation_id});
+                    break :blk try self.allocator.print("{{\"status\":\"accepted\",\"operationId\":{d}}}", .{operation_id});
                 } else if (std.mem.eql(u8, method_val.string, "knot3_submitGovernanceProposal")) blk: {
                     const node = self.node orelse {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
@@ -1146,9 +1230,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     const params_val = parsed.value.object.get("params") orelse {
@@ -1157,9 +1239,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const input = M4RpcParams.parseGovernanceProposalInput(params_val) catch {
@@ -1168,9 +1248,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const proposal_id = node.submitGovernanceProposal(input) catch {
@@ -1181,12 +1259,10 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
-                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
+                    break :blk try self.allocator.print("{{\"status\":\"accepted\",\"proposalId\":{d}}}", .{proposal_id});
                 } else if (std.mem.eql(u8, method_val.string, "knot3_getCheckpointProof")) blk: {
                     const node = self.node orelse {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
@@ -1194,9 +1270,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     const params_val = parsed.value.object.get("params") orelse {
@@ -1205,9 +1279,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const req = M4RpcParams.parseCheckpointProofRequest(params_val) catch {
@@ -1216,9 +1288,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const proof = node.buildCheckpointProof(req) catch {
@@ -1229,9 +1299,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     defer node.freeCheckpointProof(proof);
@@ -1240,8 +1308,7 @@ pub const HTTPServer = struct {
                     const sig_hex = try MainnetExtensionHooks.allocHexLower(self.allocator, proof.signatures);
                     defer self.allocator.free(sig_hex);
                     // Contract parity sentinel for M4 proof wire key: "stateRoot"
-                    break :blk try std.fmt.allocPrint(
-                        self.allocator,
+                    break :blk try self.allocator.print(
                         "{{\"sequence\":{d},\"stateRoot\":\"{x}\",\"proof\":\"{s}\",\"signatures\":\"{s}\"}}",
                         .{ proof.sequence, proof.state_root, proof_hex, sig_hex },
                     );
@@ -1252,9 +1319,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     const params_val = parsed.value.object.get("params") orelse {
@@ -1263,9 +1328,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const input = M4RpcParams.parseCreditGasParams(params_val) catch {
@@ -1274,9 +1337,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const balance = node.creditGas(input.address, input.amount) catch {
@@ -1287,12 +1348,10 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
-                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
+                    break :blk try self.allocator.print("{{\"balance\":{d}}}", .{balance});
                 } else if (std.mem.eql(u8, method_val.string, "knot3_getGasBalance")) blk: {
                     const node = self.node orelse {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
@@ -1300,9 +1359,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     const params_val = parsed.value.object.get("params") orelse {
@@ -1311,9 +1368,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const input = M4RpcParams.parseGetGasBalanceParams(params_val) catch {
@@ -1322,13 +1377,11 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     const balance = node.getGasBalance(input.address);
-                    break :blk try std.fmt.allocPrint(self.allocator, "{{\"balance\":{d}}}", .{balance});
+                    break :blk try self.allocator.print("{{\"balance\":{d}}}", .{balance});
                 } else if (std.mem.eql(u8, method_val.string, "knot3_getHardenedCheckpoint")) blk: {
                     const node = self.node orelse {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
@@ -1336,9 +1389,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     };
                     const asked = M4RpcParams.parseOptionalHardenedSequence(parsed.value.object.get("params")) catch {
@@ -1347,9 +1398,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.badRequest(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .bad_request, response_body);
                         return;
                     };
                     break :blk node.formatHardenedCheckpointFor(self.allocator, asked) catch {
@@ -1358,9 +1407,7 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.internalError(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .internal_server_error, response_body);
                         return;
                     } orelse {
                         const response_body = try std.mem.concat(self.allocator, u8, &.{
@@ -1368,26 +1415,21 @@ pub const HTTPServer = struct {
                             id_str,
                             "}",
                         });
-                        var err_resp = Response.ok(response_body);
-                        _ = try err_resp.withJSONContentType(self.allocator);
-                        try err_resp.send(conn);
+                        try self.sendOwnedJson(conn, .ok, response_body);
                         return;
                     };
                 } else null;
                 if (result_json) |r| {
+                    defer self.allocator.free(r);
                     const response_body = try std.mem.concat(self.allocator, u8, &.{ "{\"jsonrpc\":\"2.0\",\"result\":", r, ",\"id\":", id_str, "}" });
-                    var ok_resp = Response.ok(response_body);
-                    _ = try ok_resp.withJSONContentType(self.allocator);
-                    try ok_resp.send(conn);
+                    try self.sendOwnedJson(conn, .ok, response_body);
                 } else {
                     const response_body = try std.mem.concat(self.allocator, u8, &.{
                         "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"},\"id\":",
                         id_str,
                         "}",
                     });
-                    var nf = Response.ok(response_body);
-                    _ = try nf.withJSONContentType(self.allocator);
-                    try nf.send(conn);
+                    try self.sendOwnedJson(conn, .ok, response_body);
                 }
             } else {
                 var response = Response.badRequest("{\"error\":\"Missing body\"}");
@@ -1418,6 +1460,24 @@ test "HTTP Response with header" {
     try std.testing.expectEqualStrings("value", response.headers.get("X-Custom").?);
 }
 
+test "response toString releases the header map" {
+    const allocator = std.testing.allocator;
+    var response = Response.ok("hi");
+    _ = try response.withJSONContentType(allocator);
+    const text = try response.toString(allocator);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Content-Type: application/json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "hi") != null);
+}
+
+test "ownedJson frees the json body" {
+    const allocator = std.testing.allocator;
+    const body = try allocator.dupe(u8, "{\"ok\":true}");
+    const text = try Response.ownedJson(allocator, .ok, body);
+    defer allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "{\"ok\":true}") != null);
+}
+
 test "rpcBodyHasWriteMethod flags creditGas not getGasBalance" {
     const allocator = std.testing.allocator;
     try std.testing.expect(rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_creditGas\"}"));
@@ -1426,16 +1486,43 @@ test "rpcBodyHasWriteMethod flags creditGas not getGasBalance" {
     try std.testing.expect(rpcBodyHasWriteMethod(allocator, "{\"method\":\"knot3_submitStakeOperation\"}"));
 }
 
+test "formatJsonRpcId escapes a string id" {
+    const allocator = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"id\":\"a\\\"b\\\\c\\u0001\"}", .{});
+    defer parsed.deinit();
+    const id = try formatJsonRpcId(allocator, parsed.value.object.get("id"));
+    defer allocator.free(id);
+    try std.testing.expectEqualStrings("\"a\\\"b\\\\c\\u0001\"", id);
+
+    const missing = try formatJsonRpcId(allocator, null);
+    defer allocator.free(missing);
+    try std.testing.expectEqualStrings("null", missing);
+
+    const number = try formatJsonRpcId(allocator, .{ .integer = 7 });
+    defer allocator.free(number);
+    try std.testing.expectEqualStrings("7", number);
+
+    const injected = try formatJsonRpcId(allocator, .{ .number_string = "1},\"x\":true" });
+    defer allocator.free(injected);
+    try std.testing.expectEqualStrings("null", injected);
+}
+
 test "JSON-RPC response success" {
-    const response = JSONRPCResponse.success(.{ .string = "test" }, .{ .integer = 1 });
+    const allocator = std.testing.allocator;
+    const response = JSONRPCResponse.success(.{ .string = "test" }, .{ .string = "a\"b" });
     try std.testing.expect(response.err == null);
-    try std.testing.expect(response.result != null);
+    const json = try response.toJSON(allocator);
+    defer allocator.free(json);
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"result\":\"test\",\"id\":\"a\\\"b\"}", json);
 }
 
 test "JSON-RPC response error" {
-    const response = JSONRPCResponse.newError(-32600, "Invalid request", .{ .integer = 1 });
-    try std.testing.expect(response.err != null);
+    const allocator = std.testing.allocator;
+    const response = JSONRPCResponse.newError(-32600, "bad \"req\"", .{ .integer = 4 });
     try std.testing.expectEqual(@as(i32, -32600), response.err.?.code);
+    const json = try response.toJSON(allocator);
+    defer allocator.free(json);
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"bad \\\"req\\\"\"},\"id\":4}", json);
 }
 
 test "parseSubmitTransactionBody parses valid fixed hex payload" {

@@ -172,9 +172,9 @@ build_zknot3() {
         install_zig
     fi
     
-    # ReleaseSafe 构建（推荐用于生产）
-    log_info "使用 ReleaseSafe 模式构建..."
-    zig build -Doptimize=ReleaseSafe
+    # safe 构建（推荐用于生产）
+    log_info "使用 safe 模式构建..."
+    zig build -Doptimize=safe
     
     log_success "zknot3 构建完成"
 }

@@ -655,7 +655,7 @@ pub fn build(b: *std.Build) void {
         .name = "verify-props",
         .root_source_file = b.path("tools/verifier/main.zig"),
         .target = b.host,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
     
     // 运行验证器作为构建依赖
@@ -755,7 +755,7 @@ pub const TriSourceTest = struct {
 $ zig version  # 要求 >= 0.15.0
 
 # 2. 编译时验证构建
-$ zig build -Doptimize=ReleaseFast -Dexport-formal=true
+$ zig build -Doptimize=fast -Dexport-formal=true
 
 # 3. 运行三源指标测试
 $ zig build test -- tri_source.wu_feng

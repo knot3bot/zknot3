@@ -252,6 +252,7 @@ pub const ExecutionResult = struct {
     pub fn deinit(self: ExecutionResult, allocator: std.mem.Allocator) void {
         if (self.output_objects.len > 0) allocator.free(self.output_objects);
         for (self.events) |evt| {
+            allocator.free(evt.event_type);
             if (evt.payload.len > 0) allocator.free(evt.payload);
         }
         if (self.events.len > 0) allocator.free(self.events);
@@ -504,13 +505,20 @@ pub const Executor = struct {
         var copied: usize = 0;
         errdefer {
             for (owned_events[0..copied]) |evt| {
+                self.allocator.free(evt.event_type);
                 if (evt.payload.len > 0) self.allocator.free(evt.payload);
             }
             if (owned_events.len > 0) self.allocator.free(owned_events);
         }
         for (events, 0..) |evt, i| {
+            const owned_type = try self.allocator.dupe(u8, evt.event_type);
+            const owned_payload = if (evt.payload.len == 0) &.{} else self.allocator.dupe(u8, evt.payload) catch |err| {
+                self.allocator.free(owned_type);
+                return err;
+            };
             owned_events[i] = evt;
-            owned_events[i].payload = if (evt.payload.len == 0) &.{} else try self.allocator.dupe(u8, evt.payload);
+            owned_events[i].event_type = owned_type;
+            owned_events[i].payload = owned_payload;
             copied += 1;
         }
         return .{

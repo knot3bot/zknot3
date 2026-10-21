@@ -146,7 +146,7 @@ pub const EquivocationEvidenceRing = struct {
 
         const io = @import("io_instance").io;
         const cwd = std.Io.Dir.cwd();
-        const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+        const tmp_path = try allocator.print("{s}.tmp", .{path});
         defer allocator.free(tmp_path);
         {
             const file = try cwd.createFile(io, tmp_path, .{ .truncate = true });

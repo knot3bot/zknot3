@@ -10,8 +10,7 @@ fn parseJsonValue(allocator: std.mem.Allocator, json: []const u8) !std.json.Pars
 
 test "M4 parseStakeOperationInput accepts valid object" {
     const allocator = std.testing.allocator;
-    const json = try std.fmt.allocPrint(
-        allocator,
+    const json = try allocator.print(
         "{{\"validator\":\"{s}\",\"delegator\":\"{s}\",\"amount\":42,\"action\":\"stake\",\"metadata\":\"m\"}}",
         .{ hex64_zeros, hex64_zeros },
     );
@@ -26,8 +25,7 @@ test "M4 parseStakeOperationInput accepts valid object" {
 
 test "M4 parseStakeOperationInput rejects zero amount" {
     const allocator = std.testing.allocator;
-    const json = try std.fmt.allocPrint(
-        allocator,
+    const json = try allocator.print(
         "{{\"validator\":\"{s}\",\"delegator\":\"{s}\",\"amount\":0,\"action\":\"stake\"}}",
         .{ hex64_zeros, hex64_zeros },
     );
@@ -41,8 +39,7 @@ test "M4 parseStakeOperationInput rejects zero amount" {
 test "M4 parseCheckpointProofRequest requires objectId camelCase" {
     const allocator = std.testing.allocator;
     const hex_ab = "abababababababababababababababababababababababababababababababab";
-    const json = try std.fmt.allocPrint(
-        allocator,
+    const json = try allocator.print(
         "{{\"sequence\":7,\"objectId\":\"{s}\"}}",
         .{hex_ab},
     );
@@ -81,8 +78,7 @@ test "M4 parseGovernanceProposalFromPlainArgs rejects empty title" {
 test "M4 parseCreditGasParams accepts address and amount" {
     const allocator = std.testing.allocator;
     const hex_ab = "abababababababababababababababababababababababababababababababab";
-    const json = try std.fmt.allocPrint(
-        allocator,
+    const json = try allocator.print(
         "{{\"address\":\"0x{s}\",\"amount\":12345}}",
         .{hex_ab},
     );
@@ -97,8 +93,7 @@ test "M4 parseCreditGasParams accepts address and amount" {
 
 test "M4 parseCreditGasParams rejects negative amount" {
     const allocator = std.testing.allocator;
-    const json = try std.fmt.allocPrint(
-        allocator,
+    const json = try allocator.print(
         "{{\"address\":\"{s}\",\"amount\":-1}}",
         .{hex64_zeros},
     );
@@ -115,7 +110,7 @@ test "M4 parseGetGasBalanceParams requires address" {
     defer parsed.deinit();
     try std.testing.expectError(error.MissingField, M4RpcParams.parseGetGasBalanceParams(parsed.value));
 
-    const json = try std.fmt.allocPrint(allocator, "{{\"address\":\"{s}\"}}", .{hex64_zeros});
+    const json = try allocator.print("{{\"address\":\"{s}\"}}", .{hex64_zeros});
     defer allocator.free(json);
     var ok = try parseJsonValue(allocator, json);
     defer ok.deinit();

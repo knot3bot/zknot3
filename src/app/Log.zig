@@ -20,9 +20,9 @@ pub fn isEnabled(level: Level) bool {
 pub fn log(comptime level: Level, comptime fmt: []const u8, args: anytype) void {
     if (!isEnabled(level)) return;
     var buf: [1024]u8 = undefined;
-    const full = std.fmt.bufPrint(&buf, fmt, args) catch |e| {
+    const full = std.mem.print(&buf, fmt, args) catch |e| {
         if (e == error.NoSpaceLeft) {
-            const allocated = std.fmt.allocPrint(std.heap.page_allocator, fmt, args) catch {
+            const allocated = std.heap.page_allocator.print(fmt, args) catch {
                 std.debug.print("[LOG] format error\n", .{});
                 return;
             };

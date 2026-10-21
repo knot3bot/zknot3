@@ -93,7 +93,7 @@ pub const PeerManager = struct {
         const dial_str = if (P2PServer_module.splitDialHostPort(peer.address) != null)
             peer.address
         else
-            std.fmt.bufPrint(&dial_buf, "{s}:{d}", .{ peer.address, peer.port }) catch peer.address;
+            std.mem.print(&dial_buf, "{s}:{d}", .{ peer.address, peer.port }) catch peer.address;
         const resolved = try P2PServer_module.resolveDialAddress(self.allocator, dial_str);
         defer self.allocator.free(resolved);
         try self.routing_table.addPeer(peer.id, resolved, peer.port);

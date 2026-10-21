@@ -303,7 +303,7 @@ Six license types with automatic royalty calculation:
 # Build from source
 git clone https://github.com/knot3bot/zknot3.git
 cd zknot3
-zig build -Doptimize=ReleaseSafe
+zig build -Doptimize=safe
 
 # Run tests
 zig build test              # 363 tests
