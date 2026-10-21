@@ -1,0 +1,52 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zdoc
+        run: |
+          curl -fsSL -o /tmp/zdoc.tar.xz \
+            https://github.com/chy3xyz/zdoc/releases/download/v0.17.0/x86_64-linux-musl.tar.xz
+          echo "7f1ceb21773739facf7d2d9edef226bf30fd9d56aee28c15d874f4e473fc9bd6  /tmp/zdoc.tar.xz" | sha256sum -c
+          tar -xJf /tmp/zdoc.tar.xz -C /tmp
+          install -m 755 /tmp/zdoc "$HOME/zdoc"
+          echo "$HOME" >> "$GITHUB_PATH"
+          "$HOME/zdoc" --version
+
+      - name: Build site
+        run: "$HOME/zdoc" docs docs --output public --force --url-prefix /zknot3/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
