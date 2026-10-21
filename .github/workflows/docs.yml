@@ -34,7 +34,8 @@ jobs:
           "$HOME/zdoc" --version
 
       - name: Build site
-        run: "$HOME/zdoc" docs docs --output public --force --url-prefix /zknot3/
+        run: |
+          "$HOME/zdoc" docs docs --output public --force --url-prefix /zknot3/
 
       - uses: actions/upload-pages-artifact@v3
         with:
