@@ -496,7 +496,11 @@ pub const WAL = struct {
                 break;
             }
 
-            const header = @as(*const WalRecordHeader, @ptrCast(@alignCast(&buf))).*;
+            // Byte-copy into an aligned local: the read buffer is align(1) and
+            // @alignCast to an align(4) extern struct is a runtime alignment
+            // trap (panics on Linux allocator layouts).
+            var header: WalRecordHeader = undefined;
+            @memcpy(std.mem.asBytes(&header), buf[0..@sizeOf(WalRecordHeader)]);
             const record_type = WalRecordType.fromByte(header.record_type);
 
             // Validate record fields before using them. A byte inside the
@@ -949,7 +953,8 @@ test "WAL replay rejects an unknown record type" {
     const n = try wal.file.readAll(&buf);
     try std.testing.expectEqual(@sizeOf(WalRecordHeader), n);
 
-    var header = @as(*WalRecordHeader, @ptrCast(@alignCast(&buf))).*;
+    var header: WalRecordHeader = undefined;
+    @memcpy(std.mem.asBytes(&header), &buf);
     header.record_type = 5;
     header.checksum = try WAL.computeRecordChecksum(allocator, std.mem.asBytes(&header)[4..], &.{}, &.{});
     try wal.file.file.writePositionalAll(wal.file.io, std.mem.asBytes(&header), 0);
