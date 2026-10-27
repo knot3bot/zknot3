@@ -374,7 +374,7 @@ pub const AsyncHTTPServer = struct {
         conn.response = response;
         conn.response_sent = 0;
         conn.state = .writing;
-        self.ring.send(makeUserData(idx, .send), conn.fd, response, 0) catch |err| {
+        _ = self.ring.send(makeUserData(idx, .send), conn.fd, response, 0) catch |err| {
             self.allocator.free(response);
             conn.response = null;
             return err;
