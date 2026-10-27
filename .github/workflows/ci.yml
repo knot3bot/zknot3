@@ -57,10 +57,26 @@ jobs:
           exit "$rc"
 
       - name: Quorum single-source gate
-        run: bash tools/quorum_single_source_gate.sh
+        run: |
+          set +e
+          bash tools/quorum_single_source_gate.sh 2>&1 | tee /tmp/qgate.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -E "(FAIL|error|panic)" /tmp/qgate.log | head -10 | sed 's/^/::error title=quorum-gate::/' || true
+          fi
+          exit "$rc"
 
       - name: Mainnet profile gate
-        run: bash tools/mainnet_profile_gate.sh
+        run: |
+          set +e
+          bash tools/mainnet_profile_gate.sh 2>&1 | tee /tmp/pgate.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -E "(FAIL|error|panic)" /tmp/pgate.log | head -10 | sed 's/^/::error title=profile-gate::/' || true
+          fi
+          exit "$rc"
 
   formal:
     runs-on: ubuntu-latest
