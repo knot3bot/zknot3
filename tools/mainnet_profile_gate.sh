@@ -10,7 +10,9 @@ cd "${ROOT_DIR}"
 require_pattern() {
   local file="$1"
   local pattern="$2"
-  if ! rg -n "${pattern}" "${file}" >/dev/null 2>&1; then
+  # grep, not ripgrep: CI runners don't ship rg, and a missing binary here
+  # would read as "missing pattern".
+  if ! grep -En "${pattern}" "${file}" >/dev/null 2>&1; then
     echo "[gate][FAIL] ${file} missing pattern: ${pattern}"
     exit 1
   fi
@@ -19,7 +21,7 @@ require_pattern() {
 require_no_pattern() {
   local file="$1"
   local pattern="$2"
-  if rg -n "${pattern}" "${file}" >/dev/null 2>&1; then
+  if grep -En "${pattern}" "${file}" >/dev/null 2>&1; then
     echo "[gate][FAIL] ${file} contains forbidden pattern: ${pattern}"
     exit 1
   fi
