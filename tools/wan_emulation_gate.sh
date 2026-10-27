@@ -178,7 +178,9 @@ sleep 60
 # best-of-majority.
 for v in 2 3; do
   mv=$(metric "zknot3-validator-$v" blocks_committed_total)
-  (( mv > majority_mid )) && majority_mid=$mv
+  # Explicit if: a bare `A && B` returns nonzero when A is false and
+  # set -e kills the script.
+  if (( mv > majority_mid )); then majority_mid=$mv; fi
 done
 majority_mid=$(metric zknot3-validator-1 blocks_committed_total)
 v4_mid=$(metric zknot3-validator-4 blocks_committed_total)
