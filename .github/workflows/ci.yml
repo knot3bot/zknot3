@@ -41,7 +41,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            grep -E "^error: '" /tmp/unit.log | head -12 | sed 's/^/::error title=unit::/' || true
+            grep -E "^(error: '|.*panic:)" /tmp/unit.log | head -16 | sed 's/^/::error title=unit::/' || true
           fi
           exit "$rc"
 
@@ -52,7 +52,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ne 0 ]; then
-            grep -E "^error: '" /tmp/integ.log | head -12 | sed 's/^/::error title=integration::/' || true
+            grep -E "^(error: '|.*panic:)" /tmp/integ.log | head -16 | sed 's/^/::error title=integration::/' || true
           fi
           exit "$rc"
 
