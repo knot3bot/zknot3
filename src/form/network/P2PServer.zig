@@ -856,7 +856,8 @@ pub const P2PServer = struct {
 
     /// Worker body for an outbound connection. Owns `peer_conn` for its whole
     /// lifetime.
-    fn handshakeInitiator(server: *Self, peer_conn: *PeerConnection, address: []const u8) void {
+    fn handshakeInitiator(server: *Self, peer_conn: *PeerConnection, address_owned: []const u8) void {
+        defer server.allocator.free(address_owned);
         peer_conn.performHandshake(
             true,
             server.validator_key,
@@ -865,18 +866,18 @@ pub const P2PServer = struct {
             server.config.genesis_digest,
             server.config.advertise_address,
         ) catch |err| {
-            Log.warn("Outbound handshake failed ({s}): {t}", .{ address, err });
+            Log.warn("Outbound handshake failed ({s}): {t}", .{ address_owned, err });
             peer_conn.deinit();
             server.allocator.destroy(peer_conn);
             return;
         };
         server.publishPeer(peer_conn) catch |err| {
-            Log.warn("Failed to publish peer ({s}): {t}", .{ address, err });
+            Log.warn("Failed to publish peer ({s}): {t}", .{ address_owned, err });
             peer_conn.deinit();
             server.allocator.destroy(peer_conn);
             return;
         };
-        Log.info("Connected to peer at {s} (id={})", .{ address, peer_conn.peer_id });
+        Log.info("Connected to peer at {s} (id={})", .{ address_owned, peer_conn.peer_id });
     }
 
     /// Move a handshaken connection into the live peer table. Shared by the
@@ -1452,8 +1453,19 @@ pub const P2PServer = struct {
             // could not answer because its own loop was blocked in
             // `acceptOne` -> `performHandshake`. Hand off to a worker so both
             // sides can make progress.
-            // Log with caller-owned `address` — `canonical` is freed when dial returns.
-            const thread = std.Thread.spawn(.{}, handshakeInitiator, .{ self, peer_conn, address }) catch |err| {
+            // The worker outlives this frame; give it its own copy of the
+            // address. Callers passed config-backed slices here before, but
+            // quality-memory entries can be replaced (and freed) while a
+            // redial worker is still logging — a use-after-free that crashed
+            // the WAN gate's fullnode inside Log's fmt (memcpy from freed
+            // memory in a start_thread frame).
+            const address_owned = self.allocator.dupe(u8, address) catch |err| {
+                peer_conn.deinit();
+                self.allocator.destroy(peer_conn);
+                return err;
+            };
+            const thread = std.Thread.spawn(.{}, handshakeInitiator, .{ self, peer_conn, address_owned }) catch |err| {
+                self.allocator.free(address_owned);
                 peer_conn.deinit();
                 self.allocator.destroy(peer_conn);
                 return err;
