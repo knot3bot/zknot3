@@ -306,7 +306,7 @@ test "stdlib Coin split rejects insufficient balance" {
 
     const coin_id = core.ObjectID.hash("poor-coin");
     try Coin.writeBalance(&store, coin_id, 5);
-    const amounts = [_]u64{ 10 };
+    const amounts = [_]u64{10};
     try std.testing.expectError(
         error.InsufficientBalance,
         Coin.split(&store, allocator, coin_id, &amounts),

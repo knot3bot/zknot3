@@ -14,25 +14,25 @@ pub fn serializeBlock(block: Block, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, 256 + block.payload.len);
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator,&block.author);
+    try buf.appendSlice(allocator, &block.author);
     var round_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &round_bytes, block.round.value, .big);
-    try buf.appendSlice(allocator,&round_bytes);
+    try buf.appendSlice(allocator, &round_bytes);
     const payload_len: u32 = @intCast(block.payload.len);
     var len_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &len_bytes, payload_len, .big);
-    try buf.appendSlice(allocator,&len_bytes);
-    try buf.appendSlice(allocator,block.payload);
+    try buf.appendSlice(allocator, &len_bytes);
+    try buf.appendSlice(allocator, block.payload);
     const parents_len: u32 = @intCast(block.parents.len);
     var parents_len_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &parents_len_bytes, parents_len, .big);
-    try buf.appendSlice(allocator,&parents_len_bytes);
+    try buf.appendSlice(allocator, &parents_len_bytes);
     for (block.parents) |parent| {
         var parent_bytes: [8]u8 = undefined;
         std.mem.writeInt(u64, &parent_bytes, parent.value, .big);
-        try buf.appendSlice(allocator,&parent_bytes);
+        try buf.appendSlice(allocator, &parent_bytes);
     }
-    try buf.appendSlice(allocator,&block.digest);
+    try buf.appendSlice(allocator, &block.digest);
 
     return buf.toOwnedSlice(allocator);
 }
@@ -87,15 +87,15 @@ pub fn serializeBlocksBatch(blocks: []const Block, allocator: std.mem.Allocator)
 
     var count_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &count_bytes, @as(u32, @intCast(blocks.len)), .big);
-    try buf.appendSlice(allocator,&count_bytes);
+    try buf.appendSlice(allocator, &count_bytes);
 
     for (blocks) |block| {
         const serialized = try serializeBlock(block, allocator);
         defer allocator.free(serialized);
         var size_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &size_bytes, @as(u32, @intCast(serialized.len)), .big);
-        try buf.appendSlice(allocator,&size_bytes);
-        try buf.appendSlice(allocator,serialized);
+        try buf.appendSlice(allocator, &size_bytes);
+        try buf.appendSlice(allocator, serialized);
     }
 
     return buf.toOwnedSlice(allocator);
@@ -132,15 +132,15 @@ pub fn serializeVote(vote: Vote, allocator: std.mem.Allocator) ![]u8 {
     var buf = try std.ArrayList(u8).initCapacity(allocator, 128);
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator,&vote.voter);
+    try buf.appendSlice(allocator, &vote.voter);
     var stake_bytes: [16]u8 = undefined;
     std.mem.writeInt(u128, &stake_bytes, vote.stake, .big);
-    try buf.appendSlice(allocator,&stake_bytes);
+    try buf.appendSlice(allocator, &stake_bytes);
     var round_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &round_bytes, vote.round.value, .big);
-    try buf.appendSlice(allocator,&round_bytes);
-    try buf.appendSlice(allocator,&vote.block_digest);
-    try buf.appendSlice(allocator,&vote.signature);
+    try buf.appendSlice(allocator, &round_bytes);
+    try buf.appendSlice(allocator, &vote.block_digest);
+    try buf.appendSlice(allocator, &vote.signature);
 
     return buf.toOwnedSlice(allocator);
 }
@@ -179,15 +179,15 @@ pub fn serializeVotesBatch(votes: []const Vote, allocator: std.mem.Allocator) ![
 
     var count_bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, &count_bytes, @as(u32, @intCast(votes.len)), .big);
-    try buf.appendSlice(allocator,&count_bytes);
+    try buf.appendSlice(allocator, &count_bytes);
 
     for (votes) |vote| {
         const serialized = try serializeVote(vote, allocator);
         defer allocator.free(serialized);
         var size_bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &size_bytes, @as(u32, @intCast(serialized.len)), .big);
-        try buf.appendSlice(allocator,&size_bytes);
-        try buf.appendSlice(allocator,serialized);
+        try buf.appendSlice(allocator, &size_bytes);
+        try buf.appendSlice(allocator, serialized);
     }
 
     return buf.toOwnedSlice(allocator);
@@ -224,16 +224,16 @@ pub fn serializeCommitCertificate(cert: CommitCertificate, allocator: std.mem.Al
     var buf = try std.ArrayList(u8).initCapacity(allocator, 128);
     errdefer buf.deinit(allocator);
 
-    try buf.appendSlice(allocator,&cert.block_digest);
+    try buf.appendSlice(allocator, &cert.block_digest);
     var round_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &round_bytes, cert.round.value, .big);
-    try buf.appendSlice(allocator,&round_bytes);
+    try buf.appendSlice(allocator, &round_bytes);
     var stake_bytes: [16]u8 = undefined;
     std.mem.writeInt(u128, &stake_bytes, cert.quorum_stake, .big);
-    try buf.appendSlice(allocator,&stake_bytes);
+    try buf.appendSlice(allocator, &stake_bytes);
     var confidence_bytes: [8]u8 = undefined;
     std.mem.writeInt(f64, &confidence_bytes, cert.confidence, .big);
-    try buf.appendSlice(allocator,&confidence_bytes);
+    try buf.appendSlice(allocator, &confidence_bytes);
 
     return buf.toOwnedSlice(allocator);
 }

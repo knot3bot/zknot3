@@ -33,7 +33,7 @@ test "RPC: register handler" {
     defer server.deinit();
 
     try server.register("test_method", struct {
-        fn handle(ctx: *RPC.RPCContext, params: []const u8) anyerror!RPC.RPCResponse {
+        fn handle(ctx: *RPC.RPCContext, params: ?std.json.Value) anyerror!RPC.RPCResponse {
             _ = ctx;
             _ = params;
             return RPC.RPCResponse.success(null, "{\"ok\":true}");

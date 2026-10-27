@@ -53,11 +53,11 @@ test "M4 contract parity includes typed params and shared proof fields" {
     try std.testing.expect(std.mem.indexOf(u8, m4_params, "parseStakeOperationInput") != null);
     try std.testing.expect(std.mem.indexOf(u8, m4_params, "objectId") != null);
 
-    const http_source = @embedFile("../../src/form/network/HTTPServer.zig");
-    try std.testing.expect(std.mem.indexOf(u8, http_source, "\"stateRoot\"") != null);
-
-    const async_http_source = @embedFile("../../src/form/network/AsyncHTTPServer.zig");
-    try std.testing.expect(std.mem.indexOf(u8, async_http_source, "\"stateRoot\"") != null);
+    // Both HTTP servers route through the single JSON-RPC table in RPC.zig,
+    // so the shared proof fields live there (stateRoot, proof, signatures,
+    // bls_signature, bls_signer_bitmap).
+    const rpc_source = @embedFile("../../src/form/network/RPC.zig");
+    try std.testing.expect(std.mem.indexOf(u8, rpc_source, "stateRoot") != null);
 
     const gql_source = @embedFile("../../src/app/GraphQL.zig");
     try std.testing.expect(std.mem.indexOf(u8, gql_source, "stateRoot") != null);

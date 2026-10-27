@@ -8,6 +8,9 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# NOTE: the deploy step requires GitHub Pages to be enabled on the repo
+# with Source = "GitHub Actions" (Settings → Pages). Until an admin flips
+# that one-time setting, deploy will 404 even though the build succeeds.
 permissions:
   contents: read
   pages: write
