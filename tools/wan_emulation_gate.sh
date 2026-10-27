@@ -171,7 +171,15 @@ stimulate zknot3-validator-2 20
 sleep 45
 majority_mid=$(metric zknot3-validator-1 blocks_committed_total)
 v4_mid=$(metric zknot3-validator-4 blocks_committed_total)
-(( majority_mid > majority_base )) || fail "majority stalled during partition ($majority_base -> $majority_mid)"
+if (( majority_mid <= majority_base )); then
+  pdiag=""
+  for v in 1 2 3; do
+    pr=$(metric "zknot3-validator-$v" consensus_round)
+    pb=$(metric "zknot3-validator-$v" blocks_committed_total)
+    pdiag="$pdiag v${v}(round=${pr:-?},blocks=${pb:-?})"
+  done
+  fail "majority stalled during partition ($majority_base -> $majority_mid) ${pdiag}"
+fi
 echo "phase 3 (partition): 3-validator majority kept committing ($majority_base -> $majority_mid); isolated node frozen ($v4_base -> $v4_mid)"
 
 # validator-4 is cut off on purpose, so it is expected to have dropped peers.
