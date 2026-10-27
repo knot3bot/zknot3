@@ -32,7 +32,7 @@ fail() {
     logs=$(docker logs --tail 15 zknot3-validator-1 2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-400)
     local flogs=""
     if docker inspect zknot3-fullnode >/dev/null 2>&1; then
-      flogs=$(docker logs zknot3-fullnode 2>&1 | grep -A6 -iE "panic|segmentation" | tail -14 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-600)
+      flogs=$(docker logs zknot3-fullnode 2>&1 | grep -B2 -A14 -iE 'panic:|segmentation fault' | tail -40 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-1300)
       if [ -z "$flogs" ]; then
         flogs=$(docker logs --tail 25 zknot3-fullnode 2>&1 | tr '\n' ' ' | tr -cd '[:print:]' | cut -c1-600)
       fi
