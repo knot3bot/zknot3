@@ -532,6 +532,12 @@ pub const P2PServer = struct {
     is_running: bool,
     peers: std.AutoArrayHashMapUnmanaged([32]u8, *PeerConnection),
     quic_peers: std.AutoArrayHashMapUnmanaged([32]u8, *QUICPeerConnection),
+    /// Guards every peers/quic_peers/peer_rate_states access: handshake
+    /// worker threads publish concurrently with the main loop's broadcast
+    /// and rotation paths — unsynchronized put() corrupted the map
+    /// (WAN-gate fullnode crash: array_hash_map unreachable in
+    /// handshakeInitiator → publishPeer).
+    peers_mutex: std.Io.Mutex = std.Io.Mutex.init,
     next_peer_id: u64,
     last_bootstrap_retry: i64,
     last_peer_rotation: i64,
@@ -898,9 +904,13 @@ pub const P2PServer = struct {
         // letting the event loop reap it promptly.
         setPeerTimeout(peer_conn.conn);
         peer_conn.connected_at = currentSeconds();
-        try self.peers.put(self.allocator, peer_key, peer_conn);
-        errdefer _ = self.peers.swapRemove(peer_key);
-        try self.peer_rate_states.put(self.allocator, peer_key, .{});
+        {
+            self.peers_mutex.lock(@import("io_instance").io) catch {};
+            defer self.peers_mutex.unlock(@import("io_instance").io);
+            try self.peers.put(self.allocator, peer_key, peer_conn);
+            errdefer _ = self.peers.swapRemove(peer_key);
+            try self.peer_rate_states.put(self.allocator, peer_key, .{});
+        }
 
         // Notify callback
         if (self.on_peer_connect) |cb| {
@@ -991,9 +1001,13 @@ pub const P2PServer = struct {
 
         const peer_key = peer_conn.peer_key;
         peer_conn.connected_at = currentSeconds();
-        try self.quic_peers.put(self.allocator, peer_key, peer_conn);
-        errdefer _ = self.quic_peers.swapRemove(peer_key);
-        try self.peer_rate_states.put(self.allocator, peer_key, .{});
+        {
+            self.peers_mutex.lock(@import("io_instance").io) catch {};
+            defer self.peers_mutex.unlock(@import("io_instance").io);
+            try self.quic_peers.put(self.allocator, peer_key, peer_conn);
+            errdefer _ = self.quic_peers.swapRemove(peer_key);
+            try self.peer_rate_states.put(self.allocator, peer_key, .{});
+        }
 
         // Notify callback
         if (self.on_peer_connect) |cb| {
@@ -1035,6 +1049,8 @@ pub const P2PServer = struct {
     }
 
     fn broadcast(self: *Self, msg: Message) !void {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         var failed_peers: std.ArrayList([32]u8) = .empty;
         defer failed_peers.deinit(self.allocator);
 
@@ -1061,6 +1077,8 @@ pub const P2PServer = struct {
     }
 
     fn removePeer(self: *Self, peer_id: [32]u8) void {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         if (self.peers.getPtr(peer_id)) |peer| {
             const p = peer.*;
             self.rememberPeerQuality(p.peer_key, p.reputation, p.latency_ms, p.remote_address, p.address_from_advertise);
@@ -1230,6 +1248,8 @@ pub const P2PServer = struct {
 
     /// Adjust peer reputation score and disconnect if reputation drops below threshold
     pub fn adjustPeerReputation(self: *Self, peer_key: [32]u8, delta: i32) void {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         if (self.peers.get(peer_key)) |peer| {
             peer.reputation = std.math.clamp(peer.reputation + delta, 0, 100);
             if (peer.reputation < 10) {
@@ -1272,6 +1292,8 @@ pub const P2PServer = struct {
     }
 
     pub fn peerCount(self: *Self) usize {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         return self.peers.count() + self.quic_peers.count();
     }
 
@@ -1284,6 +1306,8 @@ pub const P2PServer = struct {
     /// Handshakes that have not reached `publishPeer` are not included;
     /// the ratio gate adds `inflight_inbound` on top of `inbound`.
     pub fn peerDirectionCounts(self: *Self) PeerDirectionCounts {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         var counts: PeerDirectionCounts = .{};
         var it = self.peers.iterator();
         while (it.next()) |entry| {
@@ -1338,6 +1362,8 @@ pub const P2PServer = struct {
     }
 
     fn subnetAllowed(self: *Self, addr: std.Io.net.IpAddress) bool {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         if (ipv4Prefix16(addr)) |prefix| {
             if (self.config.max_peers_per_16 != 0) {
                 var n: usize = 0;
@@ -1366,6 +1392,8 @@ pub const P2PServer = struct {
     }
 
     pub fn getPeerIDs(self: *Self) ![]const [32]u8 {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         var ids: std.ArrayList([32]u8) = .empty;
         errdefer ids.deinit(self.allocator);
         var it = self.peers.iterator();
@@ -1381,6 +1409,8 @@ pub const P2PServer = struct {
 
     /// Send a direct message to a specific peer
     pub fn sendToPeer(self: *Self, peer_id: [32]u8, msg: Message) !void {
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         if (self.peers.getPtr(peer_id)) |peer| {
             try peer.*.sendMessage(msg);
             return;
@@ -1527,6 +1557,8 @@ pub const P2PServer = struct {
 
     fn isPeerConnectedByAddress(self: *Self, address: []const u8) bool {
         const peer_key = derivePeerKeyFromAddress(address);
+        self.peers_mutex.lock(@import("io_instance").io) catch {};
+        defer self.peers_mutex.unlock(@import("io_instance").io);
         return self.peers.contains(peer_key) or self.quic_peers.contains(peer_key);
     }
 
@@ -1642,30 +1674,36 @@ pub const P2PServer = struct {
         var candidates = self.allocator.alloc(PeerRotationCandidate, total) catch return;
         defer self.allocator.free(candidates);
 
+        // Snapshot under the lock; the removals below call removePeer,
+        // which takes the same mutex.
         var n: usize = 0;
-        var it = self.peers.iterator();
-        while (it.next()) |entry| {
-            const peer = entry.value_ptr.*;
-            candidates[n] = .{
-                .key = entry.key_ptr.*,
-                .connected_at = peer.connected_at,
-                .is_outbound = peer.is_outbound,
-                .reputation = peer.reputation,
-                .latency_ms = peer.latency_ms,
-            };
-            n += 1;
-        }
-        var qit = self.quic_peers.iterator();
-        while (qit.next()) |entry| {
-            const peer = entry.value_ptr.*;
-            candidates[n] = .{
-                .key = entry.key_ptr.*,
-                .connected_at = peer.connected_at,
-                .is_outbound = peer.is_outbound,
-                .reputation = peer.reputation,
-                .latency_ms = peer.latency_ms,
-            };
-            n += 1;
+        {
+            self.peers_mutex.lock(@import("io_instance").io) catch {};
+            defer self.peers_mutex.unlock(@import("io_instance").io);
+            var it = self.peers.iterator();
+            while (it.next()) |entry| {
+                const peer = entry.value_ptr.*;
+                candidates[n] = .{
+                    .key = entry.key_ptr.*,
+                    .connected_at = peer.connected_at,
+                    .is_outbound = peer.is_outbound,
+                    .reputation = peer.reputation,
+                    .latency_ms = peer.latency_ms,
+                };
+                n += 1;
+            }
+            var qit = self.quic_peers.iterator();
+            while (qit.next()) |entry| {
+                const peer = entry.value_ptr.*;
+                candidates[n] = .{
+                    .key = entry.key_ptr.*,
+                    .connected_at = peer.connected_at,
+                    .is_outbound = peer.is_outbound,
+                    .reputation = peer.reputation,
+                    .latency_ms = peer.latency_ms,
+                };
+                n += 1;
+            }
         }
 
         const bootstrap_configured = self.config.bootstrap_peers.len > 0;
