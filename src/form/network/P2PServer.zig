@@ -85,26 +85,36 @@ const HandshakeNonceTracker = struct {
     }
 };
 
+// Raw posix socket I/O, mirroring HTTPServer.zig: the std.Io streaming
+// helpers require the ambient Io context to be pumped, and writing through
+// a zero-buffer writer crashed peer threads on Linux (memcpy/copyFixed
+// Length → unreachable via Writer.alignBuffer). Sockets are timeout-bound
+// (see setPeerTimeout), so blocking writes cannot wedge the loop.
 fn streamWriteAll(stream: std.Io.net.Stream, bytes: []const u8) !void {
-    var writer = stream.writer(@import("io_instance").io, &.{});
-    try writer.interface.writeAll(bytes);
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const rc = std.c.write(stream.socket.handle, bytes[off..].ptr, bytes.len - off);
+        if (rc < 0) {
+            const errno: std.c.E = @fromBackingInt(@intCast(-rc));
+            switch (errno) {
+                .AGAIN => {
+                    std.Thread.yield() catch {};
+                    continue;
+                },
+                else => return error.WriteFailed,
+            }
+        }
+        if (rc == 0) return error.BrokenPipe;
+        off += @intCast(rc);
+    }
 }
 
 fn streamReadShort(stream: std.Io.net.Stream, buf: []u8) !usize {
-    var reader = stream.reader(@import("io_instance").io, &.{});
-    return reader.interface.readSliceShort(buf) catch |err| {
-        if (err == error.ReadFailed) return reader.err.?;
-        return error.WouldBlock;
-    };
+    return std.posix.read(stream.socket.handle, buf);
 }
 
 fn streamReadVec(stream: std.Io.net.Stream, buf: []u8) !usize {
-    var reader = stream.reader(@import("io_instance").io, &.{});
-    var data: [1][]u8 = .{buf};
-    return reader.interface.readVec(&data) catch |err| {
-        if (err == error.ReadFailed) return reader.err.?;
-        return error.WouldBlock;
-    };
+    return std.posix.read(stream.socket.handle, buf);
 }
 
 fn currentSeconds() i64 {
