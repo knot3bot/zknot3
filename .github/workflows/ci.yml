@@ -34,10 +34,27 @@ jobs:
           zig build
 
       - name: Run unit tests
-        run: zig build test-unit -Doptimize=debug
+        run: |
+          echo "::add-matcher::.github/matchers/zig.json"
+          set +e
+          zig build test-unit -Doptimize=debug 2>&1 | tee /tmp/unit.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -E "^error: '" /tmp/unit.log | head -12 | sed 's/^/::error title=unit::/' || true
+          fi
+          exit "$rc"
 
       - name: Run integration tests
-        run: zig build test-integration -Doptimize=debug
+        run: |
+          set +e
+          zig build test-integration -Doptimize=debug 2>&1 | tee /tmp/integ.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            grep -E "^error: '" /tmp/integ.log | head -12 | sed 's/^/::error title=integration::/' || true
+          fi
+          exit "$rc"
 
       - name: Quorum single-source gate
         run: bash tools/quorum_single_source_gate.sh
